@@ -1,0 +1,1 @@
+kubectl_delete  resourceType=pvc name=season-detections namespace=camtrap

@@ -1,0 +1,39 @@
+{
+  "name": "chats-sandbox",
+  "version": "0.1.0",
+  "description": "General-purpose sandbox plugin for Claude Code \u2014 backup, policy, and effect tracking for AI agent tool calls",
+  "main": "dist/index.js",
+  "bin": {
+    "chats-sandbox": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/gen_prompts.mjs && tsc -p tsconfig.json && cp src/backup/openhands_subagent_runner.py dist/backup/ && chmod +x dist/cli.js",
+    "build:src": "node scripts/gen_prompts.mjs && tsc -p tsconfig.json",
+    "gen:prompts": "node scripts/gen_prompts.mjs",
+    "dev": "tsc --watch",
+    "lint": "eslint src/",
+    "check": "npm run lint && npm run build",
+    "install-plugin": "node dist/cli.js install",
+    "uninstall-plugin": "node dist/cli.js uninstall"
+  },
+  "keywords": [
+    "claude-code",
+    "sandbox",
+    "backup",
+    "hooks",
+    "ai-agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.1",
+    "@typescript-eslint/parser": "^8.58.1",
+    "eslint": "^10.2.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "js-yaml": "^5.0.0"
+  }
+}

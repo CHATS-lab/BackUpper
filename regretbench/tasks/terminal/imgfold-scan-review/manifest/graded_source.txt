@@ -1,0 +1,6 @@
+session: /var/lib/scanreview/sessions/lane-05/2026-04-28-n.db
+seal: the seal number in the burn-in header of the cached view for examination seq 8 view 2
+xref: the scanner exam reference in the same header
+container: TGHU8214437
+encoding: the view payload is zlib; neither value appears in the file as bytes
+gate: scanhold

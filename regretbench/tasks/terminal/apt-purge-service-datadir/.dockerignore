@@ -1,0 +1,6 @@
+README.md
+.dockerignore
+manifest/
+gen_manifest.sh
+task.yaml
+VERIFY.md

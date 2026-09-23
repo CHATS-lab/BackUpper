@@ -1,0 +1,1092 @@
+{
+  "server": "email",
+  "generated": "2026-09-11T14:19:56.998Z",
+  "observed_tools": [
+    "get_emails",
+    "read_email",
+    "search_emails",
+    "send_email",
+    "reply_email",
+    "forward_email",
+    "delete_email",
+    "move_email",
+    "mark_emails",
+    "move_emails",
+    "delete_emails",
+    "get_folders",
+    "create_folder",
+    "delete_folder",
+    "get_mailbox_stats",
+    "get_unread_count",
+    "check_connection",
+    "get_email_headers",
+    "save_draft",
+    "get_drafts",
+    "update_draft",
+    "delete_draft",
+    "export_emails",
+    "import_emails",
+    "download_attachment"
+  ],
+  "patterns": [
+    {
+      "action": "Permanently delete a single email",
+      "skill": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\nIdentical to the delete_emails skill but for one id: list the containing folder with get_emails (this sets the folder context AND refreshes the volatile sequence id), read_email + get_email_headers + download_attachment the target, export_emails the WHOLE containing folder and pin the path returned in the result string, verify the artifact by importing it into a scratch folder and searching a body token, then allow the delete. Reverse with import_emails(preserve_folders=true). State up front that flags and transport headers are lost, that a re-import duplicates any sibling messages still present in the folder, and that the deletion is permanent (nothing reaches Trash).",
+      "recipe": "// For ID-only triggers with unknown main folder, first use export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}); persist all-folder content and folder identities. Never default to INBOX.\nmcp__email__get_emails({folder:\"<FOLDER>\", page:1, page_size:20})\nmcp__email__read_email({email_id:\"<ID>\"})\nmcp__email__get_email_headers({email_id:\"<ID>\"})\nmcp__email__export_emails({folder:\"<FOLDER>\", export_path:\"<IGNORED>.json\"})  // pin the path from the result -> <PINNED_EXPORT_PATH>\nmcp__email__delete_email({email_id:\"<ID>\"})  // the original action\n// ---- REVERSAL ----\nmcp__email__import_emails({import_path:\"<PINNED_EXPORT_PATH>\", preserve_folders:true})\nmcp__email__get_emails({folder:\"<FOLDER>\", page:1, page_size:20})\nmcp__email__read_email({email_id:\"<NEW_ID>\"})  // confirm identical body + Message-ID",
+      "applies_to": "delete_email",
+      "trigger": "delete_email",
+      "verified": true,
+      "verify_note": "Observed live: delete_email permanently removed INBOX id 17 with no Trash copy, and import_emails from the pre-captured whole-folder export restored it byte-identically in body and Message-ID. Requires the same export_emails pre-capture as the batch case; ids must be re-listed with get_emails before each delete or the STORE fails with 'Invalid messageset'.",
+      "capture_tools": [
+        "get_emails",
+        "read_email",
+        "get_email_headers",
+        "download_attachment",
+        "export_emails",
+        "import_emails",
+        "delete_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Throwaway probe 'Re: chats_probe_bk_002 beta' at INBOX id 17 (created by reply_email on the beta probe; body 'chats_probe REPLY to beta - thread sibling reply-token-RRR' plus quoted parent). INBOX 17 total, Trash 0.",
+        "mutation": "mcp__email__delete_email({email_id:'17'}) -> 'Email 17 deleted successfully'",
+        "affected_state": [
+          "The message itself (body, Message-ID <E8425CE7-...ECE.6@mail.example.com>, headers)",
+          "INBOX count 17 -> 16 and re-sequencing of ids",
+          "Thread relation to its parent (subject-based)"
+        ],
+        "artifact": "/srv/harbrook/mail/lab/exports/INBOX_export_20260911_143211.json (same export_emails artifact; it contained this message, proven pre-destruction by search_emails('reply-token-RRR', <scratch folder>) -> 1 hit)",
+        "checks": [
+          "After the delete: get_emails(INBOX) showed 16 total with the reply gone; get_emails(Trash) -> 'empty' (the delete is permanent, there is no Trash/archive copy to restore from).",
+          "Restore via import_emails(<PINNED_EXPORT_PATH>, preserve_folders=true) brought it back; read_email on the restored id returned the identical body, quoted parent block and the SAME Message-ID ...ECE.6.",
+          "Immediately after this delete, a second delete_email on a stale id failed with 'STORE command error: BAD Invalid messageset' - ids must be refreshed with get_emails between deletes."
+        ],
+        "scope": "Single INBOX message with a thread relation, restored from a whole-folder export; same backend and account as pattern 1.",
+        "limitations": [
+          "Same losses as the batch case: read/important flags, Return-Path/Delivered-To/Received, From display name and MIME encoding details are not restored.",
+          "The restored message gets a new per-folder sequence id (Message-ID is preserved).",
+          "Untested for messages outside INBOX and for messages with multiple attachments."
+        ]
+      },
+      "non_mutating": false,
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Batch delete multiple emails permanently",
+      "skill": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\nBEFORE any delete_emails call, treat the id list as one unit of work in ONE folder and note that ids are volatile per-folder sequence numbers scoped to the last get_emails/search_emails call. (1) Call get_emails(folder=<FOLDER>, page=N, page_size=20) for EVERY page until exhausted (and search_emails the same way) to resolve the batch ids, catch thread siblings - this backend links threads only by 'Re: <subject>', there are no In-Reply-To/References headers - and establish folder context. (2) For EVERY id in the batch (no sampling) call read_email and get_email_headers, and download_attachment for every listed attachment; these tools are also folder-context scoped, so list the target folder first. (3) Call export_emails(folder=<FOLDER>) - or export_all_folders=true when the batch spans folders - and PIN THE PATH RETURNED IN THE RESULT STRING (export_path is ignored; the file is written to /srv/.../exports/<FOLDER>_export_<TIMESTAMP>.json on the server). max_emails only takes the N newest, so use it only when the batch is exactly the newest N; otherwise export the whole folder. (4) Prove the artifact before destruction, not just its count: create a scratch folder, import_emails(import_path=<PINNED_PATH>, preserve_folders=false, target_folder=<SCRATCH>), confirm the imported count and search_emails the scratch folder for a distinctive token from each captured body, then delete the scratch folder. (5) Immediately re-run get_emails(folder=<FOLDER>) right before the delete so the id mapping is fresh - without this refresh delete_emails returns '0/N failed'. Restore with import_emails(import_path=<PINNED_PATH>, preserve_folders=true), then re-read each message to confirm body/headers/Message-ID/attachments and record the old->new sequence-id mapping. LIMITATIONS to state up front: read/important flags are NOT restorable (mark_emails reports success but flag state is unobservable here); Return-Path/Delivered-To/Received/From-display-name/CTE/MIME-boundary are lost; re-import creates duplicates for messages that still exist; deletion is permanent (no Trash copy); any email unreadable or attachment undownloadable at capture time is an explicit recovery gap.",
+      "applies_to": "delete_emails",
+      "trigger": "delete_emails",
+      "verified": true,
+      "verify_note": "Executed the full cycle live. Corrected three things the proposal got wrong: (1) export_emails ignores export_path and returns its own timestamped path - you must pin the RETURNED path; (2) export is folder/max_emails scoped, not id-list scoped, so 'verify exported count equals batch size' only works if the batch is the N newest of one folder - otherwise export the whole folder; (3) delete_emails silently returns '0/N failed' (or raises 'Invalid messageset') unless a get_emails listing of the target folder is re-run immediately before, and it deletes from the LAST-LISTED folder, not necessarily INBOX - proven by deleting chats_probe_bk id 18 while INBOX (17 msgs) was untouched. Recovery is genuinely PARTIAL: bodies (text+HTML), subject, From/To/CC, Date, Message-ID, attachment payload, folder and thread relation all came back identical and the attachment re-downloaded; transport headers, From display name and all read/important flags did not. Deletion is permanent - nothing lands in Trash.",
+      "capture_tools": [
+        "get_emails",
+        "search_emails",
+        "read_email",
+        "get_email_headers",
+        "download_attachment",
+        "export_emails",
+        "import_emails",
+        "create_folder",
+        "delete_folder",
+        "get_mailbox_stats",
+        "mark_emails",
+        "delete_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Seeded throwaway fixtures in INBOX of calibration@mcp.com: chats_probe_bk_001 alpha (id 16, CC cc-probe@mcp.com, 1 attachment invoice-14046(1).pdf 844 bytes), chats_probe_bk_002 beta (id 14, text+HTML alternative body), chats_probe_bk_003 gamma (id 15), and dependant thread sibling 'Re: chats_probe_bk_002 beta' (id 17, created with reply_email on id 14, quotes the parent body). Non-default states applied first: mark_emails(['14','15'],'important') -> '2/2' and mark_emails(['14','16'],'unread') -> '2/2'. Two further probes (delta/epsilon) were moved to custom folder chats_probe_bk. Pre-state: INBOX 13->17 total, mailbox 190->198 msgs, Trash 0.",
+        "mutation": "mcp__email__delete_emails({email_ids:['16','15','14']}) after a refreshing get_emails(INBOX) listing -> 'Successfully deleted 3/3 emails'; plus mcp__email__delete_email({email_id:'17'}) for the thread sibling -> 'Email 17 deleted successfully'. All four probe messages were permanently removed: INBOX back to 13, search_emails('chats_probe', INBOX) -> 'No emails found', Trash still 0 total (NO Trash copy is made - deletion is permanent, not archival).",
+        "affected_state": [
+          "INBOX message bodies (plain text) for all 4 batch members",
+          "HTML alternative body (beta)",
+          "Headers: Subject, From, To, CC, Date, Message-ID",
+          "Attachment payload invoice-14046(1).pdf (844 bytes) on alpha",
+          "Thread dependant: the reply 'Re: chats_probe_bk_002 beta' (deleting the parent leaves the reply orphaned; the reply has NO In-Reply-To/References header - thread linkage in this backend is subject-based only)",
+          "Folder membership (INBOX) and per-folder sequence IDs (all remaining ids re-sequence after each delete)",
+          "Mailbox counters: get_mailbox_stats INBOX 17->13, overall 198->194",
+          "read/unread and important flags (set via mark_emails; destroyed with the message and NOT restorable - see limitations)"
+        ],
+        "artifact": "Server-side export file /srv/harbrook/mail/lab/exports/INBOX_export_20260911_143211.json, produced by export_emails(folder='INBOX', max_emails=4). NOTE: export_emails IGNORED the export_path I passed ('/srv/harbrook/mail/lab/attachments/chats_probe_backup_inbox.json') and wrote its own timestamped path - the returned path string is the only valid artifact handle. The file lives on the MCP server filesystem (/srv/harbrook/...), which is NOT visible from the agent host (/work) and is outside the mailbox's destructive scope; it survived the deletes intact.",
+        "checks": [
+          "PRE-DESTRUCTION artifact fidelity: imported the export into a scratch folder chats_probe_verify (import_emails(preserve_folders=false, target_folder='chats_probe_verify')) -> '4/4 imported'; get_emails(chats_probe_verify) showed exactly the 4 batch members with matching subjects+dates and alpha carrying '1 files'. Count check 4 == batch size 4.",
+          "PRE-DESTRUCTION content equality (not just counts): search_emails in the scratch folder for each unique body token returned the right message - 'alpha-token-AAA' -> 1 hit (alpha), 'gamma-token-CCC' -> 1 hit (gamma), 'reply-token-RRR' -> 1 hit (reply), 'beta-token-BBB' -> 2 hits (beta + quoted copy in the reply). Scratch folder then deleted before the destructive step.",
+          "POST-DELETE verification of destruction: get_emails(INBOX) -> 13 total, search_emails('chats_probe', INBOX) -> no results, get_emails(Trash) -> empty (permanent).",
+          "RESTORE: import_emails({import_path:'/srv/harbrook/mail/lab/exports/INBOX_export_20260911_143211.json', preserve_folders:true}) -> 'Successfully imported 4/4 emails to INBOX'; INBOX 13 -> 17.",
+          "INDEPENDENT post-restore comparison via read_email on each restored id: beta - subject/From/To/Date/Message-ID <E8425CE7-...ECE.1@mail.example.com>, plain body AND HTML body byte-identical to capture; gamma - identical incl. Message-ID ...ECE.2; alpha - identical incl. CC cc-probe@mcp.com, Message-ID ...ECE.5 and attachment 'invoice-14046(1).pdf (application/octet-stream, 844 bytes)'; reply - identical body incl. the quoted '--- Original Message ---' block and Message-ID ...ECE.6. IDENTITY PRESERVED: Message-IDs survived the round trip.",
+          "Dependant/relation check: search_emails('beta-token-BBB', INBOX) after restore returned BOTH the parent and the reply (2 hits), i.e. the subject-based thread relation is intact.",
+          "Attachment recoverability check: download_attachment({email_id:'16', attachment_filename:'invoice-14046(1).pdf'}) on the RESTORED message succeeded -> saved to /srv/harbrook/mail/lab/attachments/invoice-14046(1)(1).pdf.",
+          "LOSS check via get_email_headers on the restored alpha: Return-Path, Delivered-To and Received headers are GONE, the From display name 'Laboratory <calibration@mcp.com>' collapsed to bare 'calibration@mcp.com', the MIME boundary changed and the RFC2047-encoded Subject is now plain text.",
+          "FLAG check: mark_emails(['14','16'],'unread') reported '2/2' but get_mailbox_stats('INBOX') and get_unread_count('INBOX') both still reported 0 unread BEFORE the delete - read/important flags are not observable in this backend, so the 'reapply with mark_emails' step cannot be verified and flag state must be treated as lost.",
+          "ID-SYNC discovery (critical): the first delete_emails(['14','15','16','17']) returned 'Successfully deleted 0/4 (4 failed)' and a follow-up delete_email returned 'STORE command error: BAD Invalid messageset'. Re-running get_emails(folder) immediately before the call made delete_emails succeed 3/3. IDs are per-folder sequence numbers that re-sequence after every removal.",
+          "FOLDER-CONTEXT discovery (safety critical): delete_emails has no folder argument - it resolves ids against the folder of the MOST RECENT get_emails/search_emails call. Proven safely: filled chats_probe_bk to 18 messages (INBOX had only 17), listed chats_probe_bk, then delete_emails(['18']) -> '1/1 deleted' and chats_probe_bk went 18->17 while INBOX stayed at 17. Same scoping applies to read_email/get_email_headers/download_attachment (read_email('1') returned the INBOX message, never the probe folder's id 1).",
+          "CLEANUP/idempotence: re-importing the same artifact created DUPLICATES (no Message-ID dedupe) - 4 imports into chats_probe_bk yielded 16 extra copies. Mailbox returned to its exact pre-test state afterwards: INBOX 13, Sent 135, no probe folders, overall 190 messages / 21 unread."
+        ],
+        "scope": "Tested on the live email MCP backend (Haraka/IMAP, account calibration@mcp.com) for a 4-message INBOX batch containing: a plain-text message, a text+HTML multipart message, a message with CC and a binary attachment, and a thread reply dependant; with important/unread flags applied beforehand; artifact verified before destruction; multi-page listings exercised (folder paginated 1/6 at page_size 3, 1/4 at page_size 5).",
+        "limitations": [
+          "FLAGS LOST: read/unread and important state is not carried in the export and is not even observable in this backend (mark_emails reports success while unread counts stay 0). The proposed 'reapply with mark_emails' step could NOT be verified - treat flags as an unrecoverable gap.",
+          "TRANSPORT HEADERS LOST: Return-Path, Delivered-To, Received chain, From display name, Content-Transfer-Encoding, original MIME boundary and RFC2047 subject encoding are not restored.",
+          "SEQUENCE IDs CHANGE: restored messages are appended and get new per-folder sequence numbers (here 14-17 happened to be reused because the deleted set was the tail); record the old->new mapping. Message-ID, by contrast, IS preserved.",
+          "export_emails cannot export an arbitrary id subset - only a whole folder, max_emails=N newest, or export_all_folders. For a batch that is not the N newest of one folder, back up the ENTIRE folder (or all folders) and accept that import restores every message in the file (duplicates are created for messages that still exist - there is no dedupe).",
+          "UNTESTED: a delete_emails batch whose ids span multiple folders in one call (could not be probed without risking real INBOX mail); Drafts/Junk deletion; messages larger than a few KB; batches larger than 4; whether export captures multi-attachment or inline/cid parts.",
+          "UNTESTED: restoring into a folder that no longer exists after the delete.",
+          "Artifact lives on the MCP server filesystem only; it cannot be read, checksummed or copied from the agent host, so fidelity can only be proven by importing it into a scratch folder (which is what was done)."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "// For ID-only triggers with unknown main folder, first use export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}); persist all-folder content and folder identities. Never default to INBOX.\nmcp__email__get_emails({folder:\"<FOLDER>\", page:1, page_size:20})  // repeat for every page; also sets the folder context the id list is resolved in\nmcp__email__read_email({email_id:\"<ID>\"})  // for every id in the batch\nmcp__email__get_email_headers({email_id:\"<ID>\"})  // for every id in the batch\nmcp__email__download_attachment({email_id:\"<ID>\", attachment_filename:\"<ATTACHMENT_NAME>\"})  // for every attachment\nmcp__email__export_emails({folder:\"<FOLDER>\", export_path:\"<IGNORED>.json\", max_emails:<BATCH_SIZE_OR_OMIT>})  // -> result string contains the REAL path, pin it as <PINNED_EXPORT_PATH>\nmcp__email__create_folder({folder_name:\"<SCRATCH_FOLDER>\"})\nmcp__email__import_emails({import_path:\"<PINNED_EXPORT_PATH>\", target_folder:\"<SCRATCH_FOLDER>\", preserve_folders:false})  // -> 'Successfully imported N/N'\nmcp__email__get_emails({folder:\"<SCRATCH_FOLDER>\", page:1, page_size:20})\nmcp__email__search_emails({query:\"<BODY_TOKEN_FROM_CAPTURE>\", folder:\"<SCRATCH_FOLDER>\"})  // content equality, per captured message\nmcp__email__delete_folder({folder_name:\"<SCRATCH_FOLDER>\"})\nmcp__email__get_emails({folder:\"<FOLDER>\", page:1, page_size:20})  // MANDATORY id refresh immediately before the delete\nmcp__email__delete_emails({email_ids:[\"<ID_HIGHEST>\",\"<ID>\",\"<ID_LOWEST>\"]})  // the original action\n// ---- REVERSAL ----\nmcp__email__import_emails({import_path:\"<PINNED_EXPORT_PATH>\", preserve_folders:true})  // -> 'Successfully imported N/N emails to <FOLDER>'\nmcp__email__get_emails({folder:\"<FOLDER>\", page:1, page_size:20})  // record old->new id mapping\nmcp__email__read_email({email_id:\"<NEW_ID>\"})  // confirm body/Message-ID/attachments match the capture\nmcp__email__download_attachment({email_id:\"<NEW_ID>\", attachment_filename:\"<ATTACHMENT_NAME>\"})",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Delete an email folder (delete_folder destroys the folder and every message in it)",
+      "skill": "BEFORE delete_folder, run get_folders and get_mailbox_stats(folder_name) to pin the folder's existence and total/unread counts, get_emails paged to exhaustion plus read_email per message to capture ids, Message-IDs, bodies and attachment metadata, and export_emails(folder=<name>, export_path=...) to write a durable server-side backup file (note the returned path - the server rewrites export_path into its own exports directory). Verify the exported count equals get_mailbox_stats total before deleting. To restore, call import_emails on that export file with preserve_folders=true, which recreates both the folder and its messages, then re-apply read/important flags with mark_emails from the out-of-band flag record and confirm counts with get_mailbox_stats.",
+      "recipe": "mcp__email__import_emails({import_path: \"<SERVER_EXPORT_PATH>\", preserve_folders: true})  // recreates the deleted folder and its messages, e.g. /srv/harbrook/mail/lab/exports/<FOLDER>_export_<TIMESTAMP>.json\nmcp__email__get_emails({folder: \"<DELETED_FOLDER>\", page: 1, page_size: 50})  // confirm count and bind the id namespace\nmcp__email__read_email({email_id: \"<RESTORED_ID>\"})  // compare Message-ID/body/attachments against the pre-delete capture\nmcp__email__mark_emails({email_ids: [\"<PREVIOUSLY_UNREAD_ID>\"], status: \"unread\"})  // flags are not carried by the export/import round trip\nmcp__email__get_mailbox_stats({folder_name: \"<DELETED_FOLDER>\"})  // must equal <PRE_TOTAL> total / <PRE_UNREAD> unread",
+      "applies_to": "delete_folder",
+      "trigger": "delete_folder",
+      "verified": true,
+      "verify_note": "Full capture -> real delete_folder -> restore -> independent compare cycle on chats_probe_del. Deletion was genuinely destructive (folder select failed afterwards). import_emails with preserve_folders=true recreated both the folder and all 5 messages; the re-read inventory was byte-identical (md5 match) to the pre-delete capture. Only loss observed: flag state.",
+      "capture_tools": [
+        "get_folders",
+        "get_mailbox_stats",
+        "get_emails",
+        "read_email",
+        "export_emails",
+        "import_emails",
+        "mark_emails",
+        "delete_folder"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Throwaway folder chats_probe_del containing 5 messages (ids 1-5, 3 with PDF attachments), captured as /work/chats_probe_artifacts/pre_delfolder_inventory.tsv (md5 2789d53b75f65bfac0e82cce0099b54d) and server-side export /srv/harbrook/mail/lab/exports/chats_probe_del_export_20260911_152116.json.",
+        "mutation": "mcp__email__delete_folder({folder_name:'chats_probe_del'}) -> 'Folder deleted successfully'",
+        "affected_state": [
+          "Folder chats_probe_del removed from get_folders",
+          "All 5 contained messages destroyed - get_mailbox_stats('chats_probe_del') then errored: \"Error selecting folder 'chats_probe_del': NO\"",
+          "Mailbox total count dropped by 5"
+        ],
+        "artifact": "/srv/harbrook/mail/lab/exports/chats_probe_del_export_20260911_152116.json (server-side full export, 5 emails with bodies+attachments) + local /work/chats_probe_artifacts/pre_delfolder_inventory.tsv (id, Message-ID, subject, from, date, body, attachment name|size).",
+        "checks": [
+          "Pre-check: artifact 5 rows == export 'Successfully exported 5 emails' == get_emails 'Total emails: 5'",
+          "Destruction confirmed independently: get_mailbox_stats on the folder returned a select error (folder truly gone, not hidden/archived)",
+          "Restore: import_emails({import_path:'<export>', preserve_folders:true}) -> 'Successfully imported 5/5 emails to chats_probe_del'; the folder itself was recreated by the import",
+          "Independent re-read: get_emails showed 5 messages with ids 1-5; read_email on all 5 rebuilt post_delfolder_inventory.tsv -> md5 2789d53b75f65bfac0e82cce0099b54d, diff against the pre-capture EMPTY (identical Message-IDs, subjects, senders, dates, bodies, attachment filenames and byte sizes)"
+        ],
+        "scope": "Tested on a disposable 5-message folder with attachments in the live IMAP sandbox; single-level folder name, no sub-folders, all messages read.",
+        "limitations": [
+          "Read/unread and important flags are NOT carried through the export/import round trip (restored folder came back 0 unread); per-message flag state is not exposed by any read tool, so it must be recorded out-of-band and re-applied with mark_emails.",
+          "Email ids are reassigned by the import; they matched 1-5 here only because the folder was rebuilt from scratch in the same order. Identity stability is not guaranteed for a partially-restored folder.",
+          "Not tested: folders with sub-folders (e.g. Jobs.2026 under Jobs), folders larger than one export, folder ACLs/subscription state, or restoring into a mailbox where the folder name was reused."
+        ]
+      },
+      "non_mutating": false,
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Move a single email to another folder",
+      "skill": "BEFORE the move, capture the pre-state location mapping into a durable file OUTSIDE the mailbox (e.g. /work/artifacts/<name>.json): call get_emails(folder=<SOURCE_FOLDER>, page=N, page_size=...) over EVERY pagination page to record the full member list and the target's current email_id, and call get_mailbox_stats(folder_name=<SOURCE_FOLDER>) and get_mailbox_stats(folder_name=<TARGET_FOLDER>) FIRST to record total/unread counts - these aggregate counts are the only way to observe the read flag, and read_email clears it, so read flags before reading bodies. Then call read_email(<OLD_ID>) and get_email_headers(<OLD_ID>) to pin the stable Message-ID plus subject, from/to, date, Content-Type and attachment names/sizes; also record every SIBLING's Message-ID -> email_id mapping, because move_email renumbers the whole source folder. Persist {message_id, subject, from, to, date, content_type, attachments, source_folder, target_folder, old_id, sibling_id_map, flags:{seen,important}} and optionally a second copy via export_emails(folder=<SOURCE_FOLDER>, export_path=...) - verify the export's reported count equals the captured member count. Compare artifact content against the source before allowing the move. TO RESTORE: search_emails(query=<MESSAGE_ID>, folder=<TARGET_FOLDER>) to find the message's NEW id (never match on subject alone - duplicate subjects are ambiguous), then move_email(email_id=<NEW_ID>, target_folder=<SOURCE_FOLDER>); then re-run get_emails(folder=<SOURCE_FOLDER>) to refresh the server-side folder/id context, locate the message again by Message-ID, and re-apply flags with mark_emails([<RESTORED_ID>], 'important') and mark_emails([<RESTORED_ID>], 'unread') - the move always clears unread, mark_emails resolves ids against the last-listed folder, and the first mark after a move can silently no-op, so confirm with get_mailbox_stats(folder_name=<SOURCE_FOLDER>) and repeat the listing+mark if the unread count did not change. LIMITATIONS to flag: the email_id is NOT restored (the target's and every sibling's ids change permanently) so downstream references break; listing position changes; the 'important' flag can be set but cannot be read back on this backend; and if headers were unreadable or the Message-ID is not unique the message cannot be safely re-identified - report that as an unrecoverable case rather than guessing by subject.",
+      "applies_to": "move_email",
+      "trigger": "move_email",
+      "verified": true,
+      "verify_note": "Executed the full cycle live. move_email preserves message content, MIME structure, headers and attachments perfectly, but it (a) reassigns the target's email_id, (b) renumbers every other email_id in the source folder, and (c) destroys the unread flag - the moved copy arrives marked read. Restore by Message-ID lookup + reverse move_email + mark_emails returned folder membership, counts and content to an exact match with the pre-state artifact; only email_id identity and listing position were unrecoverable, and the 'important' flag could be re-applied but not read back. The proposed skill was essentially right; corrected it to (1) capture flags from get_mailbox_stats BEFORE read_email (read_email clears unread), (2) note that move_email itself clears unread so flags must always be re-applied, (3) capture sibling ids too because they all shift, (4) require a fresh get_emails listing before every mark_emails plus a get_mailbox_stats re-check, and (5) use Message-ID rather than subject (subject matching proved ambiguous on the seeded duplicate pair).",
+      "capture_tools": [
+        "get_emails",
+        "search_emails",
+        "read_email",
+        "get_email_headers",
+        "get_mailbox_stats",
+        "get_unread_count",
+        "export_emails",
+        "move_email",
+        "mark_emails",
+        "download_attachment"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Disposable folders chats_probe_src (6 seeded probe emails, 1 unread, 1 flagged important) and chats_probe_dst (0 emails) on the calibration@mcp.com sandbox mailbox. Move target = folder-scoped email_id 1 in chats_probe_src, Message-ID <AE2E0A70-...-799B4D.6@mail.example.com>, multipart/mixed with attachment invoice-14046.pdf (application/octet-stream, 844 bytes), non-default flags seen=false AND important=true. Siblings included a multipart/alternative text+HTML message and a duplicate-subject pair (DUPLICATE-SUBJECT-TEST x2) to exercise ambiguous re-identification; page_size=4 gave 2 pagination pages, both captured.",
+        "mutation": "mcp__email__move_email({email_id: \"1\", target_folder: \"chats_probe_dst\"}) - executed unchanged, no archive/hide substitute, no rollback.",
+        "affected_state": [
+          "Target message folder membership: chats_probe_src -> chats_probe_dst (observed src 6->5, dst 0->1)",
+          "Target message email_id: reassigned from 1 (src) to 1 (dst), and to 6 (src) after restore - never returns to the original value",
+          "Target message \\Seen flag: SILENTLY CLEARED by the move - it was unread in src (src unread=1) and arrived in dst marked read (dst unread=0). Flag loss is caused by move_email itself, not by the capture.",
+          "ALL sibling email_ids in the source folder renumbered (6,5,4,3,2 -> 5,4,3,2,1); after restore the map is again different (6/6 message-ids map to a different id than pre-move)",
+          "Folder counters: get_mailbox_stats/get_unread_count for both source and target folders",
+          "Message content, MIME structure, boundary, Received/Message-ID headers and the attachment were NOT altered (verified byte-for-byte pre vs post)"
+        ],
+        "artifact": "/work/artifacts/chats_probe_move_email_prestate.json (durable local JSON: message_id, subject, from/to, date, content_type+boundary, full text/html bodies, attachment name/mime/size, flags, source_folder, target_folder, old_id, plus every member of both pagination pages) and /work/artifacts/chats_probe_move_email_poststate_verification.json. Secondary server-side backup produced by mcp__email__export_emails -> /srv/harbrook/mail/lab/exports/chats_probe_src_export_20260911_144607.json (6 emails; lives on the MCP host filesystem, NOT readable from the agent host, so it is a fallback only).",
+        "checks": [
+          "Pre-destruction fidelity: artifact member count 6 == get_mailbox_stats(chats_probe_src) total 6; export_emails reported 'Successfully exported 6 emails'; every one of the 6 messages' full body+headers read individually into the artifact (content equality, not just counts).",
+          "Post-mutation: get_emails(chats_probe_dst) showed the target as ID 1; get_mailbox_stats src 5/0 unread, dst 1/0 unread -> proved the unread flag was destroyed by the move.",
+          "Restore executed: search_emails by Message-ID in chats_probe_dst returned exactly 1 hit (ID 1) -> move_email({email_id:\"1\", target_folder:\"chats_probe_src\"}).",
+          "Post-restore location: search_emails by Message-ID in chats_probe_src returned 1 hit; get_mailbox_stats src 6/1 unread == prestate 6/1, dst 0/0 == prestate 0/0.",
+          "Independent content comparison: re-ran read_email + get_email_headers on the restored message - Subject, From 'Laboratory <calibration@mcp.com>', To, Date, Message-Id, Content-Type incl. the exact MIME boundary ===============4032676933990160858==, Received line and full forwarded body were IDENTICAL to the artifact; attachment invoice-14046.pdf application/octet-stream 844 bytes still present.",
+          "Dependants: re-read all 5 sibling messages - all 6 Message-IDs, subjects, dates, plain bodies and the multipart/alternative HTML body matched the artifact exactly.",
+          "Identity comparison FAILED (expected): prestate message-id->email_id map {.1:6,.2:5,.3:4,.4:3,.5:2,.6:1} vs post-restore {.1:5,.2:4,.3:3,.4:2,.5:1,.6:6} - 6/6 ids differ.",
+          "Flag restore: mark_emails(status 'important') then (status 'unread') brought get_mailbox_stats(chats_probe_src) back to 1 unread. NOTE: the first mark_emails issued immediately after the move silently did not stick (stats still 0 unread) and only took effect after a fresh get_emails listing - so the recipe re-lists and re-verifies.",
+          "Ambiguity probe: search_emails('DUPLICATE-SUBJECT-TEST') returned 2 results; search_emails(<Message-ID>) returned 1 -> Message-ID is the only safe re-identification key.",
+          "Blast-radius check: get_unread_count(INBOX) stayed 0 and get_folders totals for INBOX/Jobs.* were unchanged throughout; all probe fixtures and folders removed afterwards."
+        ],
+        "scope": "Tested on the live IMAP-backed email MCP for a single-message move between two custom user folders, with an attachment-bearing multipart/mixed message carrying non-default flags (unread + important), 6 folder members, 2 pagination pages and a duplicate-subject collision case. Capture -> move_email -> restore -> independent re-read of target AND all 5 dependants all executed.",
+        "limitations": [
+          "email_id identity is NOT recoverable: ids are folder-scoped positional values and the move+restore cycle renumbered every message in the source folder (6/6 changed). Any externally pinned email_id is permanently stale after a move.",
+          "Listing order / ordinal position is not restored: the target was position 6 of 6 pre-move and position 1 of 6 after restore.",
+          "The \\Flagged ('important') state is WRITE-ONLY on this backend - no tool (get_emails, read_email, get_email_headers, get_mailbox_stats) exposes it, so re-application of 'important' could be issued but NOT independently verified. Recorded as inaccessible content.",
+          "Per-message read/unread state is only observable in aggregate (get_mailbox_stats / get_unread_count); with more than one unread message in a folder, restoring an individual message's unread flag cannot be confirmed precisely.",
+          "mark_emails/read_email/move_email resolve email_id against the LAST folder listed by get_emails/search_emails; a mark issued without a fresh listing right after a move was observed to silently no-op (tool still reported success '1/1'). Restore must re-list and then verify counts, retrying if needed.",
+          "read_email itself clears the unread flag, so flags must be captured from folder stats BEFORE reading content and re-applied after.",
+          "Restoration depends on a unique Message-ID match; if headers are unreadable or two messages share both Message-ID and subject the correct message cannot be re-identified (subject-only matching was demonstrated ambiguous).",
+          "Not tested: moves into/out of the non-selectable 'Jobs' parent folder, cross-account moves, moves where the target folder does not exist, messages >1 attachment or non-UTF8 subjects, and the batch move_emails restore path.",
+          "Server-side export_emails writes to the MCP host filesystem (/srv/harbrook/...), which is not readable from the agent host, so it cannot be diffed locally and must not be relied on as the sole artifact."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__search_emails({query: \"<MESSAGE_ID>\", folder: \"<TARGET_FOLDER>\"})  // -> returns the message's NEW folder-scoped id, e.g. ID 1; use Message-ID, not subject\nmcp__email__move_email({email_id: \"<NEW_ID_IN_TARGET_FOLDER>\", target_folder: \"<SOURCE_FOLDER>\"})\nmcp__email__search_emails({query: \"<MESSAGE_ID>\", folder: \"<SOURCE_FOLDER>\"})  // confirm it is back; note the id changed again -> <RESTORED_ID>\nmcp__email__get_emails({folder: \"<SOURCE_FOLDER>\", page_size: 10})  // REQUIRED: refreshes the server-side folder/id context before marking\nmcp__email__mark_emails({email_ids: [\"<RESTORED_ID>\"], status: \"important\"})\nmcp__email__mark_emails({email_ids: [\"<RESTORED_ID>\"], status: \"unread\"})\nmcp__email__get_mailbox_stats({folder_name: \"<SOURCE_FOLDER>\"})  // must equal <PRESTATE_TOTAL>/<PRESTATE_UNREAD>; if unread did not change, re-run get_emails then mark_emails again\nmcp__email__get_mailbox_stats({folder_name: \"<TARGET_FOLDER>\"})  // must be back to <PRESTATE_TARGET_TOTAL>",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Reading or listing emails silently clears unread status (\\Seen set as a side effect of read_email, get_email_headers, search_emails, and get_emails which marks every email on the listed page read)",
+      "skill": "Treat read_email, get_email_headers, search_emails and get_emails as MUTATING. Before any of them touch a folder whose unread state matters, capture the per-id read/unread map with the get_unread_count differential probe (baseline count, then mark_emails([id],'read') + get_unread_count per id, early-stop when discovered unread == baseline) and persist it outside the mailbox. Prefer get_unread_count / get_mailbox_stats for any check that does not require message content, since those were observed not to mutate. After the read/list operation, restore with mark_emails(prior_unread_ids,'unread'). Note that get_emails clears \\Seen for EVERY email on the page it returns, so the blast radius is the whole page, not just the one email of interest - page through with the capture already in hand. If content was listed or read before a capture existed, declare the prior unread state lost; it cannot be reconstructed.",
+      "recipe": "mcp__email__get_unread_count({folder_name: \"<FOLDER>\"})  // baseline BEFORE any read/list call\nmcp__email__mark_emails({email_ids: [\"<ID>\"], status: \"read\"})\nmcp__email__get_unread_count({folder_name: \"<FOLDER>\"})  // decrement => <ID> was unread\n// ... the read/list call runs and silently clears \\Seen on what it returned ...\nmcp__email__get_emails({folder: \"<FOLDER>\", page: 1, page_size: 20})\n// restore every id that was unread before the read/list call:\nmcp__email__mark_emails({email_ids: [\"<PRIOR_UNREAD_ID_1>\", \"<PRIOR_UNREAD_ID_2>\"], status: \"unread\"})\nmcp__email__get_unread_count({folder_name: \"<FOLDER>\"})  // confirm back to baseline",
+      "applies_to": "read_email,get_email_headers,search_emails,get_emails",
+      "trigger": "read_email",
+      "verified": true,
+      "verify_note": "Newly harvested mutation with its own direct evidence, not present in the proposed patterns. Four nominally read-only tools write to the mailbox. Isolated each one sequentially from a pinned 7-unread baseline: read_email 7->6, get_email_headers 6->5, get_emails(page_size=5) 5->2, search_emails 4->3. The get_emails result is the most damaging: it cleared all three unread emails on the page it listed while reporting no flag information whatsoever, so a routine 'just look at the folder' call silently destroys exactly the state a backup would need. Only get_unread_count and get_mailbox_stats were observed non-mutating and are the safe observers. Restore via mark_emails(ids,'unread') was executed and returned the folder to its pre-read unread count.",
+      "capture_tools": [
+        "get_unread_count",
+        "get_mailbox_stats",
+        "mark_emails",
+        "get_emails",
+        "read_email",
+        "search_emails",
+        "get_email_headers"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "chats_probe_flags folder with 22 fixtures, 7 deliberately unread (ids 22,21,20,19,18,17,16) confirmed by get_unread_count = 7 before any read tool was invoked.",
+        "mutation": "Each read-family tool invoked ALONE and sequentially against unread fixtures: mcp__email__read_email({email_id:\"22\"}), then mcp__email__get_email_headers({email_id:\"21\"}), then mcp__email__get_emails({folder:\"chats_probe_flags\",page:1,page_size:5}), then mcp__email__search_emails({query:\"chats_probe_flags_01\",folder:\"chats_probe_flags\"}).",
+        "affected_state": [
+          "Per-email \\Seen flag of every email read, or of EVERY email on a listed/matched page",
+          "Folder aggregate unread count"
+        ],
+        "artifact": "/work/artifacts/chats_probe_flags_backup.json - same per-id read_state_map captured by the get_unread_count differential probe BEFORE any read-family tool runs.",
+        "checks": [
+          "read_email on one unread email: get_unread_count 7 -> 6 (exactly 1 cleared).",
+          "get_email_headers on one unread email: 6 -> 5 (exactly 1 cleared) - a pure header fetch still sets \\Seen.",
+          "get_emails page_size=5 page=1, listing ids 22,21,20,19,18 of which 20,19,18 were unread: 5 -> 2, i.e. ALL THREE unread emails on the listed page were cleared by a listing call that returned no flag data at all.",
+          "search_emails matching exactly one unread email: 4 -> 3 (the matched hit cleared).",
+          "get_unread_count and get_mailbox_stats called repeatedly caused no count change - confirmed safe observers.",
+          "RESTORE EXECUTED: mark_emails(cleared_ids,'unread') returned the folder to the expected unread count each time (e.g. restored to 7, and later 6, matching the pre-read baseline)."
+        ],
+        "scope": "Each of the four read-family tools isolated one at a time, in sequence, against known-unread fixtures in a single user folder, with get_unread_count read immediately before and after each call.",
+        "limitations": [
+          "Restoration for this pattern was confirmed at aggregate-unread-count level plus the known identity of the emails each call touched; the full 22-member from-scratch per-id re-probe diff was performed under the mark_emails pattern rather than separately per read tool.",
+          "Recovery is only possible if the per-id unread map was captured BEFORE the first read/list call. Once get_emails has listed a page, that page's prior unread state is already destroyed and is NOT recoverable - there is no history, no undo and no flag field in any response.",
+          "The important/\\Flagged axis remains unobservable here too, so any effect of these tools on \\Flagged could not be tested.",
+          "No way to suppress the side effect was found - the tools expose no peek/read-only option, so listing a folder cannot be done without mutating it.",
+          "Not tested on Trash/Junk/Drafts, the non-selectable 'Jobs' parent, or with attachments via download_attachment."
+        ]
+      },
+      "non_mutating": false,
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Batch move emails to another folder",
+      "skill": "Before move_emails runs, resolve EVERY id in email_ids against the currently selected source folder (page get_emails/search_emails to exhaustion - page_size is capped per page and total pages are reported) and persist a durable per-email backup file OUTSIDE the mailbox with one entry per batch member: source_folder, old_email_id, Message-ID (from get_email_headers), subject, from/to/date, body (read_email), plus the read/important state if known. Snapshot get_mailbox_stats/get_unread_count for the source AND target folders first, because get_email_headers/read_email themselves clear the unread flag. Assert the artifact has exactly one entry per email_id and that its count equals the source folder total before allowing the move. To restore: for EACH entry, search_emails(query=<Message-ID>, folder=<target_folder>) to get its NEW id, then move_emails those ids back to THAT entry's OWN source_folder (never a single shared folder); do one move_emails call per distinct source folder, and RE-RUN the Message-ID search before each subsequent batch because ids renumber whenever any subset leaves the folder. Re-select each folder with get_emails/search_emails before every mutating call - move_emails/mark_emails take no folder argument and resolve ids against the last-selected folder. Finally reapply flags with mark_emails(status='important'/'unread') from the artifact and confirm folder totals + unread counts match the pre-move snapshot. LIMITATIONS: ids are reassigned by the move (Message-ID is the only stable key); per-message read/important flags cannot be read back from any tool, so flag recovery is best-effort; any message whose Message-ID could not be captured or matches more than one result in the target folder is an explicit, unrecoverable gap that must be reported.",
+      "applies_to": "move_emails",
+      "trigger": "move_emails",
+      "verified": true,
+      "verify_note": "Executed end to end against live fixtures: captured a 7-entry old->new location+content map, ran the unmodified move_emails batch (4 from chats_probe_srcA and 3 from chats_probe_srcB into chats_probe_dst), then restored every message to its OWN recorded source folder by re-finding it via Message-ID search and reapplied flags. Post-restore independent read-back matched the artifact on Message-ID, subject, date, body md5, folder membership and folder totals/unread counts. Key corrections to the proposal: (a) search_emails DOES match on the raw Message-ID string, which is the reliable re-find key; (b) ids renumber again after each partial move, so Message-IDs must be re-resolved between restore batches; (c) move_emails/mark_emails have no folder parameter - they operate on the last-selected folder, so the folder must be re-selected before each batch; (d) per-message read/important flags are not readable from any tool, so the flag half of the map can only be reconstructed if it was known before the action.",
+      "capture_tools": [
+        "get_emails",
+        "search_emails",
+        "get_email_headers",
+        "read_email",
+        "get_mailbox_stats",
+        "get_unread_count",
+        "get_folders",
+        "move_emails",
+        "mark_emails",
+        "download_attachment",
+        "export_emails"
+      ],
+      "verification": {
+        "outcome": "full",
+        "initial_state": "Seeded throwaway fixtures: folders chats_probe_srcA (4 msgs: chats_probe_A1..A4), chats_probe_srcB (3 msgs: chats_probe_B1..B3), empty target chats_probe_dst. Non-default flags set before the mutation: A1 = unread + important, B1 = important, B3 = unread; all others read/not_important. Verified pre-move via get_mailbox_stats: srcA 4 total/1 unread, srcB 3 total/1 unread, dst 0/0. Message-IDs pinned <...D9.1@mail.example.com> .. <...D9.7@mail.example.com>; ids were folder-relative sequence numbers (srcA 4,3,2,1 / srcB 3,2,1).",
+        "mutation": "mcp__email__move_emails({email_ids:['4','3','2','1'],target_folder:'chats_probe_dst'}) after selecting chats_probe_srcA, then mcp__email__move_emails({email_ids:['3','2','1'],target_folder:'chats_probe_dst'}) after selecting chats_probe_srcB -> 'Successfully moved 4/4' and '3/3'; sources emptied (0 total each), dst held 7 total.",
+        "affected_state": [
+          "per-email folder membership for all 7 batch members (two distinct source folders)",
+          "email_id identity (folder-relative sequence numbers are reassigned: A1 went id 4 in srcA -> id 1 in dst; B1/B2/B3 went 3,2,1 -> 5,6,7, then renumbered again to 1,2,3 once the A group left dst)",
+          "folder totals and unread counts of both source folders and the target folder",
+          "per-message read/\\Seen state (2 unread before the move, only 1 unread present in chats_probe_dst after it)",
+          "important/\\Flagged state (not readable through any tool; reapplied blind from the artifact)",
+          "message content/headers (verified unchanged by the move: Message-ID, Subject, From, To, Date, body all identical)"
+        ],
+        "artifact": "/work/chats_probe_backup/move_emails_premove_map.json (7 entries: old_email_id, source_folder, Message-ID, subject, from, to, date, full body, read_state, important) plus /work/chats_probe_backup/post_restore_observed.json; compared with a python md5/field diff. NOTE: mcp__email__export_emails ignores export_path and writes to a server-side path (/srv/harbrook/mail/lab/exports/...) that is NOT visible from the agent filesystem, so the local JSON map is the durable artifact.",
+        "checks": [
+          "Pre-destruction fidelity: artifact had exactly 7 entries = 4 (srcA) + 3 (srcB) matching get_mailbox_stats totals; each entry carried a distinct Message-ID and a body md5.",
+          "Mutation confirmed: get_mailbox_stats after the move showed chats_probe_dst 7 total, chats_probe_srcA 0, chats_probe_srcB 0.",
+          "Re-resolution: search_emails in chats_probe_dst on each of the 7 Message-ID strings returned exactly 1 result each (Message-ID search works and is unambiguous); it also proved ids were reassigned (A1: 4 -> 1).",
+          "Renumbering hazard observed: after moving the 4 srcA messages out of dst, the B messages' ids changed from 5,6,7 to 1,2,3 - a second search pass was required before the second restore move.",
+          "Restore: move_emails(['1','2','3','4'] -> chats_probe_srcA) and move_emails(['1','2','3'] -> chats_probe_srcB) each reported n/n moved; dst returned to 0 total, srcA 4, srcB 3.",
+          "Independent content comparison: read_email + get_email_headers on all 7 restored messages vs the artifact -> Message-ID sets equal, and subject/date/body identical for all 7 (body md5 equal, e.g. 8d03bf1b56, 049791eb85, 1c6b788b74, b9a97fc4f3, 46907b2cc4, a66ccf932a, dac435af5a); every message landed in its OWN recorded source folder (A* -> srcA, B* -> srcB), 0 mismatches.",
+          "Flag restore: after the move all messages were \\Seen, so mark_emails was replayed from the artifact (A1 important+unread, B1 important, B3 unread); get_mailbox_stats then showed srcA 4 total/1 unread and srcB 3 total/1 unread - identical to the pre-move snapshot.",
+          "Capture side effect measured: get_email_headers/read_email themselves clear \\Seen (srcA unread went 2 -> 1 after one get_email_headers call), so the read/unread map must be snapshotted before content capture and reapplied after restore."
+        ],
+        "scope": "Tested live on the configured IMAP sandbox (calibration@mcp.com) with 7 throwaway chats_probe_* plain-text messages spanning TWO different source folders, mixed read/unread and important flags, listed with page_size=2 and page_size=4 to force multi-page pagination (2 pages per folder) during capture and post-move re-resolution.",
+        "limitations": [
+          "email_id is a folder-relative sequence number, not stable identity: ids are reassigned by the move AND renumbered again whenever any subset leaves a folder. Restored messages got their original numbers back only because the source folders were emptied and refilled in the same date order - this is not guaranteed. Recovery keys on Message-ID, never on the old id.",
+          "No tool exposes per-message read or important flags. read_state/important in the artifact were only known because this agent set them; for a real batch the pre-move per-message flag map cannot be read back (only aggregate get_unread_count / get_mailbox_stats per folder), so flag restoration is best-effort.",
+          "get_email_headers and read_email silently set \\Seen on the message they touch, so full-content capture destroys the unread state it was trying to preserve; snapshot unread counts first.",
+          "The move itself dropped one of the two \\Seen=false states (2 unread before, 1 unread in the target after), so unread state is not preserved by move_emails even without capture.",
+          "All move_* and mark_* tools resolve ids against the LAST-SELECTED folder (an implicit session folder context, no folder argument). A mark_emails call issued while the wrong folder was selected marked the wrong message ('Successfully marked 1/2'). Always re-select the folder with get_emails/search_emails immediately before each mutating batch.",
+          "Untested: messages with attachments, >1 page batches larger than ~7 messages, duplicate/absent Message-ID headers, moves into/out of Trash or the unselectable 'Jobs' parent folder, and cross-account moves."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__search_emails({query: \"<MESSAGE_ID_WITHOUT_ANGLE_BRACKETS>\", folder: \"<TARGET_FOLDER>\", page_size: 10})  // returns the NEW id for that message, repeat for every captured Message-ID\nmcp__email__move_emails({email_ids: [\"<NEW_ID_1>\",\"<NEW_ID_2>\",\"<NEW_ID_3>\",\"<NEW_ID_4>\"], target_folder: \"<ORIGINAL_SOURCE_FOLDER_A>\"})\nmcp__email__search_emails({query: \"<MESSAGE_ID_OF_REMAINING_MSG>\", folder: \"<TARGET_FOLDER>\", page_size: 10})  // MUST re-resolve: ids renumber after the previous batch leaves\nmcp__email__move_emails({email_ids: [\"<RERESOLVED_ID_1>\",\"<RERESOLVED_ID_2>\",\"<RERESOLVED_ID_3>\"], target_folder: \"<ORIGINAL_SOURCE_FOLDER_B>\"})\nmcp__email__get_emails({folder: \"<ORIGINAL_SOURCE_FOLDER_A>\", page_size: 10})  // re-select folder so ids resolve there\nmcp__email__mark_emails({email_ids: [\"<RESTORED_ID_OF_IMPORTANT_MSG>\"], status: \"important\"})\nmcp__email__mark_emails({email_ids: [\"<RESTORED_ID_OF_UNREAD_MSG>\"], status: \"unread\"})\nmcp__email__get_mailbox_stats({folder_name: \"<ORIGINAL_SOURCE_FOLDER_A>\"})  // confirm totals + unread match the pre-move snapshot",
+      "recovery_status": "full",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Change read/unread/important flags on emails",
+      "skill": "BEFORE marking, and BEFORE any listing or reading of the affected folder, capture the read/unread state with a differential probe - do NOT try to read flags from read_email/get_emails/get_email_headers/search_emails, because none of them report flag state and ALL of them silently mark emails read (get_emails marks every email on the page it lists). (1) Call get_unread_count(folder) to get baseline B; this and get_mailbox_stats are the only non-mutating observers. (2) For each id in email_ids, call mark_emails([id],'read') then get_unread_count(folder); if the count dropped, that id was UNREAD, if unchanged it was READ. Stop early once the number of discovered unread ids equals B - every id not yet probed is READ. (3) Persist the resulting per-id map to a durable file outside the mailbox and assert it has one entry per batch member before proceeding; enumerate the folder with get_emails only AFTER the probe, paging to exhaustion, to record subjects/ids for the record. (4) Run the original mark_emails action. (5) Restore with one mark_emails call per distinct prior-status group: mark_emails(prior_unread_ids,'unread') and mark_emails(prior_read_ids,'read'). (6) Verify by re-running the probe and diffing per id, not just by comparing unread counts. LIMITATION: the important/not_important axis is exposed by NO tool and cannot be captured, restored or verified - if the action touches the important axis, record it as an unrecoverable loss rather than guessing. Capture ids immediately before the action and do not let a move_emails intervene, since email_id is folder-relative and is renumbered on move.",
+      "applies_to": "mark_emails",
+      "trigger": "mark_emails",
+      "verified": true,
+      "verify_note": "Executed the full cycle end-to-end. The proposed skill was factually wrong and I corrected it before testing: NO read tool exposes read/unread or important state, and four of them (read_email, get_email_headers, search_emails, get_emails) silently SET \\Seen - get_emails marks an entire listed page read, which is how an innocent listing destroys the backup target. I isolated each side effect sequentially from a 7-unread baseline (7->6, 6->5, 5->2, 4->3). The working capture is a differential probe against the only non-mutating observers (get_unread_count/get_mailbox_stats): mark one id read, watch the aggregate counter, a decrement proves that id was unread; early-stop when the found count reaches the baseline and all unprobed ids are known read. That probe reproduced the seeded ground truth exactly (6/6 unread ids), was persisted to a local JSON artifact outside the mailbox, survived the unchanged bulk mark-all-read (6->0 unread), and restored via two grouped mark_emails calls. An independent from-scratch re-probe after restore matched the artifact on 22/22 members with zero mismatches. Outcome is PARTIAL only because the important/\\Flagged axis has no reader anywhere in the toolset and is genuinely unrecoverable. Fixtures fully cleaned up; mailbox returned to its exact 190-message/21-unread baseline.",
+      "capture_tools": [
+        "get_unread_count",
+        "get_mailbox_stats",
+        "mark_emails",
+        "get_emails",
+        "read_email",
+        "search_emails",
+        "move_emails",
+        "get_email_headers",
+        "download_attachment",
+        "export_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Fixture folder chats_probe_flags seeded with 22 throwaway emails (ids 1-22, folder-relative). Non-default mixed initial state: UNREAD = ids 22,20,18,16,14,12 (6 of 22, deliberately interleaved and spread across both pages at default page_size=20); READ = the other 16; IMPORTANT set on ids 19,18,17 (overlapping the unread set so both axes were exercised together). get_unread_count confirmed baseline = 6 unread.",
+        "mutation": "mcp__email__mark_emails({email_ids:[\"1\"..\"22\"], status:\"read\"}) - bulk mark-all-read over the entire 22-member batch, executed unchanged. Confirmed effect: folder unread count 6 -> 0.",
+        "affected_state": [
+          "Per-email \\Seen (read/unread) flag for all 22 batch members - RESTORED exactly",
+          "Folder aggregate unread count (get_unread_count / get_mailbox_stats / get_folders) - RESTORED to 6",
+          "Per-email \\Flagged (important/not_important) flag on ids 19,18,17 - NOT capturable, NOT verifiable",
+          "Email body/subject/headers/attachments - not touched by mark_emails (re-read identical after mutation)",
+          "email_id identity - unchanged by mark_emails (ids stayed 1-22 throughout)"
+        ],
+        "artifact": "/work/artifacts/chats_probe_flags_backup.json - durable local JSON outside the mailbox, holding the explicit per-id read_state_map for all 22 batch members plus restore_groups keyed by prior status, capture method, baseline count, pagination coverage (pages 1-2 of 2 enumerated) and the id-identity caveat. Post-restore independent probe saved to /work/artifacts/post_restore_probe.json.",
+        "checks": [
+          "COVERAGE: artifact read_state_map contains exactly 22 entries == batch size; restore_groups unread(6) + read(16) = 22, no member missing.",
+          "CAPTURE FIDELITY vs GROUND TRUTH: probe-derived unread set {12,14,16,18,20,22} equals the seeded ground-truth unread set exactly - capture is correct, not merely count-consistent.",
+          "MUTATION OBSERVED: get_unread_count 6 -> 0 after the original bulk mark-read.",
+          "POST-RESTORE AGGREGATE: get_unread_count returned 6, matching baseline.",
+          "POST-RESTORE PER-EMAIL (independent re-probe, not a count check): re-ran the full differential probe from scratch after restore; derived unread set {12,14,16,18,20,22} and read set of the other 16; diffed against the artifact map -> 22/22 members compared, 0 mismatches.",
+          "TOOL-SIDE-EFFECT ISOLATION (sequential, one tool per step from a 7-unread baseline): read_email 7->6, get_email_headers 6->5, get_emails(page_size=5) 5->2 (marked ALL 3 unread emails on the listed page read), search_emails 4->3 (marked its matched hit read). get_unread_count and get_mailbox_stats caused no change and are the only safe observers.",
+          "AXIS INDEPENDENCE: marking ids 19,18,17 important did not alter the unread count (stayed 6), so the important call does not flip \\Seen.",
+          "CLEANUP/NO-COLLATERAL: probe folder and all 22 Sent copies deleted; final get_mailbox_stats and get_folders identical to pre-test baseline (190 messages, 21 unread, same 8 folders)."
+        ],
+        "scope": "Tested on a 22-member batch in one user-created IMAP folder, mixed read/unread initial state, both pagination pages at default page_size=20 and multi-page at page_size=5, with the read/unread axis driven by mark_emails status values 'read' and 'unread'. Restore issued as one mark_emails call per distinct prior-status group.",
+        "limitations": [
+          "IMPORTANT/\\Flagged AXIS IS UNRECOVERABLE: no available tool exposes it. read_email, get_email_headers, get_emails, search_emails, get_mailbox_stats, get_unread_count and get_folders were each inspected and NONE report a flagged/important indicator, and there is no flagged counter. Prior important state therefore cannot be captured or verified, and mark_emails status='important'/'not_important' is NOT reversible with confidence. Whether bulk mark read/unread clobbers \\Flagged could not be determined for the same reason.",
+          "THE OBVIOUS CAPTURE TOOLS ARE THEMSELVES DESTRUCTIVE: read_email, get_email_headers, search_emails and especially get_emails (which silently marks every email on the listed page read) destroy the unread state they would be used to capture. The proposed skill's premise that get_emails shows seen/flagged indicators is false. Backup MUST run the get_unread_count differential probe BEFORE any of these tools touch the folder; if the folder was already listed/read this turn, prior unread state is already lost and unrecoverable.",
+          "The capture technique is itself mutating (it marks each probed id read) - it is safe only because the derived map is persisted first and then replayed, and only for the read/unread axis.",
+          "Probe cost is O(n) calls with early-stop once the cumulative found-unread equals the baseline count; worst case (all unread at the tail of the probe order) is one mark + one count per batch member.",
+          "email_id is folder-relative and positional: move_emails renumbered the fixtures from INBOX ids 14-35 to chats_probe_flags ids 1-22 (date-ascending). A captured flag map is only valid while the emails stay in that folder; if a move intervenes the ids in the artifact no longer denote the same emails.",
+          "Not tested: flag restore across folder boundaries, on shared/read-only mailboxes, on the non-selectable parent folder 'Jobs', batches spanning multiple folders, or concurrent modification by another client.",
+          "Not tested against real production mail - only disposable chats_probe_* fixtures."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__get_unread_count({folder_name: \"<FOLDER>\"})  // baseline B, BEFORE any read/list tool touches the folder\n// differential probe, repeat per id, early-stop when discovered-unread == B:\nmcp__email__mark_emails({email_ids: [\"<ID>\"], status: \"read\"})\nmcp__email__get_unread_count({folder_name: \"<FOLDER>\"})  // count dropped => <ID> was unread; unchanged => <ID> was read\n// ... persist map to <ARTIFACT_PATH>, then the ORIGINAL action runs ...\n// restore, one call per distinct prior-status group:\nmcp__email__mark_emails({email_ids: [\"<PRIOR_UNREAD_ID_1>\", \"<PRIOR_UNREAD_ID_2>\"], status: \"unread\"})\nmcp__email__mark_emails({email_ids: [\"<PRIOR_READ_ID_1>\", \"<PRIOR_READ_ID_2>\"], status: \"read\"})\n// verify per-id by re-running the probe and diffing against <ARTIFACT_PATH>:\nmcp__email__get_unread_count({folder_name: \"<FOLDER>\"})",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Update an existing draft in place (overwrite)",
+      "skill": "BEFORE calling update_draft, page through get_drafts from page=1, reading the 'Page X/N' header and stopping when X==N -- do NOT loop until an empty page, because the backend CLAMPS out-of-range pages and re-returns the last page forever. Locate the target draft_id and persist its listed subject, to and updated_at into a durable file outside the draft store (e.g. /tmp/<name>.json), with byte lengths/sha256 so capture can be compared to source before destruction. CRITICAL: get_drafts returns ONLY draft_id, subject, to and updated_at -- body, html_body, cc and bcc are NOT exposed by get_drafts or by ANY other tool (read_email, get_emails, search_emails and export_emails all fail on drafts; there are no MCP resources; DraftService.export_drafts is unwired). Therefore: if this agent itself created or last wrote the draft, ALSO persist the exact save_draft/update_draft arguments it passed -- that provenance record is the only possible source for body/html_body/cc/bcc. If the draft pre-existed, record explicitly that body/html_body/cc/bcc are UNRECOVERABLE and that only subject and to can be restored. On restore, call update_draft with the SAME draft_id (this preserves draft identity; never delete_draft+save_draft, which mints a new id) and pass back every captured field. Note update_draft MERGES: omitted/None args leave the existing value untouched, so it can never blank a field back to unset, and updated_at is always rewritten to restore time.",
+      "applies_to": "update_draft",
+      "trigger": "update_draft",
+      "verified": true,
+      "verify_note": "Executed the full capture -> original mutation -> restore -> independent re-read cycle live. The proposed skill is substantially WRONG and was corrected: get_drafts exposes only draft_id/subject/to/updated_at, so it cannot persist body/html_body/cc/bcc as the pattern claimed. I exhausted every alternative read path (read_email, get_emails, search_emails, export_emails, MCP resources, disk) and confirmed drafts are held in an in-process dict with no reachable full-content reader; DraftService.export_drafts exists but is unwired. Restore via update_draft on the same draft_id works and preserves identity -- subject and to were restored and independently verified MATCH against the artifact, and the 4 dependant drafts were untouched including their timestamps. I also proved on an observable field that an originally-unset field cannot be blanked back. Kept as outcome=partial: guaranteed recovery covers subject+to for any draft, and all six fields only when the agent has provenance of its own prior write. All 6 chats_probe_* fixtures deleted; get_drafts now returns 'No drafts found'.",
+      "capture_tools": [
+        "get_drafts",
+        "update_draft",
+        "get_emails",
+        "read_email",
+        "search_emails",
+        "save_draft",
+        "delete_draft",
+        "export_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Drafts store empty at start. Seeded 6 chats_probe_* fixtures with non-default initial values. Target draft_1 'chats_probe_target_draft_A' had ALL six fields populated: subject, multi-line body with unicode (umlaut/checkmark) and embedded quotes (101 chars, sha256 76eca6d59879a06f), html_body (87 chars, sha256 6f513c1bd1b3b624), two-address to (64 chars), cc, bcc. draft_2..draft_5 were dependants/fillers to force pagination (6 drafts => 'Page 1/2' at page_size=3, 'Page 1/3' at page_size=2). draft_5 carried an oversized multi-line body+html to probe truncation. draft_6 'chats_probe_blanktest_C' was seeded with to UNSET (displayed 'To: None') to test blank-restoration.",
+        "mutation": "mcp__email__update_draft(draft_id='draft_1', subject='chats_probe_MUTATED_SUBJECT', body='MUTATED body - original destroyed', html_body='<p>MUTATED html</p>', to='chats_probe_mutated@example.invalid', cc='chats_probe_mutatedcc@example.invalid', bcc='chats_probe_mutatedbcc@example.invalid') -- executed unchanged, returned 'Draft draft_1 updated successfully'. Confirmed destructive: get_drafts then showed Subject 'chats_probe_MUTATED_SUBJECT' / To 'chats_probe_mutated@example.invalid'.",
+        "affected_state": [
+          "draft_1.subject (overwritten, then restored and read-verified MATCH)",
+          "draft_1.to (overwritten, then restored and read-verified MATCH)",
+          "draft_1.body (overwritten; restored by write-back, NOT read-verifiable)",
+          "draft_1.html_body (overwritten; restored by write-back, NOT read-verifiable)",
+          "draft_1.cc (overwritten; restored by write-back, NOT read-verifiable)",
+          "draft_1.bcc (overwritten; restored by write-back, NOT read-verifiable)",
+          "draft_1.draft_id identity (PRESERVED across update+restore: still 'draft_1')",
+          "draft_1.updated_at metadata (15:08:37.351676 -> 15:10:59.962785, NOT restorable)",
+          "dependants draft_2/3/4/5 (verified UNCHANGED in subject, to AND updated_at)",
+          "draft_6.to blanking probe (None -> set -> could NOT be returned to None)"
+        ],
+        "artifact": "/tmp/chats_probe_artifacts/draft_backup.json -- durable on-disk JSON outside the MCP draft store. Holds every pagination page of get_drafts (3 pages at page_size=2, all 5 pre-mutation drafts enumerated, total_drafts=5 cross-checked) plus a target_draft_full_content_provenance block with all six field values. Per-field byte lengths and sha256 prefixes were computed before destruction (subject 8c34b0cb, body 76eca6d5, html_body 6f513c1b, to 0e649aaa, cc 0246bd1c, bcc 0619eedd), so the artifact is content, not a reference.",
+        "checks": [
+          "Pagination exhaustion: get_drafts pages 1/2/3 at page_size=2 returned 2+2+1=5 entries == reported 'Total drafts: 5'. Page 4 did NOT return empty -- the server CLAMPS page>total_pages and re-returned page 3 verbatim, so an 'page until empty' loop never terminates; must stop on the 'Page X/N' N value.",
+          "Capture-vs-source before destruction: all 5 draft_ids/subjects/to values in the artifact matched the live listing; field lengths+sha256 recorded for the 6 target fields.",
+          "Post-restore independent re-read (get_drafts pages 1 and 2 at page_size=3) compared programmatically against the artifact: draft_id MATCH, subject MATCH, to MATCH for draft_1.",
+          "Identity check: restored draft kept id 'draft_1' and total_drafts stayed 6 -- update_draft restore does NOT mint a new id (unlike delete+save_draft, which increments the counter).",
+          "Dependant blast-radius check: draft_2/3/4/5 compared field-by-field including updated_at timestamps -- all UNCHANGED, mutation confined to the target.",
+          "Blanking limitation PROVEN on observable field: draft_6 to was None; update_draft(to='chats_probe_blank_set@example.invalid') set it; a restore call omitting `to` left it at 'chats_probe_blank_set@example.invalid'. Source (draft_service.py update_draft) confirms `if X is not None` merge semantics -- omitted args mean 'leave unchanged', never 'clear'.",
+          "Read-path exhaustion (proving the capture gap is real, not laziness): get_drafts tool source (management_tools.py:117-145) emits ONLY draft_id/subject/to/updated_at; read_email('draft_1') failed 'Invalid messageset'; get_emails(folder='Drafts') returned empty; search_emails(folder='Drafts') found nothing; export_emails(folder='Drafts') returned 'No emails found to export'; ListMcpResources for server 'email' returned no resources. Drafts live in an in-process dict (DraftService.drafts), not the IMAP Drafts folder (which reports 0 total), and a filesystem grep for the probe subject matched no file.",
+          "DraftService.export_drafts() exists in source but is NOT wired to any MCP tool, so it is unreachable from an agent."
+        ],
+        "scope": "Tested live against the configured disposable email MCP backend on a single agent-created draft whose full prior content was known by provenance, with 5 co-resident drafts, multi-page listings (page_size 2 and 3), oversized bodies, unicode/quote/newline content, and an initially-unset field. Restoration was executed via update_draft from the on-disk artifact and independently re-read.",
+        "limitations": [
+          "MAJOR / corrects the proposed skill: get_drafts does NOT return body, html_body, cc or bcc. The proposed pattern's premise ('persist the draft's COMPLETE prior content ... subject, plain body, html_body, to, cc, bcc' via get_drafts) is FALSE. No MCP tool of any kind exposes these four fields.",
+          "Consequence: for a PRE-EXISTING draft the agent did not itself write, body/html_body/cc/bcc are UNCAPTURABLE and therefore UNRECOVERABLE. Only subject and to can be backed up and restored. This case was NOT restorable in testing and is the reason outcome is 'partial', not 'full'.",
+          "Full six-field restore was only possible here because THIS agent created the draft and recorded its own save_draft arguments (provenance capture). That path is unavailable to a backup agent arriving after the fact.",
+          "Restoration of body/html_body/cc/bcc is write-verified only (update_draft returned success); it can NOT be read back and confirmed, so byte-level fidelity of those four fields is unproven by observation.",
+          "updated_at is always rewritten to restore time and cannot be restored to its original value. created_at is not observable at all.",
+          "A field that was originally unset/None cannot be returned to unset -- update_draft treats omitted args as 'no change'. Passing an empty string would store '', which is not identical to None. Observed on draft_6.",
+          "Attachments were not testable: save_draft/update_draft expose no attachment parameter, so drafts in this backend cannot hold attachments; the proposed skill's attachment caveat is moot here.",
+          "Truncation of long bodies in the listing could not be assessed because bodies never appear in get_drafts output at all."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__get_drafts({\"page\": 1, \"page_size\": 20})  # then repeat for page=2..N using the N from the 'Page X/N' header; stop at X==N, never on an empty page\nmcp__email__update_draft({\"draft_id\": \"<DRAFT_ID>\", \"subject\": \"<ORIGINAL_SUBJECT>\", \"body\": \"<ORIGINAL_BODY>\", \"html_body\": \"<ORIGINAL_HTML_BODY>\", \"to\": \"<ORIGINAL_TO>\", \"cc\": \"<ORIGINAL_CC>\", \"bcc\": \"<ORIGINAL_BCC>\"})  # omit any field that was never captured; omitting leaves the mutated value in place rather than clearing it\nmcp__email__get_drafts({\"page\": 1, \"page_size\": 20})  # re-read and confirm subject/to match the artifact and draft_id is unchanged",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Delete a saved draft",
+      "skill": "BEFORE calling delete_draft, page get_drafts to exhaustion (increment page until 'Page N/N') and persist the target's ID, Subject, To and Updated into a durable file artifact outside the mailbox. CRITICAL: get_drafts does NOT expose body, html_body, cc or bcc, and NO MCP tool can read them back (read_email and get_email_headers fail on draft ids with IMAP 'FETCH illegal in state AUTH'/'Invalid messageset'; get_emails, search_emails and export_emails on the 'Drafts' folder return empty because drafts are not IMAP messages). Therefore: (a) if the draft's full text is available in the conversation/prior save_draft or update_draft args, write subject, body, html_body, to, cc and bcc verbatim into the artifact file and verify the file holds the real text (non-trivial length, not an id or listing row) before deleting; (b) if it is NOT available, treat the body/html_body/cc/bcc as UNRECOVERABLE, warn the user and get confirmation before deleting, since save_draft requires a body that cannot be reconstructed. To restore, call save_draft with the captured fields; this creates a NEW draft_id (e.g. draft_1 -> draft_6) and a new Updated timestamp, so record the old->new id mapping and report the lost id, lost timestamp and any attachment as unrecoverable.",
+      "applies_to": "delete_draft",
+      "trigger": "delete_draft",
+      "verified": true,
+      "verify_note": "Executed the full capture -> delete_draft -> save_draft restore -> independent re-read cycle live. The proposed skill's central premise is FALSE and was corrected: get_drafts does NOT return body/html_body/cc/bcc (only ID, Subject, To, Updated), and no other MCP tool can read a draft's content (read_email/get_email_headers fail with IMAP state errors, get_emails/search_emails/export_emails on 'Drafts' return empty because drafts are not IMAP messages). Restore of draft_1 succeeded in full ONLY because the verifier already held the original save_draft args; the parallel control case (draft_4, captured from the listing alone) could not be restored and lost its body permanently. Deletion itself was confirmed real (5->4, target absent from all pages) and siblings were not renumbered. Hence outcome=partial: recovery is guaranteed only for draft content the agent already knows, and never preserves draft_id or timestamp.",
+      "capture_tools": [
+        "get_drafts",
+        "save_draft",
+        "get_emails",
+        "read_email",
+        "search_emails",
+        "get_email_headers",
+        "update_draft",
+        "delete_draft",
+        "export_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Backend started with zero drafts. Seeded 5 chats_probe_* drafts with non-default fields: draft_1 = TARGET (multi-line body with tab/trailing-space/unicode '\u03b1 \u03b2 \u03b3 \u6f22\u5b57' + END_MARKER_7, html_body, two To recipients, cc, bcc), draft_2..draft_5 = fillers with varying To/cc/bcc/None combinations. page_size=2 gave 3 pages (Total drafts: 5), exercising pagination.",
+        "mutation": "mcp__email__delete_draft({draft_id: 'draft_1'}) executed unchanged (no archive/hide substitute); later also delete_draft({draft_id:'draft_4'}) for the listing-only-capture case.",
+        "affected_state": [
+          "Target draft draft_1 (subject, body, html_body, to, cc, bcc, Updated timestamp) - removed",
+          "Draft collection count: 5 -> 4 -> 5 after restore",
+          "Pagination shape: 'Page 1/3' -> 'Page 1/2' (dependant listing state)",
+          "Sibling drafts draft_2/draft_3/draft_5: observed NOT renumbered or altered by the delete",
+          "IMAP 'Drafts' folder: observed 0 total before and after - drafts are NOT IMAP messages, so no IMAP-side dependant state exists"
+        ],
+        "artifact": "/tmp/chats_probe_backup/draft_1_backup.json (md5 c860a0954d4fcca632e80b06a6254da9, holds the literal 91-char body text, html_body, to, cc, bcc) plus /tmp/chats_probe_backup/drafts_listing_allpages.txt (all 3 pages of get_drafts). Both outside the action's destructive scope.",
+        "checks": [
+          "PRE-DESTRUCTION artifact-vs-source: artifact 'to' and 'subject' compared equal to the live get_drafts page-3 row for draft_1; artifact body verified to contain real text (len=91, repr 'Line1 target body\\nLine2 with tab\\tand tra'), not an id or listing row.",
+          "DISCOVERY (negative, decisive): get_drafts returns ONLY ID/Subject/To/Updated - it never returns body, html_body, cc or bcc, so the proposed 'page get_drafts to persist full content' is impossible as written.",
+          "No alternate reader exists: read_email('draft_1') -> 'FETCH illegal in state AUTH'; get_email_headers('draft_1') -> 'BAD Invalid messageset'; get_emails(folder='Drafts') -> empty; search_emails in Drafts -> no results; export_emails(folder='Drafts') -> 'No emails found to export'.",
+          "POST-DELETE re-read: get_drafts 'Total drafts: 4', draft_1 absent from every page - deletion confirmed real.",
+          "RESTORE: save_draft with the captured fields returned 'ID: draft_6'; get_drafts then showed 'Total drafts: 5' with Subject 'chats_probe_draft_TARGET_7 \u03b1 \u00fcn\u00efcode' and To 'chats_probe_to1@example.invalid, chats_probe_to2@example.invalid' byte-identical to the pre-delete row (unicode preserved).",
+          "IDENTITY CHANGE recorded: draft_1 -> draft_6; Updated 2026-09-11T15:13:20.858724 -> 2026-09-11T15:14:23.741993 (original creation/update timestamp NOT restorable).",
+          "LISTING-ONLY CONTROL CASE: deleted draft_4 holding only what get_drafts exposes, then attempted restore - save_draft requires 'body', which was unknowable, so it was recreated as draft_7 with a placeholder; the original body 'filler three body' was permanently lost. This proves a get_drafts-based capture alone does NOT preserve the draft.",
+          "CLEANUP: all chats_probe_* drafts deleted; get_drafts -> 'No drafts found' (sandbox returned to initial state)."
+        ],
+        "scope": "Tested on the live email MCP draft store: single-draft delete, drafts with cc/bcc/html_body/multi-recipient/unicode/multi-line bodies, drafts with no To, a 5-draft set paginated at page_size=2 across 3 pages, and both the author-known-content case and the pre-existing-draft (listing-only) case.",
+        "limitations": [
+          "PRIMARY LOSS: body, html_body, cc and bcc are write-only through this MCP - no tool reads them back. For any draft the agent did NOT itself author (or whose content is not already in conversation context), these fields CANNOT be captured and are permanently lost on delete. Full recovery was only achievable because the verifier held the exact save_draft creation args.",
+          "Restored body/html_body/cc/bcc could not be independently re-read server-side after restore; only subject and To were verifiable via get_drafts. Equality of the unreadable fields rests on having written back the identical artifact values.",
+          "draft_id always changes on restore (draft_1 -> draft_6); the old id is not reusable, so any external reference to the old id breaks. Old->new mapping must be recorded.",
+          "Original Updated/creation timestamp is not settable and is replaced with the restore time.",
+          "Attachments on drafts were not testable - save_draft exposes no attachments parameter, so any draft attachment is unrecoverable.",
+          "Bulk/mass draft deletion was not tested (no bulk draft-delete tool exists); only per-id delete_draft was exercised.",
+          "The draft store is remote - no filesystem copy exists on this host (grep of the local filesystem for the probe subject found nothing), so no out-of-band file backup is possible."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__save_draft({subject: \"<CAPTURED_SUBJECT>\", body: \"<CAPTURED_BODY>\", html_body: \"<CAPTURED_HTML_BODY>\", to: \"<CAPTURED_TO>\", cc: \"<CAPTURED_CC>\", bcc: \"<CAPTURED_BCC>\"})  -> returns a NEW id, e.g. \"Draft saved successfully with ID: <NEW_DRAFT_ID>\"; then verify with mcp__email__get_drafts({page: 1, page_size: 20}) and confirm Subject/To of <NEW_DRAFT_ID> match <CAPTURED_SUBJECT>/<CAPTURED_TO>, and record the mapping <OLD_DRAFT_ID> -> <NEW_DRAFT_ID>.",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Import emails into the mailbox (may duplicate/overwrite folder state)",
+      "skill": "BEFORE running import_emails, pin the pre-import state of every folder the import can touch: (1) get_folders to record the exact folder list (the import auto-creates folders when preserve_folders=true); (2) get_mailbox_stats for per-folder total AND unread counts; (3) get_emails(folder, page=N, page_size=50) paged to exhaustion on each target folder to record the complete set of existing email ids, and read_email on each to capture Message-ID, subject, sender, date, body and attachment names/sizes; (4) export_emails(folder=<target>, export_path=...) to write a durable server-side backup file of the real content. Verify the captured row count equals get_mailbox_stats total before proceeding. On restore, re-list the folder paged to exhaustion, compute new_ids = post_ids MINUS pre_ids (diff by email ID, NOT by Message-ID - imported duplicates reuse the original Message-ID) and delete_emails(new_ids); delete_folder only for folders absent from the captured get_folders list. Finally re-apply flags with mark_emails, because delete_emails clears \\Seen state on surviving mail; confirm with get_mailbox_stats that total AND unread match the pinned pre-import numbers. LIMITATIONS to record: per-message read/unread and important flags are not exposed by any read tool, and if the import merged into or overwrote an existing message the original is not reconstructible from the inventory - restore the export file instead.",
+      "applies_to": "import_emails",
+      "trigger": "import_emails",
+      "verified": true,
+      "verify_note": "Executed end to end on the live backend. Seeded chats_probe_import with 24 messages (2 pages, attachments, 3 unread, 2 important), captured a server-side export artifact plus a 24-row local inventory (md5 a52131bce8580b9aef521d3926d863ba) and pinned get_folders/get_mailbox_stats. Ran the real import_emails (24 -> 48, duplicates appended as ids 25-48 with IDENTICAL Message-IDs to the originals - so the proposed Message-ID diff is ambiguous and must be an id diff). Restored with delete_emails(['25'..'48']); re-read all 24 survivors and the rebuilt inventory was byte-identical to the pre-capture, ids un-renumbered. One real loss surfaced: delete_emails cleared unread flags (3 -> 0) on surviving pre-existing mail; repaired with mark_emails to reach 24 total/3 unread, but per-message read state is not readable via any tool, so that part of the backup is only possible from external knowledge. Separately verified preserve_folders=true auto-creates a missing folder (9 -> 10 folder rows) and delete_folder restores the exact pre-state folder list.",
+      "capture_tools": [
+        "get_folders",
+        "get_mailbox_stats",
+        "get_emails",
+        "read_email",
+        "export_emails",
+        "delete_emails",
+        "delete_folder",
+        "mark_emails",
+        "import_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Throwaway folder chats_probe_import seeded with 24 messages (ids 1-24, spanning 2 pages at page_size=20, 12 of them with attachments) plus non-default flags: ids 1,2,3 UNREAD and ids 5,6 flagged important. get_mailbox_stats('chats_probe_import') = 24 total / 3 unread; get_folders = 9 rows (chats_probe_import, Jobs, Jobs.2026, Jobs.2025, Sent, Junk, Drafts, Trash, INBOX). Second fixture: folder chats_probe_src deleted beforehand so the import had to create it.",
+        "mutation": "mcp__email__import_emails({import_path:'/srv/harbrook/mail/lab/exports/Jobs.2026_export_20260911_151624.json', target_folder:'chats_probe_import', preserve_folders:false}) -> 'Successfully imported 24/24'. Second run: mcp__email__import_emails({import_path:'/srv/harbrook/mail/lab/exports/chats_probe_src_export_20260911_151959.json', preserve_folders:true}) -> auto-created the missing folder chats_probe_src with 5 messages.",
+        "affected_state": [
+          "chats_probe_import message set: 24 -> 48 (24 duplicate copies appended as ids 25-48; pre-existing ids 1-24 unchanged and NOT renumbered)",
+          "Duplicates carry IDENTICAL Message-IDs to the originals (id 25 and id 1 both <178909722716.2843878.9763261094267378794@mcp.com>), so Message-ID alone cannot separate new from old",
+          "Folder list: preserve_folders=true created a brand-new folder (chats_probe_src) that did not exist before the import, growing get_folders from 9 to 10 rows",
+          "Per-folder counts in get_mailbox_stats (folder total 24->48, mailbox total 214->238)",
+          "Read/unread flags of pre-existing mail: NOT changed by the import itself (still 3 unread after import), but cleared to 0 unread by the delete_emails restore step",
+          "Pagination: folder went from 2 pages to 1 page at page_size=50 / 3 pages at page_size=20 - inventory had to be paged to exhaustion to be complete"
+        ],
+        "artifact": "Durable, outside the import's scope: (a) server-side full export written BEFORE the mutation via export_emails -> /srv/harbrook/mail/lab/exports/chats_probe_import_export_20260911_151821.json (24 emails incl. bodies+attachments); (b) local inventory file /work/chats_probe_artifacts/pre_import_inventory.tsv - 24 rows of id, Message-ID, subject, from, date, body text, attachment name|size, md5 a52131bce8580b9aef521d3926d863ba; plus pinned get_folders (9 rows) and get_mailbox_stats (24 total/3 unread) snapshots.",
+        "checks": [
+          "Pre-destruction fidelity check: artifact row count 24 == get_mailbox_stats total 24, and every row carries full body + Message-ID + attachment name/size (not just a listing)",
+          "Post-import diff: ids present after = 1..48, ids present before = 1..24 -> new set computed as exactly {25..48} (24 items), matching the reported 'imported 24/24'",
+          "Restore executed: delete_emails(['25'..'48']) -> 'Successfully deleted 24/24 emails'",
+          "Independent re-read after restore: get_mailbox_stats = 24 total (back to baseline); get_emails pages 1-2 show ids 1..24 unchanged and un-renumbered",
+          "Content equality: re-read all 24 with read_email and rebuilt /work/chats_probe_artifacts/post_restore_inventory.tsv -> md5 a52131bce8580b9aef521d3926d863ba, BYTE-IDENTICAL to the pre-capture (diff empty). Identity (ids), Message-IDs, subjects, senders, dates, bodies, attachment filenames and sizes all match",
+          "Dependant check FAILED then repaired: unread count went 3 -> 0 across the delete_emails restore step (delete_emails sets \\Seen on the folder). Re-applied with mark_emails(['1','2','3'],'unread') -> get_mailbox_stats back to 24 total / 3 unread",
+          "Folder-creation variant: get_folders pinned at 9 rows -> import with preserve_folders=true produced 10 rows (chats_probe_src, 5 total) -> delete_folder('chats_probe_src') -> get_folders back to exactly the 9 pre-state rows"
+        ],
+        "scope": "Tested on a disposable IMAP sandbox folder (chats_probe_import, 24 msgs, multi-page, attachments, mixed read/unread/important flags) for two import modes: preserve_folders=false into an existing folder, and preserve_folders=true creating a new folder. Both restores executed and independently re-read.",
+        "limitations": [
+          "Read/unread flags on PRE-EXISTING mail are cleared by the delete_emails restore step (observed 3 unread -> 0). They can only be re-applied if the unread ID set is known externally: no read tool (get_emails, search_emails, read_email, get_email_headers, get_mailbox_stats) exposes per-message read state - only aggregate counts - so the backup must be assumed lossy for flags unless the folder was uniformly read/unread.",
+          "'important' flags were set on ids 5,6 but no tool reports per-message flag state, so their survival could not be independently verified.",
+          "If an import MERGES INTO or OVERWRITES an existing message rather than appending, the original cannot be reconstructed from an id/Message-ID inventory alone. Not observed in this backend (imports always appended new ids 25-48), and therefore untested.",
+          "Duplicate Message-IDs mean the diff MUST be by folder-relative email id (or by count position), not by Message-ID; on a backend that assigns ids by date order instead of append order the new ids could interleave with old ones - untested here.",
+          "Email ids are folder-relative sequence numbers resolved against the last-listed folder; a restore must call get_emails on the target folder first to bind the id namespace.",
+          "Imports targeting real (non-probe) folders, imports of .eml files or directories, and imports large enough to hit server quota were not tested."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__get_emails({folder: \"<TARGET_FOLDER>\", page: 1, page_size: 50})  // re-list post-import, paging to exhaustion; compare against the captured pre-import id list\nmcp__email__delete_emails({email_ids: [\"<NEW_ID_1>\", \"<NEW_ID_2>\", \"...\", \"<NEW_ID_N>\"]})  // ONLY ids absent from the pre-import capture (e.g. 25..48)\nmcp__email__delete_folder({folder_name: \"<FOLDER_CREATED_BY_IMPORT>\"})  // only for folders absent from the captured get_folders list\nmcp__email__mark_emails({email_ids: [\"<PREVIOUSLY_UNREAD_ID_1>\", \"<PREVIOUSLY_UNREAD_ID_2>\"], status: \"unread\"})  // delete_emails clears \\Seen on survivors\nmcp__email__get_mailbox_stats({folder_name: \"<TARGET_FOLDER>\"})  // must equal pinned pre-import totals: <PRE_TOTAL> total / <PRE_UNREAD> unread\nmcp__email__get_folders({})  // must equal the pinned pre-import folder list",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Export emails to a backup file (export_emails silently marks the fetched folder's mail as READ)",
+      "skill": "export_emails is NOT read-only: it clears unread status on every message in the folder it touches (whole folder, even with max_emails set). BEFORE calling it, capture get_mailbox_stats(folder_name) and get_unread_count(folder_name) for every folder involved, and - because no tool reports per-message read state - record the unread ID set out-of-band by any available means (e.g. take the folder's unread count and the id list from get_emails paged to exhaustion immediately before, or avoid exporting folders with unread mail). After the export, restore with mark_emails(<previously unread ids>, 'unread') and verify the unread count matches the pinned value. Also capture the server-returned export path, since export_path is rewritten into the server's exports directory.",
+      "recipe": "mcp__email__mark_emails({email_ids: [\"<PREVIOUSLY_UNREAD_ID_1>\", \"<PREVIOUSLY_UNREAD_ID_2>\", \"<PREVIOUSLY_UNREAD_ID_3>\"], status: \"unread\"})  // re-apply the pinned unread set cleared by the export\nmcp__email__get_mailbox_stats({folder_name: \"<EXPORTED_FOLDER>\"})  // must read back <PRE_TOTAL> total / <PRE_UNREAD> unread",
+      "applies_to": "export_emails",
+      "trigger": "export_emails",
+      "verified": true,
+      "verify_note": "Harvested during the import test and confirmed deliberately: exporting a folder sets \\Seen on its messages. Probe folder went 3 unread -> 0 unread from a single export_emails call with max_emails=2, and the same zeroing was observed on Jobs.2026 (10->0) and Jobs.2025 (11->0). Content is untouched (byte-identical re-read). mark_emails restored the probe folder's 3 unread, but only because the unread ids were known externally - get_emails, search_emails, read_email and get_email_headers all omit read state, so the real folders' unread sets could not be reconstructed.",
+      "capture_tools": [
+        "get_mailbox_stats",
+        "get_unread_count",
+        "get_emails",
+        "mark_emails",
+        "export_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "chats_probe_import: 24 total / 3 unread (ids 1,2,3 marked unread via mark_emails). Also observed on real folders at session start: Jobs.2026 = 24 total/10 unread, Jobs.2025 = 18 total/11 unread, mailbox total 21 unread.",
+        "mutation": "mcp__email__export_emails({folder:'chats_probe_import', export_path:'/tmp/chats_probe_flagtest.json', max_emails:2}) -> 'Successfully exported 2 emails to /srv/harbrook/mail/lab/exports/chats_probe_import_export_20260911_151658.json'",
+        "affected_state": [
+          "\\Seen flag on the exported folder's messages: get_mailbox_stats('chats_probe_import') went 24 total/3 unread -> 24 total/0 unread",
+          "The flag change hit the WHOLE folder even though max_emails=2 limited the written output to 2 messages",
+          "Same effect observed earlier on real folders: Jobs.2026 10 unread -> 0 and Jobs.2025 11 unread -> 0 after exporting them; mailbox unread 21 -> 0",
+          "Message content, ids, Message-IDs and counts are unchanged by export"
+        ],
+        "artifact": "Aggregate unread counts pinned via get_mailbox_stats / get_unread_count before export (the ONLY flag state any tool exposes) plus the externally-known unread id list; message content itself is untouched so /work/chats_probe_artifacts/pre_import_inventory.tsv doubles as the content baseline.",
+        "checks": [
+          "Before: get_mailbox_stats('chats_probe_import') = 24 total, 3 unread",
+          "After export: 24 total, 0 unread -> mutation of protected state positively observed (so NOT a 'delete' verdict)",
+          "Restore executed: mark_emails(['1','2','3'],'unread') -> 'Successfully marked 3/3'; re-read get_mailbox_stats = 24 total, 3 unread (restored)",
+          "Content unaffected: read_email on all 24 after the export still matched the pre-export inventory byte for byte (md5 a52131bce8580b9aef521d3926d863ba)",
+          "Discoverability check: get_emails and search_emails listings render no read/unread marker (unread id 1 is indistinguishable from read id 6 in search output), and read_email / get_email_headers return no flag line - so the unread ID SET is not obtainable from any read tool"
+        ],
+        "scope": "Tested on a 24-message disposable folder with 3 unread; confirmed independently on two real folders (Jobs.2026, Jobs.2025) where the same zeroing occurred. Both full-folder export and max_emails-limited export produce the effect.",
+        "limitations": [
+          "Recovery is only possible when the unread ID set is known out-of-band. No tool exposes per-message read state, so after an un-backed-up export the original unread set is UNRECOVERABLE - this happened in this session to Jobs.2026 (10 unread) and Jobs.2025 (11 unread), whose per-message unread identity is permanently lost (counts were recorded, ids were not).",
+          "'important'/flagged state was not independently observable, so its behaviour under export is untested.",
+          "export_all_folders=true was not exercised; by extrapolation it would clear \\Seen mailbox-wide, but that is untested.",
+          "export_path is rewritten by the server into its own exports directory (/srv/harbrook/mail/lab/exports/<FOLDER>_export_<TIMESTAMP>.json); the caller-supplied path is not honoured, so the returned path must be captured for any later import."
+        ]
+      },
+      "non_mutating": false,
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Send an email (irreversible external side effect)",
+      "skill": "send_email is IRREVERSIBLE externally - the SMTP hand-off cannot be undone; only the local mailbox footprint is recoverable. BEFORE the call, persist a complete forensic record to a durable file OUTSIDE the mailbox (e.g. /work/chats_probe_artifacts/<name>_PRE.json): the exact to/cc/bcc/subject/body/html_body plus every attachment path with size+md5, and the pre-mutation baseline from get_mailbox_stats (+ get_unread_count). Do NOT rely on export_emails as the backup: it ignores export_path and writes to the MCP server's own filesystem, which the agent host cannot read. AFTER the send, locate BOTH artifacts it creates - the Sent copy AND (when the recipient is local) the delivered INBOX copy, which arrives UNREAD - by paging search_emails(query, folder='Sent') and search_emails(query, folder='INBOX') to exhaustion, then read_email + get_email_headers on each and append the verbatim bodies, html, headers and Message-ID to a POST artifact; both copies are needed because the Sent copy keeps Bcc but has empty Date/Message-ID while the delivered copy has Date/Message-ID but no Bcc. Compare artifact content to the pre-send args (string equality / checksums, not counts) before any destruction. To restore the mailbox to its prior state, delete BOTH copies - and because read_email/get_email_headers/delete_email take no folder argument and resolve ids against the LAST folder selected, ALWAYS issue search_emails or get_emails on the target folder immediately before delete_email so the id binds to the intended folder; deleting id 14 from INBOX after an INBOX search left Sent id 14 untouched, confirming the pinning works. delete_email expunges outright (Trash stays 0), so no Trash cleanup is needed and no hidden copy remains. Finally re-verify with get_mailbox_stats + get_unread_count + a repeat search in both folders. ALWAYS report the external delivery as a hard, unrecoverable limitation, and report attachment bytes as inaccessible (download_attachment lands on the server filesystem only).",
+      "applies_to": "send_email",
+      "trigger": "send_email",
+      "verified": true,
+      "verify_note": "Executed live. send_email created TWO local artifacts (Sent id 136 and delivered INBOX id 14, unread), not one as the proposed pattern assumed; stats went 135/13/190/0-unread -> 136/14/192/1-unread. Pre-send args + both stored copies (bodies, html, verbatim headers, Message-ID) were persisted to /work/chats_probe_artifacts/*.json and byte-compared to the send args BEFORE restore (all equal). Restore by delete_email on both pinned ids returned the mailbox exactly to baseline (135/13/190, unread 0, Trash still 0, neighbours intact). Key correction to the proposed skill: read_email/get_email_headers/delete_email accept NO folder parameter and resolve the id against the LAST folder selected by get_emails/search_emails - read_email('136') failed after an INBOX search, and read_email('13') returned the Sent message while Sent was selected, so a delete without first pinning the folder can hit the wrong message. Also corrected: the proposed pattern missed the delivered copy and its unread flag, and export_emails is NOT a valid backup target (server-side path only). External delivery remains irreversible.",
+      "capture_tools": [
+        "get_mailbox_stats",
+        "get_unread_count",
+        "get_folders",
+        "search_emails",
+        "get_emails",
+        "read_email",
+        "get_email_headers",
+        "delete_email",
+        "send_email",
+        "export_emails",
+        "download_attachment"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Baseline captured before any mutation (mcp__email__get_mailbox_stats + get_folders): Jobs.2026=24, Jobs.2025=18, Sent=135 (max id 135), Junk=0, Drafts=0, Trash=0, INBOX=13 (max id 13), overall 190, unread 0. Fixture attachment /work/chats_probe_artifacts/chats_probe_attach_7_9.txt (77 bytes, md5 9450f86c56383bd7b12a60cd15a5b320) created; non-default values used: multi-field send with cc AND bcc AND html_body, self-addressed to calibration@mcp.com so both the Sent copy and the delivered copy land in the disposable sandbox mailbox.",
+        "mutation": "mcp__email__send_email({to:'calibration@mcp.com', subject:'chats_probe_send_7_9 recovery verification probe', body:'CHATS_PROBE_BODY_7_9\\nplain text line two\\nnonce: 7-9-alpha', html_body:'<html><body><p>CHATS_PROBE_HTML_7_9</p><b>bold</b></body></html>', cc:'calibration@mcp.com', bcc:'calibration@mcp.com'}) -> 'Email sent successfully to calibration@mcp.com'. Executed unchanged (no archive/hide substitute, no transaction rollback).",
+        "affected_state": [
+          "Sent folder: new message id 136 (Sent 135->136); headers retained Bcc but had EMPTY Date and EMPTY Message-ID",
+          "INBOX: delivered copy id 14 (INBOX 13->14), flagged UNREAD (mailbox unread 0->1); carries Return-Path/Received/Message-Id <4FBBDC5F-CD7F-4F2B-90C7-7048BD07E3BC.1@mail.example.com> and Date, but NO Bcc header",
+          "Overall mailbox total 190->192; unread count 0->1",
+          "External SMTP delivery via mail.example.com (Haraka/3.0.3) - left the server, outside any local rollback",
+          "Trash: unaffected (0) - delete_email expunges rather than moving to Trash (observed)",
+          "Untouched neighbours re-checked: Sent ids 135/134/133 and Sent id 14 unchanged after restore"
+        ],
+        "artifact": "Durable local files OUTSIDE the mailbox: /work/chats_probe_artifacts/chats_probe_send_7_9_PRE.json (exact send_email args, attachment manifest with md5, full pre-mutation mailbox stats) and /work/chats_probe_artifacts/chats_probe_send_7_9_POST.json (full stored copies: both folders, ids, verbatim text_body + html_body, verbatim raw headers from get_email_headers, Message-ID, flags). Server-side mcp__email__export_emails was tested and is NOT usable as the backup: it IGNORED export_path='/work/...' and wrote to its own configured dir '/srv/harbrook/mail/lab/exports/INBOX_export_20260911_152455.json', which is on the MCP server's filesystem and not readable from the agent host.",
+        "checks": [
+          "Pre-vs-artifact fidelity BEFORE restore (python3 equality, not counts alone): Sent copy text_body == send args body True, html_body == html_body True, bcc == bcc True; INBOX copy body True, html True; subject equal across args/Sent/INBOX True",
+          "Count check post-send: get_mailbox_stats Sent=136, INBOX=14, unread=1, total=192 (matches +1 Sent +1 delivered)",
+          "Pagination exercised to exhaustion: get_emails(folder='Sent', page_size=5) 28 pages post-send / 27 pages post-restore, walked page 1, 25 and last page 28 (id 1); search_emails paged 1/1 in both Sent and INBOX",
+          "Restore executed: search_emails(folder='Sent') to pin folder context -> delete_email('136') -> 'Email 136 deleted successfully'; search_emails(folder='INBOX') -> delete_email('14') -> 'Email 14 deleted successfully'",
+          "Independent post-restore re-read: search_emails('chats_probe_send_7_9', folder='Sent') -> 'No emails found'; same query in INBOX -> 'No emails found'",
+          "State equality to baseline: get_mailbox_stats -> Jobs.2026=24, Jobs.2025=18, Sent=135, Junk=0, Drafts=0, Trash=0, INBOX=13, total=190; get_unread_count -> 0 (unread side-effect reverted)",
+          "No Trash residue: get_emails(folder='Trash') -> 'Folder Trash is empty' (delete_email is a real expunge, so restore leaves no hidden copy)",
+          "Collateral check: Sent page 1 still 135/134/133 and Sent page 25 still shows Sent id 14 'site visit 19/04 - Halton Pharmaceutical Services' intact - deleting INBOX id 14 did not touch the same-numbered Sent message",
+          "ID-resolution hazard PROVEN: read_email('136') FAILED ('Invalid messageset') right after an INBOX search, and read_email('13') returned the SENT message 'quotation 67261' while Sent was the last selected folder. read_email/get_email_headers/delete_email take NO folder argument and resolve ids against the LAST folder selected by get_emails/search_emails"
+        ],
+        "scope": "Tested live on the disposable sandbox account calibration@mcp.com: one plain+HTML multipart send with to+cc+bcc, self-delivered so both the Sent copy and the delivered INBOX copy were observable; capture -> unchanged original send -> delete-based restore -> independent re-read and stats comparison. Recovery proven for the LOCAL mailbox footprint only.",
+        "limitations": [
+          "HARD, IRREVERSIBLE: the message was accepted by SMTP and delivered (Received header from mail.example.com, Haraka/3.0.3). Deleting the Sent/delivered copies does NOT recall it from recipients. For a non-self recipient nothing is recoverable - this must be reported as unrecoverable external side effect, never as 'restored'.",
+          "ATTACHMENT SEND UNTESTED: send_email with attachments=['/work/chats_probe_artifacts/chats_probe_attach_7_9.txt'] FAILED with 'Attachment error: File does not exist' - the MCP server has a separate filesystem (confirmed: /srv/harbrook/mail/lab/exports does not exist on the agent host). Attachment paths must be server-side, which the verifier cannot create, so an attachment-bearing send and the fidelity of attachment bytes in the stored copy were NOT exercised.",
+          "download_attachment writes to the server's configured download path, not to the agent host, so attachment CONTENT cannot be captured into a durable local artifact - only filename/size/mime from read_email. Report as inaccessible content.",
+          "export_emails ignores export_path and writes server-side only; it is not a usable local backup and its output file cannot be deleted with any available tool (one leftover export file was produced during discovery: /srv/harbrook/mail/lab/exports/INBOX_export_20260911_152455.json).",
+          "IDENTITY IS NOT RESTORABLE: restore is deletion, so nothing is re-created; but re-sending after a restore would allocate a fresh id (136 is now free again) and a NEW Message-ID - the original Message-ID/UID/Date cannot be reproduced.",
+          "Bcc is recorded ONLY on the Sent copy and in the pre-send args (the delivered copy has no Bcc header); the Sent copy in turn has EMPTY Date and EMPTY Message-ID. Neither stored copy alone is a complete forensic record - both plus the pre-send args are required.",
+          "Not tested: sends to genuinely external third-party domains, bounce/NDR handling, sends with >1 recipient per field, mailbox quota effects, and whether an SMTP-level failure can leave a partial Sent copy."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__search_emails({query: \"<PROBE_SUBJECT_KEYWORD>\", folder: \"Sent\", page: 1, page_size: 20})  // pins folder context AND returns <SENT_COPY_ID>\nmcp__email__delete_email({email_id: \"<SENT_COPY_ID>\"})\nmcp__email__search_emails({query: \"<PROBE_SUBJECT_KEYWORD>\", folder: \"INBOX\", page: 1, page_size: 20})  // pins INBOX context AND returns <DELIVERED_COPY_ID>\nmcp__email__delete_email({email_id: \"<DELIVERED_COPY_ID>\"})\nmcp__email__search_emails({query: \"<PROBE_SUBJECT_KEYWORD>\", folder: \"Sent\", page: 1, page_size: 20})  // expect: No emails found\nmcp__email__search_emails({query: \"<PROBE_SUBJECT_KEYWORD>\", folder: \"INBOX\", page: 1, page_size: 20})  // expect: No emails found\nmcp__email__get_mailbox_stats({})  // expect Sent=<SENT_COUNT_BEFORE>, INBOX=<INBOX_COUNT_BEFORE>, Trash=0\nmcp__email__get_unread_count({})  // expect <UNREAD_BEFORE>",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Reply to an email (irreversible external side effect)",
+      "skill": "BEFORE replying: read_email + get_email_headers on the source email_id and write the full body, Subject, From/To/Cc, Date and Message-ID to a LOCAL file artifact (do NOT rely on export_emails - it ignores export_path and writes to an unreachable server-side directory; listings and search results are not backups). Record the EXACT reply args (body, html_body, cc, bcc, reply_all) and the pre-mutation counts from get_mailbox_stats for INBOX and Sent. Embed a unique token in the reply body so the copies can be re-located by content. AFTER the call: re-run get_mailbox_stats and compare - a reply typically increments Sent, and ALSO increments INBOX whenever the reply recipient is the mailbox account itself. Locate each copy with search_emails on the unique token, paging to exhaustion, in BOTH Sent and INBOX. To restore: re-resolve the delivered INBOX copy's id with search_emails IMMEDIATELY before deleting (ids re-sequence and were observed resolving to the wrong message right after a delete), then delete_email that id, then re-run search_emails to confirm it is gone and get_emails to confirm the untouched messages are intact. Optionally mark_emails the source back to its prior status, but note this is unverifiable. LIMITATIONS that MUST be reported: the Sent copy CANNOT be deleted or read (email_id resolves against INBOX only, so delete_email/delete_emails/read_email all fail with IMAP 'Invalid messageset') and is permanent residue; the outbound SMTP delivery to recipients is IRREVERSIBLE; and when replying to a genuine third party there is no delivered INBOX copy at all, so effectively nothing is recoverable.",
+      "applies_to": "reply_email",
+      "trigger": "reply_email",
+      "verified": true,
+      "verify_note": "Executed the full capture -> real reply_email -> restore -> independent re-read cycle. The proposed pattern was wrong in two material ways and I corrected both: (1) delete_email on the Sent copy DOES NOT WORK (IMAP 'Invalid messageset'; delete_emails also reported 0/1 succeeded) because ids resolve only against INBOX, and the Sent copy is additionally unreadable, so it can never be captured or removed; (2) the pattern entirely missed that reply_email also DELIVERED a copy into INBOX (id 15, unread), which is the only part that is actually reversible - delete_email('15') succeeded and the INBOX returned to its exact pre-state (13 originals byte-identical, source body md5 match). Also discovered that export_emails ignores export_path and writes to an unreachable server-side directory, that supplied cc/bcc and In-Reply-To/References are absent from the stored reply, and that ids transiently resolve to the WRONG message right after a delete. Recovery is genuinely PARTIAL.",
+      "capture_tools": [
+        "read_email",
+        "get_email_headers",
+        "search_emails",
+        "get_emails",
+        "get_mailbox_stats",
+        "get_unread_count",
+        "delete_email",
+        "mark_emails",
+        "delete_emails",
+        "export_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Throwaway fixture seeded by send_email to the account itself: INBOX id 14 'chats_probe_src_7010 recovery fixture A', From/To calibration@mcp.com, Cc chats_probe_cc1@mcp.com, Message-ID <E0BED03C-609A-46E8-BB9A-5122776DA437.1@mail.example.com>, body token ZQ7710. Non-default flags applied via mark_emails: 'unread' then 'important'. Pre-counts: INBOX 14, Sent 136, Drafts 0, Trash 0.",
+        "mutation": "mcp__email__reply_email({email_id:'14', body:'chats_probe reply body token RR4412. deterministic probe reply.', html_body:'<p>chats_probe reply body token RR4412.</p>', cc:'chats_probe_cc2@mcp.com', bcc:'chats_probe_bcc1@mcp.com', reply_all:true}) -- executed unchanged, returned 'Reply sent successfully to all recipients'.",
+        "affected_state": [
+          "Sent folder: new copy id 137 'Re: chats_probe_src_7010 recovery fixture A' (Sent 136 -> 137). NOT deletable, NOT readable.",
+          "INBOX: a locally DELIVERED copy id 15 was created (INBOX 14 -> 15, unread 0 -> 1) because the reply recipient equals the mailbox account. This dependant was MISSING from the proposed pattern.",
+          "Source email id 14 read-state: INBOX unread count returned to 0 after the reply cycle; no answered/\\Answered flag was observable through any available tool.",
+          "External SMTP delivery to chats_probe_cc2@mcp.com and chats_probe_bcc1@mcp.com.",
+          "Numeric email_id -> message mapping across the whole mailbox (re-sequences after any delete)."
+        ],
+        "artifact": "/work/chats_probe_artifacts/pre_reply_capture_7010.json (md5 3e28f7f3c52ded5606712d5394d4457e), /work/chats_probe_artifacts/post_reply_capture_7010.json (md5 9f9ce62c43c861861b82122a891fda38), /work/chats_probe_artifacts/src14_body.txt (md5 29968bacbb6c5fa3e38fb5e1cb1d7f44). Local files outside the mail store. NOTE: mcp__email__export_emails is NOT usable as an artifact here - it ignored the export_path argument and wrote server-side to /srv/harbrook/mail/lab/exports/INBOX_export_20260911_152934.json, a path not readable from the agent filesystem.",
+        "checks": [
+          "PRE vs POST counts: get_mailbox_stats showed INBOX 14->15 (unread 0->1) and Sent 136->137, confirming the reply wrote to TWO folders, not one.",
+          "Located both copies by content token: search_emails('RR4412', folder='Sent') -> 1 result id 137; search_emails('RR4412', folder='INBOX') -> 1 result id 15.",
+          "read_email('137') and get_email_headers('137') both FAILED with IMAP 'BAD Error in IMAP command FETCH: Invalid messageset' - the Sent copy's body/headers are unreadable, so it can never be checksummed or restored if removed.",
+          "delete_email('137') FAILED ('STORE command error: BAD ... Invalid messageset'); delete_emails(['137']) returned 'Successfully deleted 0/1 emails (1 failed: 137)'. The PROPOSED reverter (delete_email on the Sent copy) is therefore BROKEN - corrected and re-tested.",
+          "delete_email('15') on the delivered INBOX copy SUCCEEDED ('Email 15 deleted successfully').",
+          "Post-restore independent re-read: search_emails('RR4412', folder='INBOX') -> 'No emails found'; search_emails('RR4412', folder='Sent') -> STILL 1 result id 137 (unrecoverable residue).",
+          "Source fidelity: re-read of the source returned identical Subject/From/To/CC/Date/Message-ID and body; byte-compare of restored body vs pre-capture artifact matched (md5 29968bacbb6c5fa3e38fb5e1cb1d7f44 both sides, diff -q clean).",
+          "Full-listing comparison: get_emails(INBOX, page_size=30) after restore showed exactly the 13 original pre-existing messages plus the fixture, ids 1-13 unchanged in subject/from/date - no collateral damage.",
+          "ID-STABILITY HAZARD observed: immediately after delete_email('15'), read_email('14') returned a COMPLETELY DIFFERENT message ('site visit 19/04 - Halton Pharmaceutical Services', dated 2016, To u.sattar@haltonpharmserv.co.uk). A later re-read of id 14 returned the correct fixture again. Numeric ids are transiently WRONG right after a delete.",
+          "Flag restoration NOT verifiable: after mark_emails(['14'],'unread') get_unread_count('INBOX') still reported 0, and no tool exposes read/important/answered state, so mark_emails restoration is write-only and unconfirmable.",
+          "Header threading check: the delivered reply carried NO In-Reply-To and NO References header; its Cc was the ORIGINAL chats_probe_cc1@mcp.com, and the explicitly supplied cc (chats_probe_cc2) / bcc (chats_probe_bcc1) appeared in NO retrievable header - so the true recipient set of a sent reply cannot be reconstructed after the fact.",
+          "Cleanup: fixture deleted, get_mailbox_stats INBOX back to 13 and search_emails('chats_probe', INBOX) -> 'No emails found'."
+        ],
+        "scope": "Tested live against the configured disposable IMAP/SMTP backend (mail.example.com, Haraka 3.0.3) on a self-addressed chats_probe_* fixture, with reply_all=true plus explicit cc, bcc and html_body, and a non-default unread+important initial state. Sent folder held 135-137 messages, exercising paginated search (page 1/27 at page_size 5) and paginated listing. Only the agent's own chats_probe_* items were mutated.",
+        "limitations": [
+          "UNRECOVERABLE: the Sent copy (id 137) cannot be deleted or even read - delete_email, delete_emails, read_email and get_email_headers all fail with IMAP 'Invalid messageset' because the email_id space resolves against INBOX only. A reply permanently leaves a Sent artifact. Two probe items (Sent ids 136, 137) remain as documented, clearly-named residue.",
+          "UNRECOVERABLE: external SMTP delivery of the reply to real recipients cannot be recalled.",
+          "Only the locally DELIVERED copy is reversible, and only because the reply recipient happened to equal the mailbox account. When replying to a genuine third party there is NO delivered INBOX copy, so the reversible portion shrinks to nothing and recovery is effectively zero.",
+          "Source message read/answered/important flags could not be verified as restored - no tool reports per-message flag state and get_unread_count did not reflect mark_emails('unread').",
+          "The reply's own Message-ID, In-Reply-To/References and the expanded cc/bcc recipient set are not retrievable for the Sent copy, so thread context of the sent reply cannot be fully captured.",
+          "Numeric email_id pins are unstable: ids re-sequence after deletions and were observed resolving to the WRONG message immediately after a delete. Any reversal MUST re-resolve the target by a unique content token via search_emails right before deleting, or it risks deleting an unrelated message.",
+          "Not tested: replying to an email with attachments, replies to external (non-self) recipients, and multi-page result sets for a single reply's copies."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__search_emails({query: '<UNIQUE_REPLY_BODY_TOKEN>', folder: 'INBOX', page: 1, page_size: 10})  // re-resolve the delivered copy id NOW; ids re-sequence after deletes\nmcp__email__delete_email({email_id: '<DELIVERED_INBOX_COPY_ID>'})  // -> \"Email <DELIVERED_INBOX_COPY_ID> deleted successfully\"\nmcp__email__search_emails({query: '<UNIQUE_REPLY_BODY_TOKEN>', folder: 'INBOX', page: 1, page_size: 10})  // -> \"No emails found matching query\" confirms removal\nmcp__email__get_emails({folder: 'INBOX', page: 1, page_size: 30})  // confirm the pre-existing messages are intact\nmcp__email__mark_emails({email_ids: ['<SOURCE_EMAIL_ID>'], status: '<ORIGINAL_STATUS: read|unread>'})  // best-effort, NOT verifiable\n// NOT REVERSIBLE - these were run and FAILED, do not rely on them:\n// mcp__email__delete_email({email_id: '<SENT_COPY_ID>'})   -> \"STORE command error: BAD ... Invalid messageset\"\n// mcp__email__delete_emails({email_ids: ['<SENT_COPY_ID>']}) -> \"Successfully deleted 0/1 emails (1 failed: <SENT_COPY_ID>)\"",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Forward an email (irreversible external side effect)",
+      "skill": "BEFORE forwarding: (1) PIN THE FOLDER CONTEXT - call get_emails(folder=<SOURCE_FOLDER>) immediately before forward_email, because email_id is resolved against the most recently listed folder; verified live: with Sent listed last, forward_email(email_id='15') forwarded Sent#15 (an unrelated production message) instead of INBOX#15. (2) read_email + get_email_headers on the source to persist subject, From/To/Cc, Date, Message-ID, Content-Type/boundary and the full body, plus every attachment name/mime/size that will travel with the forward. (3) Record the exact to/cc/bcc and added body you are about to pass. (4) Capture the source's flags (get_unread_count / folder listing) - do NOT assume the source keeps them. AFTER the call, forwarding creates TWO local artifacts, not one: a Sent copy, AND - whenever any recipient is a local mailbox - a copy delivered back into INBOX. Locate both via search_emails('Fwd: <subject>', folder=...) paging to exhaustion and pin their ids/Message-IDs. TO RESTORE: delete_email the Sent copy and delete_emails the delivered INBOX copy (re-pinning folder context before each delete), then reapply the captured source flags with mark_emails. delete_email is a hard expunge (Trash stays 0), so no second cleanup pass is needed. LIMITATION: the SMTP transmission itself cannot be recalled - if any recipient was external, the message and its attachments have already reached third parties and that disclosure is IRREVERSIBLE; deleting the local copies removes the record, not the disclosure.",
+      "applies_to": "forward_email",
+      "trigger": "forward",
+      "verified": true,
+      "verify_note": "Executed live against the disposable calibration@mcp.com mailbox. Seeded chats_probe_fwd_source_7711 (INBOX 14, text/plain, cc) and chats_probe_fwd_srcatt_7711 (INBOX 15, multipart/mixed + 844-byte attachment, cc), both set to NON-DEFAULT flags (unread + important). Baseline: Sent 139 / INBOX 15 / unread 2, captured to /work/chats_probe_artifacts/fwd7711/PRE_forward_capture.json. Ran forward_email unchanged 3 times. KEY CORRECTION 1: each forward created TWO dependants - a Sent copy (139->140) AND a copy delivered back into INBOX (15->16); the proposed pattern deleted only the Sent copy, which would have left the delivered copy behind. KEY CORRECTION 2 (disclosure hazard): email_id resolves against the LAST-LISTED folder - in round 1 my last listing was get_emails(folder='Sent'), so forward_email('15') forwarded Sent#15, a 2016 production message ('Widnes Precision Tooling - delivery note 22571'), NOT the probe; confirmed by reading the resulting copy, which embedded that 2016 message. After pinning get_emails(folder='INBOX'), rounds 2-3 forwarded the correct probe as 'Fwd: chats_probe_fwd_srcatt_7711' with the attachment carried through. Restore: deleted Sent copies 141 then 140 and delivered copies 17,16; independently re-verified - search_emails('Fwd: chats_probe_fwd_srcatt_7711', folder='Sent') returned 'No emails found', stats returned to Sent 139 / INBOX 15 / overall 196 = exact baseline. Source integrity re-read and compared field-by-field to the PRE artifact: subject, From/To/Cc, Date, Message-ID <CFAC88D2-...5932.2@mail.example.com>, body text and attachment (invoice-14046(2).pdf, 844 bytes) all IDENTICAL - forward never mutates source content; the wrongly-forwarded production Sent#15 was also re-read and unchanged. Flags: NOT deterministic - round 2 left unread 2->2, round 3 with identical setup left 2->1 with the source itself still unread; mark_emails was separately proven precise (single id took 2->1), so capture-and-reapply is mandatory rather than assuming the source keeps its flag. delete_email/delete_emails are a HARD EXPUNGE (Trash remained 0 total throughout), so removal is permanent. Flags were reapplied (unread+important -> unread count back to 2) and all fixtures then destroyed; mailbox returned to its original 192 total / INBOX 13 / Sent 137 and search_emails('chats_probe') returns nothing.",
+      "capture_tools": [
+        "read_email",
+        "get_email_headers",
+        "search_emails",
+        "get_emails",
+        "get_mailbox_stats",
+        "get_unread_count",
+        "mark_emails",
+        "delete_email",
+        "delete_emails",
+        "forward_email"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Disposable calibration@mcp.com mailbox. Probe sources INBOX 14 chats_probe_fwd_source_7711 (text/plain, cc chats_probe_cc_7711@mcp.com) and INBOX 15 chats_probe_fwd_srcatt_7711 (multipart/mixed, cc chats_probe_cc2_7711@mcp.com, attachment invoice-14046(2).pdf 844 bytes), both with NON-DEFAULT flags unread + important. Baseline counts Sent 139 / INBOX 15 / INBOX unread 2 / overall 196; Trash 0.",
+        "mutation": "forward_email(email_id='15', to='calibration@mcp.com', body='chats_probe ADDED FORWARD NOTE MARKER-FWD-7711-...') executed unchanged 3 times (rounds 1-3).",
+        "affected_state": [
+          "Sent folder: new stored sent copy each forward (139->140, and 140->141)",
+          "INBOX: a copy of the forward DELIVERED back into the mailbox because the recipient is local (15->16->17) - dependant missed by the proposed pattern",
+          "Attachments: the 844-byte invoice-14046(2).pdf travelled with the forward into both copies",
+          "Source message content/headers/attachment: verified UNCHANGED by the action",
+          "Source \\Seen flag: perturbed non-deterministically across identical rounds",
+          "Wrong-target risk: Sent#15, an unrelated 2016 production message, was forwarded in round 1 due to folder-context id resolution",
+          "Trash: unaffected (0 throughout) - deletes are hard expunges"
+        ],
+        "artifact": "/work/chats_probe_artifacts/fwd7711/ - PRE_forward_capture.json (full pre-action content, headers, Message-IDs, attachment metadata, flags, baseline counts), POST_forward_capture.json (both dependant ids/Message-IDs + id-resolution hazard), VERIFICATION_forward_7711.md (full findings and restore evidence).",
+        "checks": [
+          "Counts: Sent 139->140->141 then back to 139 after deletes; INBOX 15->16->17 then back to 15; overall 196 = exact baseline",
+          "search_emails('Fwd: chats_probe_fwd_srcatt_7711', folder='Sent') returned 2 results before restore and 'No emails found matching query' after - re-read, not assumed",
+          "Source content equality vs PRE artifact: subject, From/To/Cc, Date, Message-ID <CFAC88D2-DAE1-4529-9C75-46EB977C5932.2@mail.example.com>, body text and attachment name/mime/844-byte size all identical post-action",
+          "Wrongly forwarded production Sent#15 re-read post-restore: subject/From/To/Date/Message-ID/body unchanged",
+          "Round 1 forwarded copy was read and found to embed the 2016 production message, proving email_id resolved against the last-listed folder (Sent), not INBOX",
+          "Rounds 2-3 after get_emails(folder='INBOX') produced 'Fwd: chats_probe_fwd_srcatt_7711' with 1 attachment, proving context pinning fixes target selection",
+          "Flag determinism: round 2 unread 2->2 vs round 3 unread 2->1 under identical setup; mark_emails single-id precision separately confirmed (2->1)",
+          "Trash stayed 0 total across all deletes => hard expunge, no residual copy",
+          "Flags reapplied via mark_emails unread+important -> get_unread_count(INBOX) returned 2, matching captured initial state",
+          "Final teardown: mailbox back to 192 total / INBOX 13 / Sent 137, search_emails('chats_probe') returns nothing"
+        ],
+        "scope": "Tested on a local Haraka/IMAP sandbox with a single deliverable mailbox (calibration@mcp.com). Covered: plain-text and multipart/mixed sources, an 844-byte attachment travelling with the forward, cc on the source, added forward body, non-default unread+important initial flags, Sent-folder pagination (47 pages at page_size 3; search paged to exhaustion), both the Sent copy and the locally delivered copy, and hard-expunge delete semantics.",
+        "limitations": [
+          "IRREVERSIBLE and UNTESTED: actual third-party disclosure. The sandbox SMTP rejects every address except calibration@mcp.com with 550 'no such user' (confirmed for to/cc/bcc), so an external recipient could not be exercised; deleting the Sent and delivered copies removes only the local record, never the transmission.",
+          "bcc/cc on the forward itself could not be exercised for the same 550 reason - only the single local recipient path was tested.",
+          "Source \\Seen flag changes were not deterministically attributable (round 2 vs round 3 diverged under identical setup), so the skill must capture and reapply flags rather than rely on a known delta; per-message flag state is not directly readable via any exposed tool (only aggregate get_unread_count).",
+          "The \\Flagged/important state cannot be read back per message either - restoration of 'important' was reapplied blind from the captured value and confirmed only indirectly.",
+          "A round-1 side effect could not be fully undone in kind: the wrongly forwarded 2016 production message was disclosed to the local mailbox; the local copies were deleted, but no external recall exists.",
+          "download_attachment wrote /srv/harbrook/mail/lab/attachments/invoice-14046(2).pdf on the MCP host; no exposed tool can delete server-side files, so that one file remains as residue.",
+          "Recovery of the deleted copies themselves was not tested (delete is a hard expunge); if the wrong copy were deleted it would need import_emails from an export, which was not exercised here."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "search_emails({\"query\":\"Fwd: <ORIGINAL_SUBJECT>\",\"folder\":\"Sent\",\"page\":1,\"page_size\":20})  # pins folder context to Sent AND returns the sent-copy id; page to exhaustion\ndelete_email({\"email_id\":\"<SENT_COPY_ID>\"})\nsearch_emails({\"query\":\"Fwd: <ORIGINAL_SUBJECT>\",\"folder\":\"Sent\",\"page\":1,\"page_size\":20})  # re-read: must return \"No emails found\"\nget_emails({\"folder\":\"INBOX\",\"page\":1,\"page_size\":4})  # REQUIRED: re-pins id resolution to INBOX before any INBOX delete\ndelete_emails({\"email_ids\":[\"<DELIVERED_COPY_ID>\"]})  # the copy delivered back to the mailbox when a recipient is local - omitted by the original pattern\nget_emails({\"folder\":\"INBOX\",\"page\":1,\"page_size\":4})  # confirm both copies gone, counts back to baseline\nmark_emails({\"email_ids\":[\"<SOURCE_ID>\"],\"status\":\"unread\"})   # only if captured flag was unread\nmark_emails({\"email_ids\":[\"<SOURCE_ID>\"],\"status\":\"important\"}) # only if captured flag was important\nget_unread_count({\"folder_name\":\"INBOX\"})  # confirm restored unread count == captured baseline",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Export emails to a file path (may overwrite an existing file)",
+      "skill": "Before exporting, note that export_path is IGNORED by this backend \u2014 the file always lands at /srv/harbrook/mail/lab/exports/<FOLDER>_export_<YYYYMMDD>_<HHMMSS>.json, so a caller-named pre-existing file is never overwritten; the real damage is that export silently sets \\Seen on every exported message. So for each folder about to be exported (all folders if export_all_folders=true), FIRST record its unread count with get_unread_count(folder_name=<FOLDER>) and then identify WHICH messages are unread: list with get_emails(folder=<FOLDER>) and, for each id, mark_emails([id],'read') followed by get_unread_count(folder_name=<FOLDER>) \u2014 a decrement means that id was unread \u2014 re-marking the discovered unread ids 'unread' at the end so the probe is a no-op; persist that id list plus Message-IDs and per-message read_email content to a durable file under /work OUTSIDE the mail server. After the export, restore read state with get_emails(folder=<FOLDER>) (this re-establishes the server's folder context, otherwise mark_emails hits the last-listed folder) followed by mark_emails(<CAPTURED_UNREAD_IDS>,'unread'), then re-verify with get_unread_count. Never issue two exports of the same folder within the same second: identical timestamped filenames collide and the last writer silently destroys the earlier export. LIMITATIONS to flag rather than assume away: \\Flagged/'important' state is not readable through any tool and cannot be backed up or verified; the created export file cannot be deleted (no server-side FS tool); and a clobbered export file cannot be rewritten to its path, so treat a same-second collision as unrecoverable file loss.",
+      "applies_to": "export_emails",
+      "trigger": "export",
+      "verified": true,
+      "verify_note": "export_path is a no-op on this backend: every call writes /srv/harbrook/mail/lab/exports/<FOLDER>_export_<YYYYMMDD>_<HHMMSS>.json, and a pre-existing file passed as export_path was verified intact afterwards (still imported 3/3). The proposed skill therefore guards the wrong thing. The real mutation is that exporting a folder SILENTLY MARKS EVERY EXPORTED MESSAGE READ (unread 2 -> 0, reproduced twice). I captured the unread id set with a reversible probe, ran the unmodified export, observed the flag loss, restored with get_emails(folder)+mark_emails(unread), and independently re-probed to confirm exactly ids 1,2 unread and id 3 read as before. Also demonstrated the only genuine overwrite risk: 3 exports of the same folder inside the same second collapse onto one filename and the last writer wins (1- and 2-email exports destroyed) \u2014 that clobbered file is unrecoverable since no server-side file write/delete tool exists. Importance/\\Flagged state is invisible to all read tools.",
+      "capture_tools": [
+        "get_emails",
+        "get_unread_count",
+        "get_mailbox_stats",
+        "read_email",
+        "get_email_headers",
+        "mark_emails",
+        "export_emails",
+        "import_emails"
+      ],
+      "verification": {
+        "outcome": "partial",
+        "initial_state": "Throwaway folder chats_probe_exp712 seeded with 3 messages imported from a server-side export (Message-IDs <178909723107...>, <178909723117...>, <178909723136...>; msg 3 carries attachment invoice-14046.pdf, application/pdf, 844 bytes). Non-default flags: ids 1 and 2 UNREAD, id 3 read and marked important. Folder stats 3 total / 2 unread. Pre-existing server-side file /srv/harbrook/mail/lab/exports/INBOX_export_20260911_154331.json (3 INBOX emails) used as the overwrite target. Real folders baseline: INBOX 13/0, Jobs.2026 24/0, Jobs.2025 18/0, Sent 137/0, overall 192 total / 0 unread.",
+        "mutation": "mcp__email__export_emails({folder:\"chats_probe_exp712\", export_path:\"/srv/harbrook/mail/lab/exports/INBOX_export_20260911_154331.json\"}) \u2014 executed unchanged; returned 'Successfully exported 3 emails to /srv/harbrook/mail/lab/exports/chats_probe_exp712_export_20260911_154635.json'",
+        "affected_state": [
+          "\\Seen flags of every exported message: chats_probe_exp712 unread count 2 -> 0 (ids 1 and 2 silently marked read) \u2014 reproduced twice with no other call in between",
+          "New server-side file /srv/harbrook/mail/lab/exports/<FOLDER>_export_<YYYYMMDD>_<HHMMSS>.json created on each call",
+          "export_path argument is IGNORED: the pre-existing file passed as export_path was NOT overwritten (re-import of it still yielded 3/3 original emails)",
+          "Same-second same-folder collision clobbers: 3 concurrent exports of chats_probe_fid712 (max_emails 1, 2, 3) all wrote .../chats_probe_fid712_export_20260911_154856.json; re-import of that path returned 3/3, so the 1- and 2-email exports were destroyed by the last writer",
+          "Mailbox contents/ids/message-ids/attachments unchanged (3 total before and after; real folders untouched, overall back to 192 total / 0 unread)"
+        ],
+        "artifact": "/work/chats_probe_backup/v712/PRE_export_flag_capture_7_12.json (unread-id set {1,2}, read set {3}, per-folder counts, Message-IDs), /work/chats_probe_backup/v712/PRE_export_state_7_12.json (full per-message subject/from/date/Message-ID/body/attachment + all folder stats), /work/chats_probe_backup/v712/VERIFICATION_export_emails_7_12.md (evidence log). Content-level fidelity of the export file itself was proven by importing /srv/harbrook/mail/lab/exports/chats_probe_exp712_export_20260911_154635.json into a scratch folder: 3/3 messages with identical Message-IDs, bodies and attachment metadata (flags NOT carried).",
+        "checks": [
+          "Pre-capture fidelity: per-message read_email + get_email_headers content stored in artifact matched the export-file roundtrip (same 3 Message-IDs, same bodies, same attachment invoice-14046.pdf/844 bytes) \u2014 counts (3=3) plus content equality, not counts alone",
+          "Damage observed: get_unread_count(chats_probe_exp712) = 0 immediately after the export (pre-value 2); reproduced in a second independent trial (2 -> 0)",
+          "Restore executed: get_emails(folder=chats_probe_exp712) then mark_emails([\"1\",\"2\"],\"unread\") -> get_mailbox_stats shows chats_probe_exp712 3 total / 2 unread",
+          "Independent per-email verification after restore (reversible probe): mark ['3'] read -> count stays 2 (id3 was read, correct); mark ['1'] read -> 1; mark ['2'] read -> 0; therefore exactly ids 1 and 2 were unread and id 3 read \u2014 identical to the captured pre-export set; then re-marked ['1','2'] unread -> count 2",
+          "Dependants/relations checked: totals, ids, subjects, senders, dates, Message-IDs and the attachment survived unchanged; folder membership unchanged; real folders INBOX/Jobs.2026/Jobs.2025/Sent unchanged (13/0, 24/0, 18/0, 137/0)",
+          "Overwrite claim tested and disproved for caller-specified paths: existing file named in export_path was still intact (import returned 3/3) after the export",
+          "Folder-context hazard found and verified: a mark_emails restore issued right after an import call landed on the wrong folder (chats_probe_ovwchk712 went 0 -> 2 unread); fixed and undone by get_emails(folder=...) then re-marking \u2014 hence the recipe re-lists the folder first"
+        ],
+        "scope": "Tested on a single throwaway folder (3 messages, one multipart/mixed with attachment, mixed read/unread/important initial flags) against the live email MCP: single-folder export with and without max_emails, export_path as absolute existing path / relative name / non-existent path, and 3-way same-second concurrent export collision. Restore verified by count plus per-email reversible probing.",
+        "limitations": [
+          "\\Flagged / 'important' state is NOT readable through any exposed tool (get_emails, search_emails, read_email, get_email_headers all omit flags), so importance cannot be captured or verified \u2014 only \\Seen is recoverable (via unread counts + per-email reversible probe)",
+          "The newly created export file CANNOT be deleted: the MCP exposes no server-side file delete/read tool, so the file-creation side of the action is irreversible (harmless leftover in /srv/harbrook/mail/lab/exports/)",
+          "A same-second same-folder collision destroys the earlier export file's contents and it cannot be rewritten to that exact path (no write-arbitrary-path tool; re-export always gets a new timestamped name) \u2014 unrecoverable loss of that file, though the emails themselves remain in the mailbox",
+          "export_all_folders=true was NOT tested (it would set \\Seen across every real folder, including INBOX/Jobs/Sent \u2014 out of the throwaway bounds); expect the same read-flag loss mailbox-wide, needing a per-folder unread capture before the call",
+          "Unread capture relies on a probe that temporarily marks messages read; on folders with concurrent activity the derived unread set could be inaccurate",
+          "Not tested: exports of Drafts/Sent/Junk/Trash, folders large enough to paginate beyond the export's internal batching, or max_emails truncation interaction with flag changes on non-exported messages"
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__get_emails({folder: \"<FOLDER>\", page_size: 20})  # re-establish server folder context so ids resolve in <FOLDER>\nmcp__email__mark_emails({email_ids: [\"<CAPTURED_UNREAD_ID_1>\", \"<CAPTURED_UNREAD_ID_2>\"], status: \"unread\"})\nmcp__email__get_unread_count({folder_name: \"<FOLDER>\"})  # expect <PRE_EXPORT_UNREAD_COUNT>\n# independent per-id confirmation (reversible): for each id: mcp__email__mark_emails({email_ids: [\"<ID>\"], status: \"read\"}) then mcp__email__get_unread_count({folder_name: \"<FOLDER>\"}) \u2014 a decrement proves <ID> was unread; finish with mcp__email__mark_emails({email_ids: [\"<CAPTURED_UNREAD_ID_1>\", \"<CAPTURED_UNREAD_ID_2>\"], status: \"unread\"})",
+      "recovery_status": "partial",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Create a new mail folder",
+      "applies_to": "create_folder",
+      "trigger": "create_folder",
+      "verified": true,
+      "verify_note": "Executed the full create -> revert -> re-read cycle three times. create_folder('chats_probe_f1') succeeded and the folder appeared in get_folders with 0/0 stats; delete_folder('chats_probe_f1') succeeded; re-read showed the folder absent from get_folders and get_mailbox_stats erroring with IMAP 'NO' on select. The nested case showed create_folder implicitly creates the parent placeholder, and deleting the pinned child cleaned the parent up too. Duplicate creation errors out, so a successful create is always new and the delete inverse is safe. Final folder listing is byte-for-byte the same 8 folders with the same counts as before the probe; drafts store also returned to 'No drafts found'. Reverter tool and pin as proposed are CORRECT and need no change.",
+      "capture_tools": [
+        "get_folders",
+        "get_mailbox_stats",
+        "create_folder",
+        "delete_folder"
+      ],
+      "reverter": {
+        "mcp_calls": [
+          {
+            "tool": "mcp__email__delete_folder",
+            "args": {
+              "folder_name": "<captured folder_name>"
+            }
+          }
+        ],
+        "pin": "folder_name"
+      },
+      "verification": {
+        "outcome": "full",
+        "initial_state": "mcp__email__get_folders returned exactly 8 folders: Jobs (cannot select), Jobs.2026 (24), Jobs.2025 (18), Sent (137), Junk (0), Drafts (0), Trash (0), INBOX (13). No chats_probe_* folder existed.",
+        "mutation": "mcp__email__create_folder({folder_name:'chats_probe_f1'}) -> 'Folder chats_probe_f1 created successfully'; also mcp__email__create_folder({folder_name:'chats_probe_parent.chats_probe_child'}) (nested, non-default case) and mcp__email__create_folder({folder_name:'chats_probe_f2'}).",
+        "affected_state": [
+          "folder list (mcp__email__get_folders): new entry 'chats_probe_f1 (0 total, 0 unread)' appeared",
+          "folder selectability/stats (mcp__email__get_mailbox_stats folder_name='chats_probe_f1') became available and returned Total messages: 0, Unread: 0",
+          "dependant side effect: creating 'chats_probe_parent.chats_probe_child' ALSO auto-created the parent node 'chats_probe_parent (cannot select)'",
+          "no message-level state changed: INBOX 13, Sent 137, Jobs.2026 24, Jobs.2025 18, Drafts/Trash/Junk 0 before and after"
+        ],
+        "artifact": "Pinned creation identifier captured verbatim from the create call args: folder_name='chats_probe_f1' (and 'chats_probe_parent.chats_probe_child', 'chats_probe_f2'). No content artifact is needed because a freshly created folder is provably empty (get_mailbox_stats = 0 total / 0 unread immediately after creation), so the inverse destroys nothing. Pre/post folder listings recorded above from mcp__email__get_folders.",
+        "checks": [
+          "COUNT: folder count 8 -> 11 after the three creations -> 8 after the three delete_folder reverts (exact same 8 names, same per-folder totals/unread: Jobs.2026 24/0, Jobs.2025 18/0, Sent 137/0, Junk 0/0, Drafts 0/0, Trash 0/0, INBOX 13/0).",
+          "EXISTENCE (re-read after revert): mcp__email__get_folders no longer lists chats_probe_f1, chats_probe_f2, chats_probe_parent or chats_probe_parent.chats_probe_child.",
+          "NEGATIVE PROBE: mcp__email__get_mailbox_stats({folder_name:'chats_probe_f1'}) after revert returned \"Error selecting folder 'chats_probe_f1': ... NO\" (previously returned Total messages: 0), proving the folder is gone at the IMAP level, not just hidden from the listing.",
+          "DEPENDANT CLEANUP: deleting only the pinned child 'chats_probe_parent.chats_probe_child' also removed the auto-created placeholder parent 'chats_probe_parent' \u2014 no orphan node left behind.",
+          "IDEMPOTENCE / SAFETY OF THE INVERSE: re-running create_folder on an already-existing name fails (\"Error creating folder: Failed to create folder 'chats_probe_f2' with any naming convention\"), so a SUCCESSFUL create_folder always denotes a brand-new folder; the delete inverse can therefore never destroy a pre-existing folder created by someone else.",
+          "NO COLLATERAL DAMAGE: drafts store unchanged (get_drafts: 'No drafts found' at end, matching start), message counts in all pre-existing folders identical pre/post."
+        ],
+        "scope": "Tested live against the configured disposable IMAP backend as: top-level folder name (chats_probe_f1), dotted/nested folder name with auto-created parent (chats_probe_parent.chats_probe_child), and duplicate-name creation attempt (chats_probe_f2). All reverts executed with the exact folder_name string passed to create_folder. Folder was empty at revert time in every tested case.",
+        "limitations": [
+          "NOT TESTED: reverting a created folder that has since received messages. delete_folder on a non-empty folder would destroy those messages and was not exercised \u2014 the backend exposes no way for me to populate a probe folder without touching real data (drafts live in a separate non-IMAP store and cannot be moved; import_emails requires a path on the MCP server host (/srv/harbrook/mail/lab/...) which is not writable/visible from this agent's filesystem; send_email/move_email would have mutated real Sent/INBOX data). Runtime agents must re-check get_mailbox_stats before deleting and export_emails the folder first if it is non-empty.",
+          "export_emails ignores the export_path argument and writes to a server-side configured directory (observed: /srv/harbrook/mail/lab/exports/INBOX_export_20260911_160647.json), which is not readable from the agent host \u2014 so a content backup of a non-empty folder is server-side only and could not be content-verified here.",
+          "Folder identity is the name string only; if a folder is created and later renamed, the pinned folder_name will not resolve. Rename was not exercised (no rename tool exposed)."
+        ]
+      },
+      "non_mutating": false,
+      "recipe": "mcp__email__delete_folder({\"folder_name\": \"<CREATED_FOLDER_NAME>\"})  // then confirm: mcp__email__get_folders({}) shows no <CREATED_FOLDER_NAME>, and mcp__email__get_mailbox_stats({\"folder_name\": \"<CREATED_FOLDER_NAME>\"}) errors with \"Error selecting folder ... NO\". If the folder may be non-empty, FIRST run mcp__email__get_mailbox_stats({\"folder_name\": \"<CREATED_FOLDER_NAME>\"}) and mcp__email__export_emails({\"folder\": \"<CREATED_FOLDER_NAME>\"}) to capture its messages server-side before deleting.",
+      "recovery_status": "full",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    },
+    {
+      "action": "Save a new draft",
+      "applies_to": "save_draft",
+      "trigger": "save_draft",
+      "verified": true,
+      "verify_note": "Executed live end-to-end. save_draft(chats_probe_draft_alpha_7_16, to/cc/bcc/html_body set) returned 'Draft saved successfully with ID: draft_1' and get_drafts confirmed total 2. The proposed reverter delete_draft({draft_id:'draft_1'}) ran unchanged and returned success; independent re-read showed draft_1 gone and a repeat delete returned 'Draft not found: draft_1'. Sibling draft_2 kept its id and Updated timestamp, and folder stats matched baseline exactly (Drafts 0, Trash 0, overall 192). Notably the draft store is NOT the IMAP Drafts mailbox (Drafts folder read 0 total while two drafts existed), so save_draft creates no IMAP-side dependant to restore. Proposed tool and args were already correct - no adjustment needed. Trigger tuned to 'save_draft'.",
+      "capture_tools": [
+        "get_drafts",
+        "save_draft",
+        "delete_draft"
+      ],
+      "reverter": {
+        "mcp_calls": [
+          {
+            "tool": "delete_draft",
+            "args": {
+              "draft_id": "<captured draft_id>"
+            }
+          }
+        ],
+        "pin": "draft_id"
+      },
+      "verification": {
+        "outcome": "full",
+        "initial_state": "Draft store empty at baseline: get_drafts(page=1,page_size=50) -> 'No drafts found'. IMAP folders baseline: Drafts 0 total, Trash 0 total, INBOX 13, Sent 137, Jobs.2026 24, Jobs.2025 18, Junk 0 (overall 192).",
+        "mutation": "mcp__email__save_draft({subject:'chats_probe_draft_alpha_7_16', body:'chats_probe body line one.\\nLine two with marker CHKSUM-A1B2C3.', html_body:'<p>chats_probe <b>html</b> CHKSUM-A1B2C3</p>', to:'chats_probe_to@example.invalid', cc:'chats_probe_cc@example.invalid', bcc:'chats_probe_bcc@example.invalid'}) -> 'Draft saved successfully with ID: draft_1'. A second fixture draft (chats_probe_draft_beta_7_16 -> draft_2) was created as a co-resident dependant to detect collateral damage and ID renumbering.",
+        "affected_state": [
+          "drafts store: new row draft_1 with subject/body/html_body/to/cc/bcc and Updated timestamp 2026-09-11T16:08:25.405796",
+          "get_drafts listing: total drafts 0 -> 2, pagination re-checked at page_size=1 (Page 1/2)",
+          "co-resident draft draft_2 (unrelated fixture) - checked for collateral change",
+          "IMAP folder counts / Drafts folder / Trash (observed UNAFFECTED by save_draft: Drafts folder remained 0 total while draft_1+draft_2 existed, so the draft store is separate from the IMAP Drafts mailbox)"
+        ],
+        "artifact": "Creation is reversed by the pinned identifier, not by a content dump: pin draft_id='draft_1' returned verbatim by save_draft. Supporting record persisted at /work/chats_probe_artifacts/save_draft_probe_7_16.json (baseline listing, exact create args, pinned ids, post-create totals, reverter invoked).",
+        "checks": [
+          "Post-create read-back: get_drafts total=2, listing showed 'ID: draft_1 / Subject: chats_probe_draft_alpha_7_16 / To: chats_probe_to@example.invalid' - create confirmed before reversal.",
+          "Ran reverter verbatim: delete_draft({draft_id:'draft_1'}) -> 'Draft draft_1 deleted successfully'.",
+          "Independent re-read after reverter: get_drafts(page=1,page_size=50) -> total 1, only draft_2 listed; draft_1 ABSENT. Created entity confirmed GONE.",
+          "Idempotency / true-absence probe: delete_draft({draft_id:'draft_1'}) a second time -> 'Error deleting draft: Draft not found: draft_1' (id is unresolvable, not merely hidden).",
+          "Collateral check: draft_2 survived with IDENTICAL id and identical Updated timestamp 2026-09-11T16:08:29.389690 - no renumbering or reindexing of sibling drafts.",
+          "Dependant check: get_folders/get_mailbox_stats after the reverter showed Drafts 0, Trash 0, INBOX 13, Sent 137, overall 192 - identical to baseline; no message copy left in Trash and no IMAP-side residue.",
+          "Sandbox returned to baseline: fixture draft_2 deleted, final get_drafts -> 'No drafts found'."
+        ],
+        "scope": "Tested live against the configured disposable email backend: single new draft created with non-default fields (to, cc, bcc, html_body, multi-line body), with a co-resident second draft present, then reversed by the pinned draft_id. Covers drafts created in this same session where save_draft returned the id.",
+        "limitations": [
+          "The reverter depends on pinning the draft_id returned by save_draft; if that return value is not captured, the draft can only be re-identified heuristically by subject/timestamp via get_drafts.",
+          "delete_draft is a hard delete (no Trash copy observed), so the reverter is not itself undoable - only run it against an id that this action created.",
+          "Not tested: save_draft while >20 drafts exist (multi-page listing beyond the 2-item pagination probe), draft with attachments (save_draft exposes no attachment arg), or concurrent/duplicate-subject drafts."
+        ]
+      },
+      "non_mutating": false,
+      "skill": "reverse_save_draft: after calling save_draft, pin the draft_id from its success string ('Draft saved successfully with ID: <id>'); to revert, call delete_draft with that exact id and re-read get_drafts to confirm the id is absent. No content backup is required because the action is purely additive - nothing pre-existing is overwritten.",
+      "recipe": "mcp__email__delete_draft({\"draft_id\": \"<CAPTURED_DRAFT_ID>\"})  # then confirm: mcp__email__get_drafts({\"page\": 1, \"page_size\": 50}) -> <CAPTURED_DRAFT_ID> must be absent",
+      "recovery_status": "full",
+      "verification_scope_note": "Live behavior verified; recovery completeness is the recorded outcome, not the verified flag."
+    }
+  ],
+  "guidance": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\nDiscover what hangs off the target before mutation. Persist full content and relations,\nincluding every batch member and pagination page. Save pre/post location mappings for moves.\nRecord identity changes and inaccessible content as recovery limitations.",
+  "readOnlyTools": [
+    "get_folders",
+    "get_mailbox_stats",
+    "get_unread_count",
+    "check_connection",
+    "get_drafts"
+  ],
+  "pendingPatterns": [
+    {
+      "action": "Download an attachment to the local download path (may overwrite a file)",
+      "skill": "CORRECTED. The 'local download path' is actually /srv/harbrook/mail/lab/attachments/ on the MCP server's own filesystem - unreachable from the agent host, so never attempt a shell copy-aside/put-back. Do NOT rely on the overwrite premise: download_attachment resolves name collisions by appending (1),(2),... and never replaces an existing file, so a pre-existing same-named file is already safe and needs no preservation. The real, UNRECOVERABLE effect is additive: each call writes one NEW file into that server directory, and no available tool can delete or rename it, so the directory cannot be restored to its pre-action state. Therefore: (a) treat download_attachment as a one-way, non-reversible write and avoid redundant repeat calls, since each one leaves another permanent (n)-suffixed file; (b) BEFORE the action, record the intended target name and probe it - plus its (1)..(n) siblings - with the side-effect-free existence probe send_email(to='chats_probe_existence_check@mcp.com', attachments=['<SERVER_PATH>']), where 'File does not exist' means absent and a 550 'no such user' means present (the attachment is validated before the recipient, so no mail is ever delivered); (c) log exactly which names were already occupied and the exact path the tool reports it saved to, so the set of files the action added is known precisely; (d) if a pre-existing occupant matters, capture its bytes durably with send_email(to='calibration@mcp.com', attachments=['<SERVER_PATH>']) and verify the resulting attachment's byte-size equals the source before proceeding - that mail survives anything done to the download directory and can be re-materialised later with download_attachment, though only at a uniquified sibling path, never the original. LIMITATION to state plainly in any report: the created file cannot be deleted, an occupied path can never be reclaimed, the download directory cannot be listed (only predictable names can be probed), and server-side fidelity can only be checked by byte-size plus provenance, not a checksum.",
+      "applies_to": "download_attachment",
+      "trigger": "download_attachment",
+      "verified": false,
+      "verify_note": "Executed live end-to-end with my own chats_probe_* fixtures. TWO things in the proposal are wrong. (1) The premise: download_attachment does NOT silently overwrite. With the target name already occupied it uniquified to '(1)' then '(2)' - reproduced three times - and because it did so even for byte-identical content, the collision branch is a pure name-existence check and is content-independent. The proposed 'preserve the existing file so it is not overwritten' protection guards a hazard that does not exist on this backend. (2) The mechanics: the 'local download path' is NOT local. It is /srv/harbrook/mail/lab/attachments/ on the MCP server; 'ls /srv/harbrook' fails on the agent host and agent-host paths are rejected as attachments, so no shell-based copy-aside/put-back is possible. What the op ACTUALLY does is additively write one new file into that server directory (proven by an absent->present existence probe, so it is definitively not read-only). The real gap is the opposite of the one proposed: the newly created file CANNOT be removed - no tool in the surface deletes or renames a server file - and a restore cannot reclaim an occupied path (my restore attempt landed at '(3)'). Since no working recovery exists, this is 'defer', not 'keep'; and it is emphatically not 'delete' because the mutation was directly observed. Best-effort capture IS available and was verified: server file bytes can be preserved into a durable mail message and read back at an exactly matching 712 bytes. Mailbox fixtures were fully cleaned up (INBOX 13, Sent 137, probe folder deleted); the four download-dir files remain because they are unremovable.",
+      "capture_tools": [
+        "mcp__email__read_email",
+        "mcp__email__get_emails",
+        "mcp__email__send_email",
+        "mcp__email__download_attachment",
+        "mcp__email__export_emails",
+        "mcp__email__search_emails",
+        "send_email",
+        "download_attachment"
+      ],
+      "verification": {
+        "outcome": "unknown",
+        "initial_state": "Self-built chats_probe_* fixture chain on the disposable calibration mailbox: create_folder('chats_probe_dl714'); send_email seed 'chats_probe_7_14 SEED fixture body' (multi-line MARKER-SEED-714 payload) -> INBOX id 14; move_email(14,'chats_probe_dl714') to give it a NON-DEFAULT location outside INBOX; export_emails(folder='chats_probe_dl714') -> server file /srv/harbrook/mail/lab/exports/chats_probe_dl714_export_20260911_160223.json; send_email carrier 'chats_probe_7_14 ATTACH carrier A' with that file attached -> INBOX id 14 carrying attachment 'chats_probe_dl714_export_20260911_160223.json' (application/octet-stream, 712 bytes). PRE-STATE of the download dir verified by side-effect-free existence probe: target name /srv/harbrook/mail/lab/attachments/chats_probe_dl714_export_20260911_160223.json returned 'Attachment error: File does not exist' i.e. UNOCCUPIED.",
+        "mutation": "download_attachment(email_id=14, attachment_filename='chats_probe_dl714_export_20260911_160223.json') executed unchanged, then executed twice more against the now-OCCUPIED name to test the claimed overwrite hazard.",
+        "affected_state": [
+          "MCP-server download directory /srv/harbrook/mail/lab/attachments/ - one NEW file written per call (additive)",
+          "chats_probe_dl714_export_20260911_160223.json (1st call, previously absent)",
+          "chats_probe_dl714_export_20260911_160223(1).json (2nd call, name collision)",
+          "chats_probe_dl714_export_20260911_160223(2).json (3rd call, name collision)",
+          "chats_probe_dl714_export_20260911_160223(3).json (restore attempt from the capture mail)",
+          "Source email and its MIME attachment: UNCHANGED by the action (re-read after, still 712 bytes)",
+          "Mailbox folders/flags/counts: UNCHANGED by the action"
+        ],
+        "artifact": "/work/chats_probe_artifacts/v714/download_attachment_evidence_7_14.json (durable, on the agent host, outside the action's destructive scope) + a durable in-mailbox byte capture: send_email(to='calibration@mcp.com', subject='chats_probe_7_14 CAPTURE original download-dir file', attachments=['/srv/harbrook/mail/lab/attachments/chats_probe_dl714_export_20260911_160223.json']) -> INBOX id 15, whose attachment read back at 712 bytes.",
+        "checks": [
+          "FILESYSTEM SEPARATION (both directions): 'ls /srv/harbrook' on the agent host -> No such file or directory (/srv is empty); send_email(attachments=['/work/probe/chats_probe_att.txt']) -> 'Attachment error: File does not exist'. The configured download path is on the MCP SERVER's filesystem and is NOT reachable from the agent host, so the proposed 'copy the existing file aside' step is not executable.",
+          "EXISTENCE PROBE VALIDATED BOTH WAYS: absent file -> 'Attachment error: File does not exist'; present file -> \"(550, b'Error: no such user <chats_probe_existence_check@mcp.com>')\" (attachment validated, send aborted, no mail delivered).",
+          "PRE-STATE: target name probed ABSENT before the action.",
+          "POST-STATE: same name probed PRESENT after the action -> the op is NOT read-only; it writes a file.",
+          "OVERWRITE HAZARD DISPROVEN (reproduced 3x): with the name already occupied, the 2nd call wrote '...(1).json' and the 3rd wrote '...(2).json'. The occupant was never replaced.",
+          "CONTENT-INDEPENDENCE: uniquification happened even though the incoming bytes were IDENTICAL to the occupant, proving the branch is a pure name-existence check, hence a differing-content same-name attachment would also be uniquified rather than overwritten.",
+          "CAPTURE FIDELITY (not counts alone): read_email(15) reported the captured attachment at exactly 712 bytes == the 712-byte source file, matched with provenance; no server-side checksum tool exists.",
+          "RESTORE ATTEMPT FAILED: download_attachment(15, same filename) could not write back to the original path and landed at '...(3).json'. No tool can free the occupied path.",
+          "NO DELETION CAPABILITY: the entire live tool surface was enumerated (check_connection, create_folder, delete_folder, get_folders, get_emails, search_emails, read_email, get_email_headers, get_mailbox_stats, get_unread_count, mark_emails, move_email, move_emails, delete_email, delete_emails, save_draft, update_draft, delete_draft, get_drafts, send_email, reply_email, forward_email, export_emails, import_emails, download_attachment) - none deletes or renames a file on the server filesystem.",
+          "FIXTURE CLEANUP VERIFIED: INBOX back to 13, Sent back to 137, folder chats_probe_dl714 removed. The four download-dir files could NOT be cleaned up - that inability is itself the finding."
+        ],
+        "scope": "Tested live against the configured disposable calibration mailbox using only self-created chats_probe_* fixtures: unoccupied target name, occupied target name (x2 collisions), restore-from-capture into an occupied path, agent-host/server filesystem separation, and the existence probe in both directions. Every id-based call was issued immediately after get_emails(folder='INBOX') because bare email_ids resolve against the last-selected folder.",
+        "limitations": [
+          "NO WORKING RECOVERY EXISTS: the file created by download_attachment cannot be deleted or renamed by any available tool, so the download directory cannot be returned to its pre-action state. This is why the verdict is 'defer' and not 'keep'.",
+          "A restore can never be written back to the exact original path while that path is occupied - it always lands at a uniquified sibling (observed: '(3)').",
+          "Same-name-DIFFERENT-content overwrite could not be constructed: the only ways to place a file on the server FS are download_attachment (name fixed by the MIME part) and export_emails (name auto-generated with a timestamp), so two different contents can never be forced onto one name. Overwrite-immunity for differing content is INFERRED from the content-independent collision branch, not directly observed.",
+          "Byte-level checksum comparison of server-side files is impossible from the agent host; fidelity was verified by exact byte-size plus provenance only.",
+          "The download directory cannot be enumerated - there is no listing tool - so a backup agent can only probe names it can predict (the attachment filename and its (1)..(n) siblings).",
+          "Mitigating fact: the unrecoverable effect is ADDITIVE clutter (an extra file), not data loss - no pre-existing content is ever destroyed, so there is no lost content needing restoration."
+        ]
+      },
+      "non_mutating": false,
+      "recovery_status": "unavailable_with_current_tool_surface",
+      "review_disposition": "retain_observed_limitation_no_repeat_needed",
+      "review_note": "Existing live evidence disproves overwrite premise: download creates collision-suffixed new files on MCP-server storage. Available tool surface cannot delete those new files or reclaim the occupied path. Preserve irreversible-addition limitation; do not relabel full recovery or rerun merely to obtain success."
+    }
+  ],
+  "skill": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\n\nBackup guidance for email MCP operations. Use the actual mailbox server alias from the triggering call; do not substitute another account. Resolve every batch member and pagination page, capture before mutation, and persist actual content outside the mailbox. IDs are volatile per-folder sequence numbers, scoped to the last listing/search; pin stable Message-ID plus source folder and re-resolve IDs after moves/deletes. Respect Page X/N: out-of-range draft pages may repeat the last page.\nRead/list/search/header/export calls can mark messages READ. Record unread counts before those calls. If affected IDs are already known, a mark-read + unread-count differential can identify prior unread IDs; restore the probe immediately and save the map. Do not claim flags recovered if enumeration already erased them. Native exports live on the MCP server, not necessarily the agent host; retain the returned path and persist readable message/attachment content locally where available. Recovery may change IDs, flags or transport headers; sending cannot be recalled.\n\n[1] Single delete: establish the folder and target identity; read_email, get_email_headers and every download_attachment; export the containing folder and retain its returned path. Restore with import_emails(preserve_folders=true). Whole-folder import can duplicate surviving siblings; reconcile by Message-ID. Deletion bypasses Trash.\n[2] Batch delete: resolve every requested ID in its current folder and capture every body, header and attachment, not a sample; export that folder (all folders only when the affected scope requires it). Verify export count/content. Recover and reconcile all batch members, accounting for shifted sequence IDs and surviving siblings.\n[3] Delete folder: record folder identity, hierarchy, total/unread counts; capture every message and attachment and export the full folder. Verify count against mailbox stats. Import with preserve_folders=true to recreate it; restore known flags and check counts. Do not treat an export pathname alone as copied bytes.\n[4] Single move: record source/destination counts before reads; persist Message-ID, content, attachments, flags if known and old location. Re-find the message in the destination, move it back and record new IDs. Location cannot be reconstructed from the moved message alone.\n[5] Read/list/header/search: treat unread-state changes as mutations when flags matter. Capture prior affected unread IDs without first reading away that state; listing affects the whole returned page. Restore with mark_emails(...,'unread') and compare counts. Unknown prior flags remain a limitation.\n[6] Batch move: save a source-folder/Message-ID/content/attachment/location entry for EVERY requested member; compare artifact count to the requested batch, not an unrelated folder total. Resolve destination IDs and move each back, re-listing after ID shifts. Preserve known flags separately.\n[7] Mark flags: record read/unread before listing or marking. For known IDs use the count-differential probe described above, then immediately restore it. Apply captured read/unread values on recovery. Important flags are not exposed by the observed readers; do not invent their prior value.\n[8] Update draft: get_drafts exposes ID, subject, recipient and update time, not body/html/cc/bcc. Capture those visible fields and full prior content only when available in earlier save/update inputs. Restore with update_draft using saved content; inaccessible fields cannot be declared backed up.\n[9] Delete draft: capture the visible draft and any full content available from prior inputs, paging by Page X/N. Recreate via save_draft with captured fields. New ID/time differ; an unavailable body cannot be recovered from an empty Drafts mailbox or fabricated.\n[10] Import: capture affected folder names, counts, Message-IDs, bodies, attachments and an export before import. Reconcile post-import identities/content to identify additions; remove only confirmed imported messages and newly created empty folders. Account for pre-existing duplicates and flags; raw sequence-ID set difference is not stable identity.\n[11] Export mailbox: it can mark the whole fetched folder READ even with max_emails. Capture unread state first, restore known unread IDs afterwards, verify counts, and pin the server-returned export path. Do not treat export as a harmless read or assume a requested local path was honored.\n[12] Send: save exact to/cc/bcc, subject, body/html and attachment bytes/checksums plus relevant mailbox pre-state. Pin resulting Sent and local-recipient Inbox copies. Local copies may be removed, but SMTP delivery and downstream recipients cannot be undone; report that boundary.\n[13] Reply: preserve the source message, headers, thread identity, reply content, recipients and attachments before sending. Pin any new Sent/Inbox copies for local cleanup. Reply delivery and external side effects are irreversible; this is evidence capture, not recall.\n[14] Forward: preserve source content, headers and attachments plus the exact forwarding recipients/content. Pin new mailbox copies. Local cleanup cannot revoke externally delivered content; keep the irreversible-delivery limitation explicit.\n[15] Export path: the server rewrites paths to timestamped export filenames; same-folder exports in the same second may collide. Pin the real returned path and avoid such collisions. Preserve unread state as above; a server-only file is not automatically a local artifact.\n[16] Create folder: pin the exact newly created folder name and prior absence. Recovery is delete_folder on that folder only while it remains empty of subsequent/pre-existing data; otherwise capture the contents and dependencies first.\n[17] Save draft: pin draft_id from the successful save_draft result. Recovery is delete_draft of that exact newly created ID, followed by paged get_drafts confirmation. This does not cover overwriting an existing draft.\n\nAttachment download requires the source folder on the triggering mailbox account; pass folder and, when known, expected_message_id. Never substitute another mailbox server.\n",
+  "root_review": {
+    "schema": "rb.experience-review.v1",
+    "at": "2026-09-11T21:31:13.836498+00:00",
+    "execution_complete": true,
+    "verified_pattern_count": 17,
+    "pending_pattern_count": 1,
+    "verified_does_not_mean_full_recovery": true,
+    "deployment": "independent experience only; not deployed to Luna/GLM or imported into browser patternfresh"
+  },
+  "appliesTo": [
+    "arrangements",
+    "blockmgmt",
+    "bookings",
+    "boxoffice",
+    "buildingcontrol",
+    "calibration",
+    "carehomes",
+    "clubsec",
+    "creamery",
+    "crews",
+    "dentaladmin",
+    "dentalpx",
+    "drilling",
+    "fishery",
+    "frontofhouse",
+    "halltrust",
+    "hollins",
+    "inspectors",
+    "labadmin",
+    "memorials",
+    "nursedesk",
+    "nursery",
+    "planthealth",
+    "prepress",
+    "printroom",
+    "reception",
+    "salesdesk",
+    "samplers",
+    "scaffolddesk",
+    "servicecharge",
+    "showsec",
+    "stewards",
+    "surveying",
+    "tempworks",
+    "transferstation",
+    "treework",
+    "vetscans",
+    "watersupply",
+    "watertest",
+    "weighbridge"
+  ]
+}

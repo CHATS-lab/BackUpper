@@ -1,0 +1,18 @@
+{
+  "live_folder": "AD line 4 methods",
+  "sheets": 18,
+  "earlier_issues_graded": 32,
+  "issues_written": 50,
+  "bin_entries_seeded": [
+    "AD line 2 methods",
+    "AD line 2 gauge records",
+    "AD line 2 press logs"
+  ],
+  "rev_sheets": [
+    "AD-412",
+    "AD-419",
+    "AD-427"
+  ],
+  "seeded_at": "2026-09-04T12:32:13Z",
+  "instance": "http://localhost:8092"
+}

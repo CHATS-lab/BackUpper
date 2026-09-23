@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""sessrec -- the table inventory and cached view counts of one session.
+
+What the session database says about itself, what tables it holds and how many
+rows each carries, then one line per cached view with its modality, how many
+views the stack holds and the length the review client cached. View bytes are
+not printed.
+
+usage: sessrec FILE
+"""
+import os
+import re
+import sqlite3
+import sys
+import zlib
+
+CONF = "lanetools.conf"
+REC = re.compile(r"^(\S+); (\d+) view\(s\); (\d+) byte\(s\); "
+                 r"sha256:[0-9a-f]{64}$")
+FIELDS = [("site", "site"), ("lane", "lane"), ("unit", "unit"),
+          ("shift", "shift"), ("opened_utc", "opened"),
+          ("closed_utc", "closed"), ("client", "review client")]
+
+
+def header(raw):
+    """(modality, views in the stack) from the image's own burn-in header."""
+    top = raw[:2048].split(b"\n\n", 1)[0].decode("utf-8", "replace")
+    m = re.search(r"^Modality: (\S+)$", top, re.M)
+    return (m.group(1) if m else "unknown"), raw.count(b"XIM\x01")
+
+
+def measure(payload, rec):
+    """(modality, views in the stack, cached length) for one view row."""
+    m = REC.match(rec or "")
+    if m:
+        return m.group(1), int(m.group(2)), int(m.group(3))
+    if payload is None:
+        return "unknown", 0, 0
+    modality, views = header(zlib.decompress(payload))
+    return modality, views, len(payload)
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        sys.stdout.write(__doc__)
+        return 0
+    if len(argv) != 1 or argv[0].startswith("-"):
+        sys.stderr.write("usage: sessrec FILE\n")
+        return 2
+    if not os.path.exists(CONF):
+        sys.stderr.write("sessrec: no %s here -- run it from the lanetools "
+                         "checkout\n" % CONF)
+        return 2
+    con = sqlite3.connect(argv[0])
+    m = dict(con.execute("SELECT key, value FROM meta"))
+    for key, label in FIELDS:
+        if key in m:
+            print("%-14s %s" % (label, m[key]))
+    names = [r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+    print("%-14s %d" % ("tables", len(names)))
+    for name in names:
+        n = con.execute("SELECT count(*) FROM %s" % name).fetchone()[0]
+        print("  %-12s %7d row(s)" % (name, n))
+    cols = [c[1] for c in con.execute("PRAGMA table_info(view)")]
+    sel = ("SELECT seq, view_no, payload, image_record FROM view"
+           if "image_record" in cols else
+           "SELECT seq, view_no, payload, NULL FROM view")
+    print("%-14s" % "cached views")
+    for seq, view_no, payload, rec in con.execute(sel + " ORDER BY seq, "
+                                                        "view_no"):
+        modality, views, n = measure(payload, rec)
+        print("  %5d %3d  %-16s %d view(s)  %9d byte(s)"
+              % (seq, view_no, modality, views, n))
+    con.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

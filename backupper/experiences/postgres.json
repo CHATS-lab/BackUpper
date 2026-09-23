@@ -1,0 +1,120 @@
+{
+ "server": "postgres",
+ "generated": "2026-07-02T06:28:17.251Z",
+ "observed_tools": [
+  "list_schemas",
+  "list_objects",
+  "get_object_details",
+  "explain_query",
+  "analyze_workload_indexes",
+  "analyze_query_indexes",
+  "analyze_db_health",
+  "get_top_queries",
+  "execute_sql"
+ ],
+ "patterns": [
+  {
+   "action": "insert",
+   "skill": "The INSERT that creates the row MUST include RETURNING id (or the primary key). Capture the returned id. To reverse, execute DELETE FROM <table> WHERE <pk_column> = <captured_id>. One call creates + captures the pin; one call reverses. Capture nothing else — the id is the only pin needed.",
+   "recipe": "DELETE FROM <TABLE> WHERE <PK_COLUMN> = <CAPTURED_ID>;",
+   "applies_to": "execute_sql",
+   "trigger": "insert",
+   "verified": true,
+   "verify_note": "Inserted row into chats_probe_seed, captured RETURNING id=12, DELETEd by that id, confirmed row removed and originals intact. The INSERT's RETURNING clause provides the pin id; the DELETE uses it to remove the created row.",
+   "capture_tools": [
+    "execute_sql"
+   ]
+  },
+  {
+   "action": "update",
+   "skill": "CAPTURE (two calls): (1) execute_sql({sql: \"SELECT pg_get_triggerdef(t.oid)||E'\\n'||pg_get_functiondef(p.oid) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND c.oid='<SCHEMA>.<TABLE>'::regclass UNION ALL SELECT c.oid::regclass::text||E'\\n'||query_to_xml('SELECT * FROM ONLY '||c.oid::regclass::text,true,false,'')::text FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\"}) — returns the table's triggers with each trigger function's source, plus every inheriting child with its rows. Capture every table named in the returned function bodies, and every child returned. (2) execute_sql: SELECT <columns> FROM <table> WHERE <condition matching the UPDATE's WHERE>. Restore with UPDATE <table> SET <col>=<captured> WHERE <pk>=<captured_pk>.",
+   "recipe": "UPDATE <TABLE> SET <COL1> = '<CAPTURED_VAL1>', <COL2> = '<CAPTURED_VAL2>' WHERE <PK_COLUMN> = <CAPTURED_PK_VALUE>;",
+   "applies_to": "execute_sql",
+   "trigger": "update",
+   "verified": true,
+   "verify_note": "Captured row id=1 (alpha/active), mutated to ('mutated','changed'), restored with UPDATE SET name='alpha', status='active' WHERE id=1. Original state confirmed restored. Requires pre-state capture via SELECT, then an UPDATE to restore.",
+   "capture_tools": [
+    "execute_sql"
+   ]
+  },
+  {
+   "action": "delete",
+   "skill": "CAPTURE (two calls, no discovery needed — the first finds and dumps any child by itself): (1) execute_sql({sql: \"SELECT c.oid::regclass::text AS child, query_to_xml('SELECT * FROM ONLY ' || c.oid::regclass::text, true, false, '') AS data FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\"}) — one row per INHERITS child with its FULL rows INCLUDING the child's own extra columns; returns nothing when there are none, so run it unconditionally. Also worth one call for FK children when the DELETE can cascade: execute_sql({sql: \"SELECT conrelid::regclass AS child, confdeltype FROM pg_constraint WHERE confrelid='<SCHEMA>.<TABLE>'::regclass AND contype='f';\"}). (2) execute_sql({sql: 'SELECT * FROM ONLY <TABLE> WHERE <THE DELETE\\'S OWN WHERE>;'}) — the rows the DELETE itself matches. RESTORE: one multi-row INSERT per table from the capture, explicit primary keys.",
+   "recipe": "-- CALL 1 (cascaded/inherited children, one call):\nSELECT c.oid::regclass::text AS child, query_to_xml('SELECT * FROM ONLY ' || c.oid::regclass::text, true, false, '') AS data FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\n-- CALL 2 (rows matching the DELETE's own WHERE)\nINSERT INTO <TABLE> (<COL1>, <COL2>, ...) VALUES (<CAPTURED_VAL1>, ...);\n-- and one INSERT per child, from CALL 1",
+   "applies_to": "execute_sql",
+   "trigger": "delete",
+   "verified": true,
+   "verify_note": "LIMIT OF THIS VERIFICATION: tested on a standalone row with no FK dependents and no inheritance children; a cascading DELETE destroys rows this recipe never captured. Captured row id=3 (gamma/inactive) via SELECT, DELETEd it, then INSERTed back with same id+values. Confirmed id=3 restored exactly as before. Faithful reversal.",
+   "capture_tools": [
+    "execute_sql"
+   ]
+  },
+  {
+   "action": "drop",
+   "skill": "Before any DROP (TABLE, VIEW) via execute_sql, capture in TWO calls: (1) get_object_details(schema_name, object_name, 'table') for structure; (2) execute_sql with a multi-statement query capturing (a) SELECT * FROM <table> ORDER BY <pk>, (b) dependent view definitions via pg_get_viewdef for views referencing the table, (c) sequence state from pg_sequences for any owned sequences. After DROP CASCADE, restore with ONE execute_sql combining: CREATE TABLE (from captured columns/constraints/defaults), INSERT all rows (explicit IDs to preserve FK integrity), SELECT setval() for each sequence, CREATE VIEW for each dependent view. This preserves id stability, sequence continuity, and all dependent objects. ALSO CAPTURE INHERITS CHILDREN — the probe this was verified against had dependent VIEWS and a sequence but NO inheritance, so children were never exercised: execute_sql({sql: \"SELECT c.oid::regclass::text AS child, query_to_xml('SELECT * FROM ONLY ' || c.oid::regclass::text, true, false, '') AS data FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\"}) A child carries its own extra columns that SELECT * on the parent drops.",
+   "applies_to": "execute_sql",
+   "trigger": "drop",
+   "verified": true,
+   "verify_note": "Tested against chats_probe_seed with 2 dependent views and a sequence. Captured structure (get_object_details), data (SELECT *), view definitions (pg_get_viewdef), and sequence state (pg_sequences). Dropped with CASCADE — table and both views gone. Restored in a SINGLE execute_sql call: CREATE TABLE + INSERT data + setval + CREATE VIEWs. Re-verified: all 3 rows identical (ids 1/2/3, same names/statuses), both views return correct active rows, sequence at same position (last_value=10, is_called=true). The CHECK constraint auto-name changed (functionally identical, no impact). Entire reversal took 1 restore call.",
+   "capture_tools": [
+    "get_object_details",
+    "execute_sql"
+   ],
+   "recipe": "-- CAPTURE call 1: get_object_details(<SCHEMA>, <TABLE>, 'table') → records columns, defaults, PK, indexes\n-- CAPTURE call 2:\nexecute_sql({sql: \"SELECT * FROM <TABLE> ORDER BY <PK_COL>;\\nSELECT viewname, pg_get_viewdef(viewname, true) FROM pg_views WHERE schemaname = '<SCHEMA>' AND viewname IN (SELECT dependent_view.relname FROM pg_depend JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid JOIN pg_class AS dependent_view ON pg_rewrite.ev_class = dependent_view.oid WHERE pg_depend.refobjid = '<TABLE>'::regclass AND pg_depend.classid = 'pg_rewrite'::regclass);\\nSELECT sequencename, last_value, is_called FROM pg_sequences WHERE schemaname = '<SCHEMA>' AND sequencename LIKE '<TABLE>%';\"})\n-- RESTORE call (single execute_sql):\nexecute_sql({sql: \"CREATE TABLE <SCHEMA>.<TABLE> (<COLUMNS_WITH_DEFA"
+  },
+  {
+   "action": "truncate",
+   "skill": "CAPTURE (two calls, no discovery needed — the first one finds and dumps any children by itself): (1) execute_sql({sql: \"SELECT c.oid::regclass::text AS child, query_to_xml('SELECT * FROM ONLY ' || c.oid::regclass::text, true, false, '') AS data FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\"}) — returns one row per INHERITS child with its FULL rows INCLUDING the child's own extra columns, which a SELECT * on the parent drops; returns nothing when there are no children, so run it unconditionally. (2) execute_sql({sql: 'SELECT * FROM ONLY <TABLE> ORDER BY <PK>;'}) — the parent's own rows. RESTORE: one multi-row INSERT per table from the capture, explicit primary keys, parent first then each child. SIZE: one 205-row child measured 112 KB; for a big tree add a LIMIT/OFFSET to call (1) and page.",
+   "applies_to": "execute_sql",
+   "trigger": "truncate",
+   "verified": true,
+   "verify_note": "Call 1 VERIFIED LIVE 2026-08-23 against task 2019's image: returned child 'dis.hold' with 112,381 bytes of rows including hold_ref/ground/officer/decided_on/review_on, the five columns SELECT * on the parent silently drops. The earlier single-SELECT recipe was verified only on a standalone probe table with no children, and lost exactly those columns.",
+   "capture_tools": [
+    "execute_sql"
+   ],
+   "recipe": "execute_sql({sql: \"SELECT c.oid::regclass::text AS child, query_to_xml('SELECT * FROM ONLY ' || c.oid::regclass::text, true, false, '') AS data FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\"})\nexecute_sql({sql: 'SELECT * FROM ONLY <TABLE> ORDER BY <PK>;'})\n// ... TRUNCATE happens ...\nexecute_sql({sql: 'INSERT INTO <TABLE> (<COLS>) VALUES <ROWS>;'})  -- parent, then one per child"
+  },
+  {
+   "action": "alter",
+   "skill": "Before any ALTER TABLE: capture with execute_sql('CREATE TABLE <backup_name> AS SELECT * FROM <table_name>'). For additive changes (ADD COLUMN, ADD CONSTRAINT, RENAME TO/COLUMN), reverse with the inverse DDL — no capture needed but having it is harmless. For destructive changes (DROP COLUMN, ALTER COLUMN TYPE): restore from backup using execute_sql with multi-statement SQL: ADD the lost column(s) back matching the backup table's column definition, UPDATE data FROM backup via the primary key, then DROP the backup table. The backup table preserves both schema and data, making get_object_details unnecessary.",
+   "applies_to": "execute_sql",
+   "trigger": "alter",
+   "verified": true,
+   "verify_note": "Tested two ALTER TABLE variants on throwaway table chats_probe_alter_test: (1) ADD COLUMN phone text -> reversed with DROP COLUMN phone — cheap inverse works, no capture needed. (2) DROP COLUMN status — destructive. get_object_details alone is insufficient (only captures schema, not row data). Verified capture-and-restore: CREATE TABLE backup AS SELECT * -> DROP COLUMN -> ADD COLUMN + UPDATE FROM backup restored all 3 rows with id/name/status intact (alpha/active, beta/active, gamma/inactive). This execute_sql-only approach works for all destructive ALTERs (DROP COLUMN, ALTER COLUMN TYPE). For additive ALTERs (ADD COLUMN, ADD CONSTRAINT, RENAME) the inverse DDL suffices and the capture is harmless overhead.",
+   "capture_tools": [
+    "execute_sql"
+   ],
+   "recipe": "Capture: execute_sql({sql: 'CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM <TABLE>'})\nRestore (destructive DROP COLUMN): execute_sql({sql: 'ALTER TABLE <TABLE> ADD COLUMN <COL> <TYPE>; UPDATE <TABLE> t SET <COL> = b.<COL> FROM <BACKUP_TABLE> b WHERE t.<PK_COL> = b.<PK_COL>; DROP TABLE <BACKUP_TABLE>'})\nRestore (non-destructive ADD COLUMN): execute_sql({sql: 'ALTER TABLE <TABLE> DROP COLUMN <COL>'})"
+  },
+  {
+   "action": "create",
+   "skill": "Before CREATE, confirm the object does not exist; after, DROP the created object to restore prior state.",
+   "applies_to": "execute_sql",
+   "trigger": "create",
+   "verified": true,
+   "verify_note": "Created 'chats_probe_throwaway_3358662' table, verified existence via list_objects, dropped it, confirmed it was removed and seeded table unchanged. Clean reversal.",
+   "reverter": {
+    "mcp_calls": [
+     {
+      "tool": "execute_sql",
+      "args": {
+       "sql": "DROP TABLE IF EXISTS <fully_qualified_object_name>;"
+      }
+     }
+    ],
+    "pin": "<fully_qualified_object_name>"
+   }
+  }
+ ],
+ "readOnlyTools": [
+  "list_schemas",
+  "list_objects",
+  "get_object_details",
+  "explain_query",
+  "analyze_workload_indexes",
+  "analyze_query_indexes",
+  "analyze_db_health",
+  "get_top_queries"
+ ],
+ "skill": "How to back up mutations on the \"postgres\" server — every entry was VERIFIED live and is the fewest-calls recipe found; follow it VERBATIM, do not explore for alternatives.\n\nSHARED DISCOVERY CALL — one call that finds AND dumps whatever hangs off the table. Run it before any row-removing or table-changing action; it returns nothing when there is nothing to find, so run it unconditionally:\nexecute_sql({sql: \"SELECT pg_get_triggerdef(t.oid)||E'\\n'||pg_get_functiondef(p.oid) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND c.oid='<SCHEMA>.<TABLE>'::regclass UNION ALL SELECT c.oid::regclass::text||E'\\n'||query_to_xml('SELECT * FROM ONLY '||c.oid::regclass::text,true,false,'')::text FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid WHERE i.inhparent='<SCHEMA>.<TABLE>'::regclass;\"})\nIt returns each non-internal trigger with its function body, AND one row per INHERITS child carrying that child's FULL rows via query_to_xml — including the child's own extra columns, which a SELECT * on the parent silently drops. Capture every table named in the returned trigger function bodies too.\nWhen the action can cascade through foreign keys, one more call:\nexecute_sql({sql: \"SELECT conrelid::regclass AS child, confdeltype FROM pg_constraint WHERE confrelid='<SCHEMA>.<TABLE>'::regclass AND contype='f';\"})\n\n- insert (trigger: insert): The INSERT that creates the row MUST include RETURNING id (or the primary key). Capture the returned id. Reverse with execute_sql({sql: 'DELETE FROM <TABLE> WHERE <PK_COLUMN> = <CAPTURED_ID>;'}). One call creates + captures the pin; one call reverses. Capture nothing else — the id is the only pin needed.\n- update (trigger: update): CAPTURE: execute_sql({sql: 'CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM ONLY <TABLE> WHERE <the UPDATE's own WHERE>;'}) — let the database make the copy; NEVER select the rows into your own context. Verify with aggregates only, BOTH SIDES in one row: execute_sql({sql: 'SELECT (SELECT count(*) FROM <TABLE> WHERE <the same predicate>) AS src, (SELECT count(*) FROM <BACKUP_TABLE>) AS bak;'}) — a count of the backup alone cannot tell you a wrong predicate or a missing ONLY dropped rows. The result is one row whatever the table size. RESTORE: execute_sql({sql: 'INSERT INTO <TABLE> SELECT * FROM <BACKUP_TABLE>;'}), or UPDATE <TABLE> t SET <col> = b.<col> FROM <BACKUP_TABLE> b WHERE t.<PK> = b.<PK>. Then note what you backed up and where it went.\n- delete (trigger: delete): CAPTURE: execute_sql({sql: 'CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM ONLY <TABLE> WHERE <THE DELETE'S OWN WHERE>;'}) — let the database make the copy; NEVER select the rows into your own context. Verify with aggregates only, BOTH SIDES in one row: execute_sql({sql: 'SELECT (SELECT count(*) FROM <TABLE> WHERE <the same predicate>) AS src, (SELECT count(*) FROM <BACKUP_TABLE>) AS bak;'}) — a count of the backup alone cannot tell you a wrong predicate or a missing ONLY dropped rows. The result is one row whatever the table size. RESTORE: execute_sql({sql: 'INSERT INTO <TABLE> SELECT * FROM <BACKUP_TABLE>;'}). Then note what you backed up and where it went. Do the same for every child the SHARED DISCOVERY CALL reports, one backup table each.\n- truncate (trigger: truncate): CAPTURE: execute_sql({sql: 'CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM ONLY <TABLE>;'}) — let the database make the copy; NEVER select the rows into your own context. Verify with aggregates only, BOTH SIDES in one row: execute_sql({sql: 'SELECT (SELECT count(*) FROM <TABLE> WHERE <the same predicate>) AS src, (SELECT count(*) FROM <BACKUP_TABLE>) AS bak;'}) — a count of the backup alone cannot tell you a wrong predicate or a missing ONLY dropped rows. The result is one row whatever the table size. RESTORE: execute_sql({sql: 'INSERT INTO <TABLE> SELECT * FROM <BACKUP_TABLE>;'}). Then note what you backed up and where it went. Do the same for every child, restore parent first.\n- drop (trigger: drop): Before any DROP (TABLE, VIEW), capture in THREE calls: (1) get_object_details(schema_name, object_name, 'table') for structure — columns, defaults, PK, indexes; (2) execute_sql({sql: \"CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM <TABLE>;\\nSELECT viewname, pg_get_viewdef(viewname, true) FROM pg_views WHERE schemaname = '<SCHEMA>' AND viewname IN (SELECT dependent_view.relname FROM pg_depend JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid JOIN pg_class AS dependent_view ON pg_rewrite.ev_class = dependent_view.oid WHERE pg_depend.refobjid = '<TABLE>'::regclass AND pg_depend.classid = 'pg_rewrite'::regclass);\\nSELECT sequencename, last_value, is_called FROM pg_sequences WHERE schemaname = '<SCHEMA>' AND sequencename LIKE '<TABLE>%';\"}) — rows, dependent view definitions, and owned sequence state in one multi-statement call; (3) the SHARED DISCOVERY CALL, because the probe this recipe was verified against had dependent VIEWS and a sequence but NO inheritance, so children were never exercised. RESTORE with ONE execute_sql combining, in order: CREATE TABLE <SCHEMA>.<TABLE> from the captured columns, defaults and constraints; INSERT all rows with explicit ids so foreign keys still resolve; SELECT setval() per captured sequence; CREATE VIEW per captured dependent view; and one INSERT per inheritance child. That preserves id stability, sequence continuity and dependent objects.\n- alter (trigger: alter): Before any ALTER TABLE: execute_sql({sql: 'CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM <TABLE>'}) — the backup table holds both schema and data, which makes get_object_details unnecessary here. RESTORE after a destructive DROP COLUMN: execute_sql({sql: 'ALTER TABLE <TABLE> ADD COLUMN <COL> <TYPE>; UPDATE <TABLE> t SET <COL> = b.<COL> FROM <BACKUP_TABLE> b WHERE t.<PK_COL> = b.<PK_COL>; DROP TABLE <BACKUP_TABLE>'}). RESTORE after a non-destructive ADD COLUMN: execute_sql({sql: 'ALTER TABLE <TABLE> DROP COLUMN <COL>'}).\n- create (trigger: create): Before CREATE, confirm the object does not exist; after, DROP the created object to restore prior state.\n\nPRE-STATE CAPTURE — copy INSIDE the database first. execute_sql({sql: 'CREATE TABLE <BACKUP_TABLE> AS SELECT * FROM <TABLE> WHERE <the action's own predicate>'}); record <BACKUP_TABLE> as the artifact. RESTORE: UPDATE <TABLE> t SET <col> = b.<col> FROM <BACKUP_TABLE> b WHERE t.<PK> = b.<PK> (or INSERT INTO <TABLE> SELECT * FROM <BACKUP_TABLE> for deleted rows). The rows never enter your context, so their size does not matter."
+}

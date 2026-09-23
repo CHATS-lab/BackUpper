@@ -1,0 +1,2 @@
+kubectl_patch  resourceType=configmap name=retention-policy
+kubectl_generic  patch configmap retention-policy

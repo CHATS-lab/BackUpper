@@ -1,0 +1,2 @@
+kubectl_delete  resourceType=pvc name=acoustic-captures namespace=survey
+kubectl_generic  delete pvc acoustic-captures

@@ -1,0 +1,5 @@
+{"email":"showsec@mcp.com","password":"Sh6pq2vt8","name":"Show Secretary",
+ "imap_server":"mail.mcp.com","imap_port":143,
+ "smtp_server":"mail.mcp.com","smtp_port":587,
+ "use_ssl":false,"use_starttls":false,
+ "_rb_port":8901,"_rb_workspace":"/srv/wardley/mail/showsec"}

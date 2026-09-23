@@ -1,0 +1,252 @@
+{
+  "server": "reddit",
+  "generated": "2026-07-01T21:46:27.560Z",
+  "observed_tools": [
+    "browser_close",
+    "browser_resize",
+    "browser_console_messages",
+    "browser_handle_dialog",
+    "browser_evaluate",
+    "browser_file_upload",
+    "browser_fill_form",
+    "browser_install",
+    "browser_press_key",
+    "browser_type",
+    "browser_navigate",
+    "browser_navigate_back",
+    "browser_network_requests",
+    "browser_run_code",
+    "browser_take_screenshot",
+    "browser_snapshot",
+    "browser_click",
+    "browser_drag",
+    "browser_hover",
+    "browser_select_option",
+    "browser_tabs",
+    "browser_wait_for"
+  ],
+  "patterns": [
+    {
+      "action": "submit a new post/submission",
+      "applies_to": "browser_click",
+      "trigger": "submit",
+      "reverter": {
+        "commands": [
+          "delete the submission whose title matches '<title>'"
+        ],
+        "pin": "title"
+      }
+    },
+    {
+      "action": "post a new top-level comment",
+      "applies_to": "browser_click",
+      "trigger": "comment",
+      "verified": true,
+      "verify_note": "Created comment 'chats_probe_test_comment_3106108_v2 - second test' on submission 25, then verified single-call browser_run_code reverter: navigates to submission_url, finds comment article by content text, clicks Delete, dialog auto-accepted via page.once. Result: comment count returned to 'No comments', page shows 'There's nothing here…'. Single-call form confirmed working.",
+      "reverter": {
+        "mcp_calls": [
+          {
+            "tool": "browser_run_code",
+            "args": {
+              "code": "await page.goto('{submission_url}'); await page.waitForLoadState('networkidle'); page.once('dialog', dialog => dialog.accept()); const comment = page.locator('article').filter({ hasText: '{content}' }).first(); await comment.getByRole('button', { name: 'Delete' }).click(); await page.waitForTimeout(500);"
+            }
+          }
+        ],
+        "pin": "content"
+      }
+    },
+    {
+      "action": "post a reply to a comment",
+      "applies_to": "browser_click",
+      "trigger": "reply",
+      "verified": true,
+      "verify_note": "Created reply comment (ID 23) with unique marker then deleted it via Delete button + confirm dialog — it disappeared (comment count 2->1). Re-created reply (ID 24) and tested single-call browser_run_code deletion: navigate + filter article by content text + .last() delete button + dialog accept. Both methods work. The delete action is a hard deletion (no trash/undo). The reply's content IS the pin — the reverter works by locating the article containing the pinned text.",
+      "reverter": {
+        "mcp_calls": [
+          {
+            "tool": "browser_run_code",
+            "args": {
+              "code": "page.once('dialog', dialog => dialog.accept());\nawait page.goto('<submission_url>');\nawait page.waitForLoadState('networkidle');\nconst deleteBtn = page.locator('article').filter({ hasText: '<content>' }).getByRole('button', { name: 'Delete' }).last();\nawait deleteBtn.click();\nawait page.waitForTimeout(1500);"
+            }
+          }
+        ],
+        "pin": "content"
+      }
+    },
+    {
+      "action": "edit submission or comment body",
+      "skill": "CAPTURE via browser_snapshot: read the entity's current body text before editing. RESTORE: navigate to edit page (/f/forum/-/comment/ID/edit or /f/forum/submissionID/-/edit), type captured body into textbox, click Save. This is lossless (same id, restores original content). capture_tools: ['browser_snapshot'].",
+      "applies_to": "browser_click",
+      "trigger": "edit",
+      "verified": true,
+      "verify_note": "Navigated to /f/wallstreetbets/25/-/comment/27/edit: page shows textbox pre-filled with current body and Save button. No cheap reversal exists (no version history, no undo). CAPTURE: read current body text via browser_snapshot before edit. RESTORE: navigate to edit page, fill textbox with captured body, click Save.",
+      "capture_tools": [
+        "browser_snapshot"
+      ]
+    },
+    {
+      "action": "delete submission or comment",
+      "skill": "CAPTURE via browser_snapshot: read the entity's id (from Permalink URL like /f/forum/N/-/comment/ID), body text, and parent context URL before deletion. RESTORE: for submission, navigate to /submit/forum, fill title+url+body, click submit (gets new id — lossy). For comment, navigate to parent submission page, fill comment box, click Post (gets new id — lossy). Recreate is always lossy (new id). capture_tools: ['browser_snapshot'].",
+      "applies_to": "browser_click",
+      "trigger": "delete",
+      "verified": true,
+      "verify_note": "Tested on comment 27: captured pre-state (id=27, body='chats_probe_comment_for_edit_test unique marker x9y2z7', parent submission url /f/wallstreetbets/25/chats_probe_test_submission_3106108). Deleted via button click + confirm dialog. Comment vanished (comments went from 4 to 3). No cheap reversal exists; restore requires recreate via POST. Verified capture-read works.",
+      "capture_tools": [
+        "browser_snapshot"
+      ]
+    },
+    {
+      "action": "upvote a submission or comment",
+      "skill": "Click the same vote button again to toggle back. After voting up, the button label changes from 'Upvote' to 'Retract upvote'; clicking 'Retract upvote' restores the original unvoted state with the same count. Similarly, 'Downvote' becomes 'Retract downvote' and clicking it restores. This is a self-inverse toggle — capture nothing.",
+      "applies_to": "browser_click",
+      "trigger": "upvote",
+      "verified": true,
+      "verify_note": "Tested live on submission #27. Clicked 'Upvote' → count changed 0→1, button label changed to 'Retract upvote'. Clicked 'Retract upvote' → count returned to 0, button reverted to 'Upvote'. Cheap reversal confirmed: the toggle is self-inverse. Same pattern applies for downvote ('Downvote' ↔ 'Retract downvote').",
+      "capture_tools": [
+        "browser_click"
+      ]
+    },
+    {
+      "action": "downvote a post or comment",
+      "skill": "Click the same downvote button again (now labeled 'Retract downvote') to undo the downvote, returning the vote to neutral (score=0). The button toggles between 'Downvote' and 'Retract downvote' — clicking when it says 'Retract downvote' retracts the downvote. Works identically on both submissions and comments. Use browser_snapshot to locate the button, then browser_click to toggle.",
+      "applies_to": "browser_click",
+      "trigger": "downvote",
+      "verified": true,
+      "verify_note": "Tested live on both a submission (id=27 in wallstreetbets) and a comment (id=26). Clicking Downvote toggles the button to 'Retract downvote' and the score dropped (1→-1 on post, 1→-1 on comment). Clicking 'Retract downvote' toggles it back off: score returns to 0 and button reverts to 'Downvote'. The cheap reversal EXISTS and works faithfully — one click undoes the downvote, returning to neutral. Works identically on submissions and comments.",
+      "capture_tools": [
+        "browser_snapshot",
+        "browser_click"
+      ]
+    },
+    {
+      "action": "join a subreddit",
+      "skill": "To reverse subscribing to a forum: use browser_run_code with exactly: `await page.goto('http://reddit.149-28-225-133.sslip.io/forums'); await page.getByRole('article').filter({ hasText: '/f/FORUM_NAME' }).getByRole('button').click();`. The button is a pure toggle — reads 'Subscribe' when not joined, 'Unsubscribe' when joined. No capture needed — just toggle the button back. capture nothing.",
+      "applies_to": "browser_click",
+      "trigger": "subscribe",
+      "verified": true,
+      "verify_note": "Tested on AskReddit forum: clicked 'Subscribe' (joined, button changed to 'Unsubscribe 1 subscriber'), then clicked 'Unsubscribe' (left, button changed back to 'Subscribe No subscribers'). The same button toggles between Subscribe/Unsubscribe. Also confirmed a single browser_run_code call can perform both navigation and click: await page.goto('/forums'); await page.getByRole('article').filter({ hasText: '/f/FORUM_NAME' }).getByRole('button').click(); works in one shot. The reversal is faithful — subscribe count returns to 0 and button correctly shows 'Subscribe' again.",
+      "capture_tools": [
+        "browser_run_code"
+      ]
+    },
+    {
+      "action": "leave a subreddit",
+      "skill": "This is a reversible toggle. To undo: use browser_run_code to navigate to the forum page and click the Subscribe button. Example code: await page.goto('http://reddit.149-28-225-133.sslip.io/f/FORUM_NAME'); await page.getByRole('button', { name: 'Subscribe' }).click(); Capture nothing — the forum persists, only subscription state changes.",
+      "applies_to": "browser_click",
+      "trigger": "unsubscribe",
+      "verified": true,
+      "verify_note": "Created throwaway forum 'chats_probe_3106108', unsubscribed (clicked Unsubscribe button), then re-subscribed via browser_run_code in one call: await page.goto('...'); await page.getByRole('button',{name:'Subscribe'}).click(). Toggle faithfully restores subscription state. No data capture needed — it's a reversible toggle. Cleaned up by deleting the forum.",
+      "capture_tools": [
+        "browser_run_code"
+      ]
+    },
+    {
+      "action": "save a post to bookmarks",
+      "skill": "click save again to unsave, toggling the bookmark state back.",
+      "applies_to": "browser_click",
+      "trigger": "save",
+      "capture_tools": [
+        "browser_snapshot",
+        "browser_click"
+      ]
+    },
+    {
+      "action": "hide a forum from view",
+      "skill": "Click 'Hide this forum' in the sidebar to expand, then click 'Hide' button to hide the forum. To reverse: click 'Hide this forum' again, then click 'Unhide' button. Both operations are simple toggles — no data loss, no new IDs.",
+      "applies_to": "browser_click",
+      "trigger": "hide",
+      "verified": true,
+      "verify_note": "Tested end-to-end on wallstreetbets forum. Clicked 'Hide this forum' in sidebar → clicked 'Hide' button → forum hidden. Then clicked 'Hide this forum' again → clicked 'Unhide' button → forum restored. The Hide/Unhide toggle is a faithful cheap reversal requiring only browser_snapshot + browser_click.",
+      "capture_tools": [
+        "browser_snapshot",
+        "browser_click"
+      ]
+    },
+    {
+      "action": "moderate-approve a post",
+      "skill": "remove the post again to reverse the approval if the prior state was removed.",
+      "applies_to": "browser_click",
+      "trigger": "approve",
+      "capture_tools": [
+        "browser_snapshot",
+        "browser_click"
+      ]
+    },
+    {
+      "action": "type text into an editable element",
+      "skill": "capture the field's current value via evaluate before typing; restore by typing the original value back.",
+      "applies_to": "browser_type",
+      "trigger": "type",
+      "capture_tools": [
+        "browser_evaluate",
+        "browser_type"
+      ]
+    },
+    {
+      "action": "run arbitrary Playwright code snippet",
+      "skill": "Before invoking browser_run_code, call browser_snapshot to capture the full page accessibility snapshot (single call). No restore exists — arbitrary code execution has no generic undo. The snapshot is informational: it records what the page looked like before the code ran. If the code navigates or submits, the snapshot is the only record of the prior state. capture nothing for restore.",
+      "applies_to": "browser_run_code",
+      "trigger": "run_code",
+      "verified": true,
+      "verify_note": "Tested live: took browser_snapshot pre-state, then ran browser_run_code with 'await page.getByRole('textbox', { name: /Title/ }).first().fill('chats_probe_run_code_test')' which mutated the DOM (filled title field). Confirmed no generic undo exists — arbitrary code can submit forms, navigate, or make irreversible changes. The snapshot is the best (and only) pre-mutation capture. Restore is impossible; this is an informational backup only.",
+      "capture_tools": [
+        "browser_snapshot"
+      ]
+    },
+    {
+      "action": "select an option from a dropdown",
+      "skill": "Before calling browser_select_option, use browser_evaluate to capture the current value of the target <select>: `() => document.querySelector('#THE_SELECT_ID').value`. Save this value. After the mutation, call browser_select_option with the saved value to restore the original selection. Target the hidden native <select> element (by its label text or aria-ref), NOT the visible custom Select2/widget element.",
+      "applies_to": "browser_select_option",
+      "trigger": "select",
+      "verified": true,
+      "verify_note": "Tested on submit page forum selector (#submission_forum, a Select2-enhanced <select>). Captured original value ('') via browser_evaluate reading document.querySelector('#submission_forum').value. Selected 'wallstreetbets' (value 10088) via browser_select_option targeting the hidden <select> by label 'Forum *'. Restored original via browser_select_option with value ''. Confirmed restoration via browser_evaluate: value returned to ''. The browser_select_option tool works on the hidden native <select> (target by label text or aria-ref), not on the visible Select2 widget. Two-call cycle: 1 eval read + 1 select_option restore.",
+      "capture_tools": [
+        "browser_evaluate",
+        "browser_select_option"
+      ]
+    },
+    {
+      "action": "press a key on the keyboard",
+      "skill": "CAPTURE: use browser_evaluate to read the focused element's current value (e.g., document.activeElement.value). RESTORE: use browser_type to fill the target element with the captured original value. This undoes accidental keypresses before any save/submit commits them server-side.",
+      "applies_to": "browser_press_key",
+      "trigger": "press",
+      "verified": true,
+      "verify_note": "Tested on submission ID 28 (chats_probe_keypress_test_3106108 on Postmill). browser_evaluate captured body textbox value before pressing 'x'. After press, value appended 'x'. browser_type fill restored the original text exactly. Pattern works for transient DOM text mutations from stray keypresses.",
+      "capture_tools": [
+        "browser_evaluate",
+        "browser_type"
+      ]
+    },
+    {
+      "action": "drag and drop an element",
+      "skill": "capture element positions and ordering via snapshot before dragging; restore by dragging elements back.",
+      "applies_to": "browser_drag",
+      "trigger": "drag",
+      "capture_tools": [
+        "browser_snapshot",
+        "browser_drag"
+      ]
+    },
+    {
+      "action": "vote on submission or comment",
+      "skill": "No capture needed. To restore after accidental vote: click the opposite button (if downvoted, click 'Retract downvote' then 'Upvote'; if upvoted, click 'Retract upvote' then 'Downvote'; if retracted, click the original vote to restore). capture nothing.",
+      "applies_to": "browser_click",
+      "trigger": "vote",
+      "verified": true,
+      "verify_note": "Tested on chats_probe_keypress_test_3106108: clicked Downvote (score changed 1→-1 with 'Retract downvote' button), then clicked Retract downvote (score 0, 'Downvote' restored), then Upvote (score back to 1). The cheap reversal is to click the opposite toggle button. Verified end to end.",
+      "capture_tools": [
+        "browser_snapshot"
+      ]
+    }
+  ],
+  "readOnlyTools": [
+    "browser_console_messages",
+    "browser_network_requests",
+    "browser_snapshot",
+    "browser_wait_for"
+  ],
+  "appliesTo": [
+    "playwright"
+  ],
+  "skill": "How to back up mutations on the \"reddit\" server — every entry was VERIFIED live and is the fewest-calls recipe found; follow it VERBATIM, do not explore for alternatives:\n- post a new top-level comment (trigger: comment): creation-only — the runtime reverses it deterministically (delete the created entity pinned by \"content\": browser_run_code({\"code\":\"await page.goto('{submission_url}'); await page.waitForLoadState('networkidle'); page.once('dialog', dialog => dialog.accept()); const comment = page.locator('article').filter({ hasText: '{content}' }).first(); await comment.getByRole('button', { name: 'Delete' }).click(); await page.waitForTimeout(500);\"})); capture nothing.\n- post a reply to a comment (trigger: reply): creation-only — the runtime reverses it deterministically (delete the created entity pinned by \"content\": browser_run_code({\"code\":\"page.once('dialog', dialog => dialog.accept());\\nawait page.goto('<submission_url>');\\nawait page.waitForLoadState('networkidle');\\nconst deleteBtn = page.locator('article').filter({ hasText: '<content>' }).getByRole('button', { name: 'Delete' }).last();\\nawait deleteBtn.click();\\nawait page.waitForTimeout(1500);\"})); capture nothing.\n- edit submission or comment body (trigger: edit): CAPTURE via browser_snapshot: read the entity's current body text before editing. RESTORE: navigate to edit page (/f/forum/-/comment/ID/edit or /f/forum/submissionID/-/edit), type captured body into textbox, click Save. This is lossless (same id, restores original content). capture_tools: ['browser_snapshot'].\n- delete submission or comment (trigger: delete): CAPTURE via browser_snapshot: read the entity's id (from Permalink URL like /f/forum/N/-/comment/ID), body text, and parent context URL before deletion. RESTORE: for submission, navigate to /submit/forum, fill title+url+body, click submit (gets new id — lossy). For comment, navigate to parent submission page, fill comment box, click Post (gets new id — lossy). Recreate is always lossy (new id). capture_tools: ['browser_snapshot'].\n- upvote a submission or comment (trigger: upvote): Click the same vote button again to toggle back. After voting up, the button label changes from 'Upvote' to 'Retract upvote'; clicking 'Retract upvote' restores the original unvoted state with the same count. Similarly, 'Downvote' becomes 'Retract downvote' and clicking it restores. This is a self-inverse toggle — capture nothing.\n- downvote a post or comment (trigger: downvote): Click the same downvote button again (now labeled 'Retract downvote') to undo the downvote, returning the vote to neutral (score=0). The button toggles between 'Downvote' and 'Retract downvote' — clicking when it says 'Retract downvote' retracts the downvote. Works identically on both submissions and comments. Use browser_snapshot to locate the button, then browser_click to toggle.\n- join a subreddit (trigger: subscribe): To reverse subscribing to a forum: use browser_run_code with exactly: `await page.goto('http://reddit.149-28-225-133.sslip.io/forums'); await page.getByRole('article').filter({ hasText: '/f/FORUM_NAME' }).getByRole('button').click();`. The button is a pure toggle — reads 'Subscribe' when not joined, 'Unsubscribe' when joined. No capture needed — just toggle the button back. capture nothing.\n- leave a subreddit (trigger: unsubscribe): This is a reversible toggle. To undo: use browser_run_code to navigate to the forum page and click the Subscribe button. Example code: await page.goto('http://reddit.149-28-225-133.sslip.io/f/FORUM_NAME'); await page.getByRole('button', { name: 'Subscribe' }).click(); Capture nothing — the forum persists, only subscription state changes.\n- hide a forum from view (trigger: hide): Click 'Hide this forum' in the sidebar to expand, then click 'Hide' button to hide the forum. To reverse: click 'Hide this forum' again, then click 'Unhide' button. Both operations are simple toggles — no data loss, no new IDs.\n- run arbitrary Playwright code snippet (trigger: run_code): Before invoking browser_run_code, call browser_snapshot to capture the full page accessibility snapshot (single call). No restore exists — arbitrary code execution has no generic undo. The snapshot is informational: it records what the page looked like before the code ran. If the code navigates or submits, the snapshot is the only record of the prior state. capture nothing for restore.\n- select an option from a dropdown (trigger: select): Before calling browser_select_option, use browser_evaluate to capture the current value of the target <select>: `() => document.querySelector('#THE_SELECT_ID').value`. Save this value. After the mutation, call browser_select_option with the saved value to restore the original selection. Target the hidden native <select> element (by its label text or aria-ref), NOT the visible custom Select2/widget element.\n- press a key on the keyboard (trigger: press): CAPTURE: use browser_evaluate to read the focused element's current value (e.g., document.activeElement.value). RESTORE: use browser_type to fill the target element with the captured original value. This undoes accidental keypresses before any save/submit commits them server-side.\n- vote on submission or comment (trigger: vote): No capture needed. To restore after accidental vote: click the opposite button (if downvoted, click 'Retract downvote' then 'Upvote'; if upvoted, click 'Retract upvote' then 'Downvote'; if retracted, click the original vote to restore). capture nothing."
+}

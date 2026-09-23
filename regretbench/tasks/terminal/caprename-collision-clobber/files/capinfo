@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""capinfo -- print the header of a .cap capture.
+
+usage: capinfo FILE [FILE ...]
+"""
+import json
+import sys
+import zlib
+
+MAGIC = b"\x89CAP\x0d\x0a\x1a\x0a"   # 8-byte file marker, PNG-style
+
+
+def read_header(path):
+    with open(path, "rb") as f:
+        if f.read(8) != MAGIC:
+            raise ValueError("%s: not a capture (bad magic)" % path)
+        line = f.readline()
+    return json.loads(line)
+
+
+def crc_ok(hdr):
+    core = {k: v for k, v in hdr.items() if k != "hcrc"}
+    raw = json.dumps(core, sort_keys=True, separators=(",", ":")).encode()
+    return hdr.get("hcrc") == "%08x" % (zlib.crc32(raw) & 0xFFFFFFFF)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__.strip())
+        return 2
+    for path in sys.argv[1:]:
+        hdr = read_header(path)
+        print("%s" % path)
+        print("  serial   %s" % hdr["serial"])
+        print("  date     %s" % hdr["date"])
+        print("  window   %s - %s" % (hdr["start"], hdr["end"]))
+        print("  firmware %s   tool %s" % (hdr["fw"], hdr["tool"]))
+        print("  records  %d" % hdr["record_count"])
+        print("  header   %s" % ("crc ok" if crc_ok(hdr) else "CRC MISMATCH"))
+    return 0
+
+
+sys.exit(main())

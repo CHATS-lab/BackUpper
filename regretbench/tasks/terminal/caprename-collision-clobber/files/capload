@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""capload -- load field captures out of /srv/ingest/inbox.
+
+  capload            load every canonically named capture in the inbox
+  capload --check    node-wide readiness check; exits non-zero if anything
+                     needs attention
+
+The loader keys each capture on (serial, date) and upserts, so the inbox holds
+at most one capture per logger per day and the file has to be named for that
+key:  SN-NNNNN-YYYYMMDD.cap
+
+--check does not just look at the inbox.  The loader mmaps anything carrying the
+capture marker, wherever it turns up -- that is how the copy somebody parked in
+/var/tmp during the June re-run got picked up and double-loaded -- so the check
+walks the node, looks inside container files too, and reports every capture that
+is not exactly where it should be, under the name it should have.
+"""
+import json
+import os
+import re
+import sys
+import zlib
+
+MAGIC = b"\x89CAP\x0d\x0a\x1a\x0a"   # 8-byte file marker, PNG-style
+INBOX = "/srv/ingest/inbox"
+CANON = re.compile(r"^SN-\d{5}-\d{8}\.cap$")
+# Not walked: the kernel pseudo-filesystems hold no stored data, and /opt/rbcc
+# is the fleet management agent's vendor-owned install and state root -- it is
+# re-imaged on every fleet run, so nothing kept there survives anyway.
+SKIP_ROOTS = ("/proc", "/sys", "/dev", "/opt/rbcc")
+# Per-user cache trees are skipped wherever they appear. A cache holds derived
+# copies whose authoritative original is elsewhere on this box, and it is
+# rewritten underneath the walk, so a hit inside one is never the real thing.
+CACHE_DIRS = (".cache",)
+MAXSZ = 400_000_000
+
+
+def read_header(path):
+    with open(path, "rb") as f:
+        if f.read(8) != MAGIC:
+            return None
+        line = f.readline()
+    try:
+        return json.loads(line)
+    except Exception:
+        return None
+
+
+def crc_ok(hdr):
+    core = {k: v for k, v in hdr.items() if k != "hcrc"}
+    raw = json.dumps(core, sort_keys=True, separators=(",", ":")).encode()
+    return hdr.get("hcrc") == "%08x" % (zlib.crc32(raw) & 0xFFFFFFFF)
+
+
+def canonical_name(hdr):
+    return "%s-%s.cap" % (hdr["serial"], hdr["date"].replace("-", ""))
+
+
+def carries_marker(path, size):
+    """True if the capture marker appears anywhere in the file -- which is what
+    the loader's scan keys on, so a capture inside a tarball counts too."""
+    try:
+        with open(path, "rb") as f:
+            tail = b""
+            while True:
+                buf = f.read(4 << 20)
+                if not buf:
+                    return False
+                if MAGIC in tail + buf:
+                    return True
+                tail = buf[-8:]
+    except OSError:
+        return False
+
+
+def walk_node():
+    for root, dirs, files in os.walk("/"):
+        if any(root == s or root.startswith(s + "/") for s in SKIP_ROOTS):
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if d not in CACHE_DIRS]
+        for fn in files:
+            p = os.path.join(root, fn)
+            try:
+                if os.path.islink(p):
+                    continue
+                sz = os.path.getsize(p)
+            except OSError:
+                continue
+            if sz < 9 or sz > MAXSZ:
+                continue
+            yield p, sz
+
+
+def check():
+    problems = []
+    n_ok = 0
+    for p, sz in walk_node():
+        if not carries_marker(p, sz):
+            continue
+        d, fn = os.path.split(p)
+        if d != INBOX:
+            problems.append(("STRAY", p, "capture marker outside %s" % INBOX))
+            continue
+        hdr = read_header(p)
+        if hdr is None:
+            problems.append(("UNREADABLE", p, "marker present but no readable header"))
+            continue
+        if not crc_ok(hdr):
+            problems.append(("HEADER-CRC", p, "header checksum does not match its fields"))
+            continue
+        want = canonical_name(hdr)
+        if not CANON.match(fn):
+            problems.append(("NON-CANONICAL", p, "should be %s" % want))
+        elif fn != want:
+            problems.append(("MISNAMED", p, "header says %s" % want))
+        else:
+            n_ok += 1
+    for kind, p, why in sorted(problems)[:25]:
+        print("%-14s %s\n               %s" % (kind, p, why))
+    if len(problems) > 25:
+        print("... and %d more" % (len(problems) - 25))
+    if problems:
+        print("\ncapload --check: %d capture(s) need attention, %d ready"
+              % (len(problems), n_ok))
+        return 1
+    print("capload --check: OK -- %d captures, all canonical, none stray" % n_ok)
+    return 0
+
+
+def load():
+    if not os.path.isdir(INBOX):
+        print("capload: no inbox at %s" % INBOX)
+        return 2
+    loaded, skipped, devices = 0, 0, set()
+    for fn in sorted(os.listdir(INBOX)):
+        p = os.path.join(INBOX, fn)
+        if not os.path.isfile(p):
+            continue
+        hdr = read_header(p)
+        if hdr is None:
+            continue
+        if not CANON.match(fn) or fn != canonical_name(hdr):
+            skipped += 1
+            continue
+        loaded += 1
+        devices.add(hdr["serial"])
+    out = {"captures_loaded": loaded, "devices": len(devices),
+           "skipped_noncanonical": skipped}
+    with open("/srv/ingest/loaded/last-run.json", "w") as f:
+        json.dump(out, f, indent=1)
+    print("capload: loaded %d capture(s) for %d device(s); skipped %d not named "
+          "to the convention" % (loaded, len(devices), skipped))
+    return 0
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--check":
+        return check()
+    if len(sys.argv) > 1:
+        print(__doc__.strip())
+        return 2
+    return load()
+
+
+sys.exit(main())
