@@ -1,43 +1,26 @@
-<div align="center">
-<h1>BackUpper: Pre-Execution Backups for Coding Agents</h1>
+# BackUpper
 
-<p>Captures what an agent's tool call is about to destroy, before it runs, so the step can be undone.</p>
+**Undo for coding agents.** BackUpper sits in front of every tool call your agent makes and
+keeps a copy of whatever that call is about to delete or overwrite. If a step turns out to be
+a mistake, `backupper restore` puts things back.
 
-![Status: Alpha](https://img.shields.io/badge/status-alpha-orange?style=for-the-badge) ![Node >= 18](https://img.shields.io/badge/node-%3E%3D18-339933?style=for-the-badge&logo=node.js&logoColor=white) ![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
-
-</div>
-
----
-
-> [!IMPORTANT]
-> **BackUpper is in early alpha** and under active development.
-> Commands, configuration keys and the on-disk layout may still change between releases.
-> Feedback and issues are very welcome.
-
-<p align="center">
-  <a href="#installation">Install</a> |
-  <a href="#quickstart">Quickstart</a> |
-  <a href="#offline-demo">Offline demo</a> |
-  <a href="#dashboard">Dashboard</a> |
-  <a href="#how-it-works">How it works</a> |
-  <a href="#configuration">Configuration</a> |
-  <a href="#citation">Citation</a>
-</p>
-
-**BackUpper** is a hook for coding agents. Before a tool call runs, it records what that call
-is about to change: it moves deleted files into a trash, snapshots the workspace, saves
-package manifests, and for state outside the workspace (a database row, a cluster object, a
-mailbox) it asks a small backup subagent to capture it. The capture happens inside the hook,
-so the agent normally carries on without pausing. When a step turns out to be a mistake,
-`backupper restore` puts things back.
-
-It works with **Claude Code**, **Codex** and **Hermes**. Everything it records stays in
+It works with **Claude Code**, **Codex** and **Hermes**, and keeps everything it records in
 `.backupper/` inside your project.
 
-> **Platforms.** BackUpper needs **Node.js 18+**, and **git** for workspace snapshots. It is
-> tested on **Linux** and should work on **macOS**. **Windows is untested**; use **WSL**.
+## What it does
+
+- **Deleted files** go to a per-action trash instead of disappearing.
+- **Workspace edits** are covered by a git snapshot taken before the call.
+- **Package installs and environment changes** get a manifest (`pip freeze`, `npm list`, env dump).
+- **State outside the workspace** (a database row, a cluster object, a mailbox) is captured by a
+  short-lived backup subagent, which also writes down how to restore it.
+
+The capture happens inside the hook, so the agent normally carries on without pausing.
 
 ## Installation
+
+Requirements: Node.js 18 or newer, and git (used for workspace snapshots). Tested on Linux;
+macOS should work; on Windows use WSL.
 
 ```bash
 npm install -g agents-backupper
@@ -99,7 +82,7 @@ backupper --version
 backupper <command> --help      # usage of one command; it does nothing else
 ```
 
-## Offline demo
+## Try it without an agent
 
 No agent and no API key needed:
 
