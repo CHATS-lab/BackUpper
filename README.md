@@ -1,11 +1,27 @@
-# BackUpper
+<div align="center">
+<h1>BackUpper: Undo for Coding Agents</h1>
 
-**Undo for coding agents.** BackUpper sits in front of every tool call your agent makes and
-keeps a copy of whatever that call is about to delete or overwrite. If a step turns out to be
-a mistake, `backupper restore` puts things back.
+[![GitHub](https://img.shields.io/badge/GitHub-BackUpper-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/xli04/BackUpper) [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=for-the-badge&logo=node.js&logoColor=white)](#installation) [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-It works with **Claude Code**, **Codex** and **Hermes**, and keeps everything it records in
-`.backupper/` inside your project.
+<strong>Supports:</strong>&nbsp;
+<a href="#per-agent-notes"><img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=anthropic&logoColor=white" alt="Claude Code"></a>
+<a href="#per-agent-notes"><img src="https://img.shields.io/badge/Codex-000000?style=flat-square&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABm0lEQVR42rVSK6jCYBj9f7FoG75A0KRNWbDKQAQxGuRHYWCRgWYRLBo0DCwqBrUJLojY7C74aGPJMNGyMIQN8QEKv7pbLj7GhcsN97SP7xy+7xwO1HUd/AUm8EeYDfP9fud5fr/fRyIRm832ywWMMU3T6/UaABCNRlOpVCaTEUXxQ6G/odVqTSaTxWKBEOr3+8fjUVXVZDK5Wq2enJeAYRiSJGVZTiQSmqaVy+VYLMYwzGw2q1QqT9q3h+l06vP5XC4XhFBV1VwudzqdstlsIBCoVqt2u91oervdhkIhnufP57PX6+U47vF4hMNht9vNsmy9Xpdl2ePxvExTFMVxHE3TtVpNURSMMcaYIIhSqTQcDuPx+HK5/Ljg9/vNZnOxWGRZdrPZUBTldDoPh4PFYgEACIKAEDLGShBEoVDodrudTiedTrfbbavVquv6aDSCEAaDQWOskiQhhDRNu16vzWYTISRJ0mAwGI/H79HD9y6Jotjr9W63myAI+Xx+t9spitJoNEym1yPwx/JdLpf5fO5wOEiSNKzgv7f1C7WV+mn4U8OsAAAAAElFTkSuQmCC&logoColor=white" alt="Codex"></a>
+<a href="#per-agent-notes"><img src="https://img.shields.io/badge/%E2%9A%95%EF%B8%8F_Hermes-6B4FBB?style=flat-square" alt="Hermes"></a>
+</div>
+
+---
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> |
+  <a href="#try-it-without-an-agent">Try It Without an Agent</a> |
+  <a href="#dashboard">Dashboard</a> |
+  <a href="#how-it-works">How It Works</a> |
+  <br>
+  <a href="#configuration">Configuration</a> |
+  <a href="#citation">Citation</a>
+</p>
+
+**BackUpper** gives your coding agent an undo button. It sits in front of every tool call and keeps a copy of whatever that call is about to delete or overwrite, so a bad step can be rolled back with one command. Just `npm install -g agents-backupper`, run `backupper install` for your agent, and keep working. Everything it records stays in `.backupper/` inside your project.
 
 ## What it does
 
