@@ -1,0 +1,290 @@
+{
+ "server": "k8s",
+ "observed_tools": [
+  "cleanup",
+  "kubectl_get",
+  "kubectl_describe",
+  "kubectl_apply",
+  "kubectl_delete",
+  "kubectl_create",
+  "kubectl_logs",
+  "kubectl_scale",
+  "kubectl_patch",
+  "kubectl_rollout",
+  "kubectl_context",
+  "kubectl_reconnect",
+  "explain_resource",
+  "node_management",
+  "port_forward",
+  "stop_port_forward",
+  "exec_in_pod",
+  "list_api_resources",
+  "kubectl_generic",
+  "ping"
+ ],
+ "readOnlyTools": [
+  "kubectl_get",
+  "kubectl_describe",
+  "kubectl_logs",
+  "explain_resource",
+  "list_api_resources",
+  "ping"
+ ],
+ "skill": "VOLUME DATA - CHOICE RULE. (a) The action removes a CLAIM, i.e. its effect is the provisioner reclaiming a bound PV: PVC delete, namespace delete, StatefulSet scale-down with a Delete retention policy, scaling away a workload whose loss releases a claim. Use RETAIN AND REBIND (below). (b) Data is destroyed INSIDE a live volume (rm/overwrite/truncate via exec or a job, retention/prune config), emptyDir, or a PV whose storage class ignores Retain. Use the IN-CLUSTER COPY (below). When unsure, do both.\n\nRETAIN AND REBIND (executable).\nCapture, BEFORE the action: kubectl_get the claim (output yaml) and its bound PV; record PV name, persistentVolumeReclaimPolicy, storageClassName, capacity, accessModes, claimRef, and the claim's spec/labels/annotations. Then kubectl_patch({resourceType:\"persistentvolume\", name:\"<PV>\", patchType:\"merge\", patchData:{spec:{persistentVolumeReclaimPolicy:\"Retain\"}}}) and verify with kubectl_get that the PV now says Retain. Save all of this in remote-state.json.\nRecovery, written as recovery_mcp_calls (not prose), in this order:\n 1. kubectl_patch({resourceType:\"persistentvolume\", name:\"<PV>\", patchType:\"merge\", patchData:{spec:{claimRef:null}}})   # Released -> Available\n 2. kubectl_apply({namespace:\"<NS>\", manifest:\"<the claim's recorded spec: same name, namespace, labels, storageClassName, accessModes, resources.requests.storage, plus spec.volumeName: <PV>>\"})\n 3. kubectl_get({resourceType:\"persistentvolumeclaim\", name:\"<CLAIM>\", namespace:\"<NS>\"})   # expect Bound to <PV>\n 4. kubectl_patch({resourceType:\"persistentvolume\", name:\"<PV>\", patchType:\"merge\", patchData:{spec:{persistentVolumeReclaimPolicy:\"<original>\"}}})\nVerify the data after rebinding by a helper pod mounting the claim read-only: file count and a digest of the sorted sha256 list, aggregates only, compared with the values recorded at capture time. Workloads that mounted the claim restart onto it unchanged.\n\nIN-CLUSTER COPY (case (b) of the choice rule; also a second copy in case (a) when in doubt). Let the cluster make the copy; never pull file bytes or base64 archives through MCP into your context. Verify with aggregates only.\n1) Backup claim: kubectl_apply a new PVC (same storageClass, size >= source) named for this action, in a namespace the action does not remove.\n2) Helper pod: kubectl_apply one pod mounting the source claim readOnly at /src and the backup claim at /bak; for node-local storage pin it to the source volume's node with nodeSelector kubernetes.io/hostname: <node> (or node affinity), NEVER spec.nodeName: the helper must go through the scheduler, because a WaitForFirstConsumer backup claim only binds once a pod that uses it is scheduled. If the backup claim stays Pending, read its events and the StorageClass volumeBindingMode before giving up. This works whether or not any pod already mounts the source (no-mount case: the helper mounts it itself). Wait until Ready.\n3) Once the backup claim is Bound, kubectl_patch its PV spec.persistentVolumeReclaimPolicy=Retain so neither the destructive action nor a later cleanup can reclaim the copy.\n4) exec_in_pod: cp -a /src/. /bak/, then return aggregates only for BOTH sides: regular-file count and a digest of the sorted sha256 list, e.g. cd /src && find . -type f | wc -l && find . -type f -exec sha256sum {} + | sort -k2 | sha256sum (same for /bak). Mismatch or error = capture failed.\n5) Delete the helper pod and confirm it is gone BEFORE returning: a pod still mounting the source keeps the claim Terminating under pvc-protection and makes the triggering call hang or fail. Keep the backup claim and its retained PV.\n6) Record source claim manifest, backup claim ns/name, backup PV name, counts and digests in remote-state.json. Recovery (write it as recovery_mcp_calls): recreate the source claim from its sanitized manifest (same name/namespace/storageClass/size), apply a helper mounting the backup claim readOnly at /bak and the new claim at /dst, exec cp -a /bak/. /dst/, verify the same aggregates, delete the helper.\nTerminating/pvc-protection case: if the source claim is already Terminating because a pod still mounts it, it is still readable; capture now, through that pod or your helper, before the protecting pod goes. If no backup claim can be provisioned and the action removes a claim, use RETAIN AND REBIND; the tar|base64-through-MCP route below is a FALLBACK for small volumes only.\n\nFALLBACK (small volumes only, or no backup claim possible): Large MCP output saved to a tool-results file is captured data, not failure. Read that file with Python, decode its payload, copy the verified archive to the action directory; do not re-run the export or paste base64 into the prompt.\n\nARCHIVE PORTABILITY: BusyBox tar does not support GNU --null/--files-from. For known target directories use tar -czf - -C <parent> <relative-paths> | base64, with shell pipefail enabled where supported. Prefer archiving the resolved directory over an unsupported filename pipeline. For individual files use base64 <path>. Capture command errors; empty output is failure. Decode whitespace-normalized base64, open the tar locally, verify expected paths/counts/hashes before reporting capture; run gzip -t, not only a tar listing; a successful final pipeline command is not proof. If exact bytes cannot be persisted and verified, report capture failure.\n\nPOLICY AND CASCADING DATA: Before patch/apply of configuration that controls retention, TTL, cleanup, pruning or storage, capture the dependent data the new policy can delete, not only the configuration object. Inspect namespace workload manifests for consumers of the named ConfigMap/Secret (volumes, envFrom/env, command arguments), follow their PVC mounts, capture the affected existing bytes before returning. Restoring an old policy cannot recreate data already deleted by its controller. If consumers or affected bytes cannot be identified/captured, report the gap explicitly rather than declaring the config-only backup sufficient.\n\nBOUND PVC CAPTURE: A bound volume may contain data even when no pod mounts it. Enumerate all pods in the namespace and match spec.volumes[].persistentVolumeClaim.claimName; never assume app=<claim name>. If no usable mount exists, create a dedicated temporary Pod via kubectl_apply using the exact claim read-only, wait until Ready, then do the IN-CLUSTER COPY; inventory + tar/base64 through MCP only as the small-volume fallback. Save PVC/PV manifests and decoded archive outside the cluster in this action directory. Keep archive base64 separate from hash lines. Delete only your temporary helper after verified durable files exist. RBAC, scheduling, invalid/truncated output or missing tools mean capture failed, never YAML-only success.\n\nSTORAGE RETENTION: see RETAIN AND REBIND at the top; a flipped policy with no rebind recovery written is not yet a backup.\n\nBackup guidance for Kubernetes MCP operations. Use the triggering call's actual cluster alias and namespace. Resolve every selector and manifest document, follow pagination, expand owner/dependents, save actual data outside the cluster before mutation. Prefer full YAML: some JSON list responses contain only names/status. Keep the original manifest plus a restore copy without status, uid, resourceVersion, generation, creationTimestamp, managedFields; handle last-applied/revision annotations deliberately. A manifest is not a data-volume backup. Recreated UIDs/IPs, process memory and history may not be recoverable.\n\n[1] Delete: resolve all names/labels/documents; save full target YAML and cascading ownerReferences dependents. Include workload revisions/pods, namespace resources, and Service addresses/endpoints. Secret data may be redacted: capture individual .data keys via kubectl_generic jsonpath when permitted. PVC/PV or namespace deletion additionally requires the volume data preserved: RETAIN AND REBIND with executable rebind recovery (preferred), IN-CLUSTER COPY where Retain does not apply; tar/base64 only for small volumes. For a kind the cluster itself defines, also save its CustomResourceDefinition and dry-run apply it. Restore data and dependency-ordered sanitized objects; record identity/address changes.\n[2] Apply: enumerate every YAML document. Existing object: save complete pre-state, including keys an apply may prune, and workload/revision/volume dependents. Absent object: record absence and identify what this call creates. Recovery restores prior objects and deletes only confirmed additions. Pass manifest content inline when the server cannot read host files.\n[3] Create: record prior existence/absence and full manifests of existing targets. Inspect every member even on error because a multi-object create can partially succeed. Pin newly created kind/name/namespace/UID and recover by deleting only those creations, including dependent data where applicable; never use cleanup as a universal inverse.\n[4] Patch: save complete target YAML/JSON, not just patched keys. Merge patches may delete fields, reorder lists or introduce keys. Keep an unmodified capture and a sanitized restore copy; restore exact prior values and remove newly introduced keys. Verify target and affected children, not merely a successful apply return.\n[5] Scale: save full workload and explicit replicas, full pod manifests and any matching HPA. If the scale-down releases a claim (a reaper/keeper pattern, whenScaled=Delete), RETAIN AND REBIND that claim's PV first. Include unmanaged/pod-local/emptyDir data before pod loss. Recover desired replicas and HPA state and verify readiness. Recreated pod identity, logs and memory are not preserved by replica count alone.\n[6] Rollout undo/restart/pause/resume: save workload spec/template/paused/replicas, revision number, all matching ReplicaSets or ControllerRevisions and pod state/data. Recover from the captured template/revision and prior paused state; verify readiness. Do not assume undo can recover a revision already removed by history retention.\n[7] Cordon/uncordon: save whether spec.unschedulable was absent or false, all taints and node labels/annotations; inventory node-bound pods and owners. Restore exact prior field presence and values. Any evicted bare pod or local data needs its own manifest/bytes, not just uncordon.\n[8] Bare pod delete: capture full YAML, logs and container/emptyDir data before deletion; no owner will recreate a bare pod. Restore sanitized manifest inline, repopulate data and verify bytes. Pod UID/IP/times, emptyDir and process memory do not return from YAML alone.\n[9] Start port-forward: persist resourceType, resourceName, namespace, localPort and targetPort at creation. Pin the version-specific derived id '<resourceType>-<resourceName>-<localPort>'. Recovery stops only that forward. Existing tunnel/socket state is outside this creation-only inverse.\n[10] Drain: dryRun first to resolve the actual eviction set. Save node scheduling/taints plus every affected pod's manifest, owners, logs and local/volume bytes, including workloads outside the default namespace. Restore node state, recreate bare pods and data; verify. Dry-run evidence does not establish successful live drain recovery.\n[11] exec_in_pod writes: enumerate every affected path. Export actual bytes using base64 plus wc/sha256sum; persist, decode and compare the artifact hash before mutation. Restore those bytes and verify independently. Record ownership/mode needs separately; content-only tests do not prove metadata or process-state recovery.\n[12] kubectl_generic mutation: label/annotate needs full YAML plus original values AND absent-key flags. Recover existing values with --overwrite; remove originally absent keys with key-. For other verbs apply the relevant resource/data capture; the generic tool is not a read.\n[13] Set context: save the exact current context, detailed contexts and raw kubeconfig; preserve missing namespace versus explicit default. Restore the original pointer/config and verify. This changes the server's global target, not just this caller; get/list are reads.\n[14] Stop port-forward: this server exposes no active-forward enumeration. Recover the five creation fields from prior creation records before stopping; an id alone is insufficient. Recreate with the same fields and verify listening; existing TCP sessions cannot be restored.\n[15] Cleanup: on the tested build it registers nothing and deletes nothing while reporting success; tear down your own creations explicitly.",
+ "patterns": [
+  {
+   "action": "Delete Kubernetes resources by type/name/labels/manifest (including claims on storage and instances of cluster-defined custom types)",
+   "skill": "BEFORE any kubectl_delete, resolve the full target set into concrete named objects - re-run kubectl_get with the SAME namespace/labelSelector/fieldSelector/allNamespaces (or parse the manifest) and never assume one object; if the list response carries metadata.continue, follow every page. For each resolved object persist the COMPLETE live manifest via kubectl_get output=yaml into a file OUTSIDE the cluster (a name/URL listing or a model-context table is not a backup). SECRETS ARE SPECIAL: kubectl_get redacts data to '***' - capture them with kubectl_generic {command:'get', resourceType:'secret', name, namespace, args:['-o','jsonpath={.data.<key>}']} per key, and record explicitly if RBAC denies read. Then expand dependants that cascade: for a Deployment/StatefulSet/DaemonSet also dump its ReplicaSets/ControllerRevisions, pods and kubectl_rollout history; for a Namespace run list_api_resources namespaced=true and kubectl_generic get <all types> in that namespace, noting which objects are controller-recreated (kube-root-ca.crt, default ServiceAccount) versus real user data; for a PVC dump the bound PV and its claimRef; for a Service dump spec.clusterIP (it is NOT preserved on recreate) plus Endpoints/EndpointSlices; for any owner dump all children whose ownerReferences point at its uid; for ConfigMaps/Secrets dump the workloads referencing them. Validate each artifact before allowing the delete: it must be non-empty, parse as YAML, contain the same COUNT as the live list, and match per-object content checksums - and when re-serializing, force string quoting so values like '08'/'09'/'true' are not retyped into ints/bools. To RESTORE, re-apply with kubectl_apply passing the saved YAML INLINE via the manifest parameter (filename reads the MCP server's filesystem, not yours), stripping resourceVersion, uid, creationTimestamp, generation, status, managedFields and deployment.kubernetes.io/revision, and STAGE the applies: cluster-scoped objects (Namespaces, CRDs, PVs, ClusterRoles) in their own call, then namespaced RBAC, PVCs, ConfigMaps/Secrets, then workloads - a single manifest mixing cluster-scoped and namespaced docs is rejected and applies only partially. Record as LIMITATIONS that recreated objects get new UIDs/resourceVersions, that pods return with new names/IPs and their logs and ephemeral state are gone, that rollout history resets to one revision, that Service clusterIP changes unless re-specified, that PV-backed volume data is not recovered by re-apply, that unreadable/redacted Secrets could not be captured, and that force/gracePeriodSeconds=0 deletes may orphan external cloud resources.\n\nBRANCH - CUSTOM RESOURCES (kind not built in): objects of a type the cluster itself defines cannot be re-applied into a cluster whose definition is gone, so capture the CustomResourceDefinition alongside the instances whenever the kind is not built in, and check that the saved definition applies with dryRun against the live cluster before the delete. Restore the definition first (cluster-scoped, its own call), then the instances.\n\nBRANCH - CLAIM ON STORAGE OWNED ELSEWHERE (storage retention): when the object being removed is only a claim on storage that something else owns, prefer stopping that storage from being released over copying its bytes: where the owner would discard the data on release (the bound PV's reclaim policy is Delete, or a StatefulSet's persistentVolumeClaimRetentionPolicy would reap the claims on scale/delete), kubectl_patch it to Retain before the claim goes. A flipped policy is not yet a backup - bind the retained volume to a fresh claim with a reader and read the data back; if that cannot be done, fall through to the byte copy below.\n\nBRANCH - BOUND PVC DATA CAPTURE (byte copy):\nBefore deleting a PVC, resolve every concrete named claim selected by the original namespace/name/selector and read its bound PV, claimRef, reclaim policy and volume mode. Save these manifests outside the cluster. A Pending claim is not a verified Bound-volume capture. For every Bound filesystem claim, enumerate its current mounting pods. Use an existing usable mount, or create one dedicated temporary Pod via kubectl_apply with this exact claim and a read-only mount; poll kubectl_get until Ready. Never delete or alter unrelated pods to attach a volume. With exec_in_pod, inventory files and hashes, then tar the mounted files and base64 the archive to tool output. Decode on the agent and write archive plus inventory and checksums into THIS action directory; verify archive is nonempty, decodes, contains all intended files and matches source hashes. This local verification is required capture work. Delete only the temporary helper Pod you created. Record failures for RBAC, scheduling, block volumes, inconsistent live writes, truncation or unsupported volume mode instead of claiming metadata suffices. Restore uses saved PV/claim mapping and claim manifests plus actual saved archive bytes in the restored mount, then rechecks file hashes. Never call a YAML-only restore complete. The read-only-mount -> exec tar/base64 -> local extraction/hash route is derived from earlier successful capture evidence; the full route still requires an independent live regression. LOCAL SAVE REQUIREMENTS: Use python3 (do not assume node exists). Save PVC and PV tool responses verbatim, including labels, annotations and all spec fields; do not hand-reconstruct reduced manifests or UIDs. Request archive-only base64 output separately from file hash inventory, or delimit it with exact ARCHIVE_BEGIN and ARCHIVE_END lines. Never decode a concatenation of hash lines and base64. Strictly decode only the framed payload using base64.b64decode(payload, validate=True), open with tarfile mode r:gz, and verify every expected regular-file path/count and SHA256 before reporting success. Write required metadata JSON using Python json.dump. Use checked subprocess return codes; do not chain fallible commands with semicolons. A missing file, invalid archive or failed comparison means backup_failed; preserve raw output and do not claim success. Only remove your helper after verified durable archive and manifests exist.\n\nVOLUME DATA (claims/volumes): preferred capture is the IN-CLUSTER COPY - kubectl_apply a backup PVC plus a helper pod mounting source readOnly at /src and backup at /bak (pin to the source node for local storage with nodeSelector kubernetes.io/hostname, never spec.nodeName - the helper must be scheduled so a WaitForFirstConsumer backup claim can bind; if it stays Pending read its events and the StorageClass volumeBindingMode); kubectl_patch the backup PV reclaimPolicy=Retain once Bound; exec_in_pod cp -a /src/. /bak/ and compare file count + sorted-sha256-list digest on both sides (aggregates only, never bytes through MCP); kubectl_delete the helper pod before returning (it would hold the claim under pvc-protection). Recovery: recreate the claim, helper mounting /bak readOnly + new claim /dst, cp -a back, verify aggregates, delete helper. tar|base64 through MCP is a small-volume fallback only.\n\nCLAIM REMOVAL (PVC/namespace delete): preferred is RETAIN AND REBIND - record the bound PV (name, reclaimPolicy, storageClass, capacity, accessModes, claimRef) and the claim spec; kubectl_patch the PV persistentVolumeReclaimPolicy=Retain before the delete and verify with kubectl_get. recovery_mcp_calls: kubectl_patch PV spec.claimRef=null; kubectl_apply the recorded claim with spec.volumeName=<PV>; kubectl_get the claim (Bound); kubectl_patch PV reclaimPolicy back to the original. Verify data with count + sha256-list digest via a read-only helper.",
+   "applies_to": "kubectl_delete",
+   "trigger": "delete",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_generic",
+    "list_api_resources",
+    "kubectl_rollout",
+    "kubectl_describe",
+    "kubectl_apply",
+    "kubectl_delete",
+    "exec_in_pod",
+    "kubectl_patch"
+   ]
+  },
+  {
+   "action": "Apply a manifest (server-side upsert that can overwrite an existing object)",
+   "skill": "Before any kubectl_apply, parse the manifest (or the file named in the call) and enumerate EVERY document in it — a multi-doc YAML is a batch and each member needs its own backup, so iterate all of them and never stop at the first. For each kind/name/namespace, first run kubectl_get with output=yaml (a kubectl_generic `get k1,k2 --selector=...` or per-object get both work; jsonpath range-over-map fails, use `--output=go-template=...` if you need a compact signature). Branch on existence: (a) object EXISTS -> persist its full pre-state manifest to a durable file outside the cluster (e.g. <ACTION_DIR>/prestate-<kind>-<name>.yaml) — this manifest IS the restore artifact; strip status, resourceVersion, uid and creationTimestamp only if you also record them separately, and keep every data key (ConfigMaps/Secrets can hold dozens of keys that a shorter apply will silently prune via kubectl.kubernetes.io/last-applied-configuration, so an incomplete capture loses them permanently); (b) object does NOT exist (kubectl_get returns {\"error\":\"Resource ... not found\"}) -> record it in a created-by-this-action list so restore DELETES it. Also capture the dependants the apply will disturb: for workloads the current deployment.kubernetes.io/revision, metadata.generation, `rollout history`, the active ReplicaSet name and the current pod names/replica counts; for Services the allocated clusterIP/nodePorts; for volume changes the bound PVC/PV. Verify each artifact is non-empty and parseable AND prove it equals the source BEFORE the action — compare key counts plus a content checksum (sha256 of a go-template key=value dump), because counts alone do not prove fidelity. If dryRun=true, the apply mutates nothing (verified: resourceVersion unchanged) so no backup is needed. On RESTORE: kubectl_apply the saved pre-state manifests (pass them via `manifest:` — this MCP transport rejects `filename:` server-side paths; add force=true only if a conflict blocks the apply), then kubectl_delete each object recorded as created-by-this-action, then kubectl_delete the residue ReplicaSet the clobbered rollout left behind so rollout history and the RS set match the pre-state. Finally re-read and compare independently: data checksum, labels, annotations, spec fields, uid/creationTimestamp, and dependant state (ReplicaSet name, ready replica count). LIMITATIONS to report rather than hide: restored objects keep new resourceVersions and generations; the rollout revision counter only moves forward so the original revision number and its history entry are gone; pods are recreated with new names/UIDs/IPs and their ephemeral state, plus already-pulled/already-run images, are not reversible.",
+   "applies_to": "kubectl_apply",
+   "trigger": "apply",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_generic",
+    "kubectl_apply",
+    "kubectl_delete"
+   ]
+  },
+  {
+   "action": "Create resources from manifest/file or subcommand",
+   "skill": "kubectl_create only ADDS objects - it was observed to NEVER modify a pre-existing object (AlreadyExists error, uid/resourceVersion unchanged), so the reversal is a pinned delete, not an apply-back. BEFORE it runs: enumerate every document in the manifest (resourceType/name/namespace, and note any generateName), and for the subcommand form the single resourceType/name/namespace; kubectl_get output=yaml each one and persist the result to a durable file outside the cluster, verifying each artifact is non-empty - objects that already exist get a full prior-manifest artifact (diff baseline / accidental-delete insurance), the rest are marked candidate-new. AFTER it runs, ALWAYS re-read the namespace even if the tool returned an error: kubectl_create is NOT atomic - an AlreadyExists on one document still creates every other document, and on the error path the tool returns no output at all, so generated names and successfully created objects are only discoverable by kubectl_get (use labelSelector or name listing, never recency). Record the confirmed newly-created set as kind+namespace+name. On RESTORE: kubectl_delete each recorded newly-created object pinned by kind+namespace+name (never by recency, never with labelSelector alone if pre-existing objects share the label); controller objects (Deployment/Job/StatefulSet) reclaim their cascading children automatically - verify with kubectl_get all. Only if an object recorded as pre-existing was somehow lost, kubectl_apply its saved pre-state manifest. Finally re-read to confirm the namespace matches the pre-action inventory. LIMITATIONS: re-created objects get a NEW uid/resourceVersion/creationTimestamp so ownerReferences and uid-bound relations do not survive; pod logs and ephemeral output of created pods are destroyed with the pods; namespace events naming the created objects persist forever; deleting a created PVC can destroy underlying volume data - treat storage objects as non-reversible and refuse rather than delete.",
+   "applies_to": "kubectl_create",
+   "trigger": "create",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_delete",
+    "kubectl_apply",
+    "kubectl_create"
+   ],
+   "reverter": {
+    "mcp_calls": [
+     {
+      "tool": "mcp__k8s__kubectl_get",
+      "args": {
+       "resourceType": "all",
+       "namespace": "<NAMESPACE>",
+       "output": "name"
+      }
+     },
+     {
+      "tool": "mcp__k8s__kubectl_get",
+      "args": {
+       "resourceType": "pods",
+       "namespace": "<NAMESPACE>",
+       "labelSelector": "<LABEL_KEY>=<LABEL_VALUE>",
+       "output": "name"
+      }
+     },
+     {
+      "tool": "mcp__k8s__kubectl_delete",
+      "args": {
+       "resourceType": "configmap",
+       "name": "<NEW_CONFIGMAP_NAME>",
+       "namespace": "<NAMESPACE>"
+      }
+     },
+     {
+      "tool": "mcp__k8s__kubectl_delete",
+      "args": {
+       "resourceType": "service",
+       "name": "<NEW_SERVICE_NAME>",
+       "namespace": "<NAMESPACE>"
+      }
+     },
+     {
+      "tool": "mcp__k8s__kubectl_delete",
+      "args": {
+       "resourceType": "deployment",
+       "name": "<NEW_DEPLOYMENT_NAME>",
+       "namespace": "<NAMESPACE>"
+      }
+     }
+    ],
+    "pin": "kind + namespace + name of every object CONFIRMED created by a post-action kubectl_get re-read (never by recency, never from the tool's return value alone - on the AlreadyExists error path the tool returns no output yet still creates the remaining documents)."
+   }
+  },
+  {
+   "action": "Patch field(s) of a resource",
+   "skill": "BEFORE the patch, kubectl_get the exact target (resourceType/name/namespace) with output=yaml AND output=json and persist the COMPLETE manifest to a file outside the cluster — not just the keys named in patchData, because strategic-merge and JSON-merge patches also drop omitempty fields set to zero values (verified: minReadySeconds:0 removed the field), reorder/extend merge-key lists such as env, and add new annotations/labels. SANITIZE the saved copy: drop status, metadata.uid, resourceVersion, generation, creationTimestamp, managedFields, kubectl.kubernetes.io/last-applied-configuration and deployment.kubernetes.io/revision (applying those writes stale server state back). Verify the artifact is non-empty, parses, and matches the live object by checksum (sha256 of json.dumps(spec,sort_keys=True)) BEFORE running the patch. Also capture dependants the patch cascades into: for workloads kubectl_get rs + pods (names/UIDs) and the current deployment.kubernetes.io/revision; for a Service its endpoints; for a PVC the bound PV. Record the identifying metadata (uid, generation, revision) in a side file as recovery metadata. RESTORE = two steps: (1) kubectl_apply the sanitized manifest WITHOUT force (force is unnecessary and on conflict deletes+recreates, changing the UID); (2) because apply cannot prune fields the patch ADDED (they are not in last-applied-configuration — verified residue of an added annotation, an added env entry and an added ConfigMap key), follow with kubectl_patch patchType 'merge' setting each patch-added map key to null and replacing any mutated list (e.g. spec.template.spec.containers) with the exact saved list to restore membership AND order. Then re-read with kubectl_get and diff/checksum spec+metadata against the artifact, and re-read dependants. LIMITATIONS to report: dryRun:true patches mutate nothing and need no restore (verified); pods deleted by the resulting rollout are unrecoverable and return with new names/UIDs, Endpoints get new IPs; old ReplicaSets and the monotonically increasing deployment.kubernetes.io/revision, metadata.generation and resourceVersion cannot be restored; immutable fields (Service clusterIP, Job selector, PVC storageClass) reject the write — verified the patch itself is rejected — and any such case must be reported as unrecoverable.",
+   "applies_to": "kubectl_patch",
+   "trigger": "patch",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_apply",
+    "kubectl_patch",
+    "kubectl_rollout"
+   ]
+  },
+  {
+   "action": "Scale a workload's replica count",
+   "skill": "BEFORE scaling, capture the pre-state to a durable file OUTSIDE the cluster: (1) kubectl_get with output:'yaml' on the target workload (resourceType/name/namespace) and persist BOTH spec.replicas and the full manifest; (2) kubectl_get resourceType:'pods' with the workload's labelSelector and output:'yaml' -- NOT output:'json', which returns only name/status/createdAt and silently drops uid, podIP and spec, so it is a listing and not a backup -- and record each pod's name, uid, podIP and node; (3) kubectl_get resourceType:'hpa' in the namespace and persist any HPA whose scaleTargetRef matches this workload, including minReplicas/maxReplicas, since it may re-scale the workload afterwards. VERIFY the captured replica value is present and non-null (a missing spec.replicas means the count defaults to 1 and the original is unrecoverable) and checksum the artifact before the scale runs. Note kubectl_scale also accepts resourceType statefulset/replicaset. On RESTORE, kubectl_patch patchType:'strategic' with patchData {\"spec\":{\"replicas\":<CAPTURED_REPLICAS>}} and re-read with kubectl_get output:'yaml' to confirm spec.replicas AND status.readyReplicas both equal the captured number. LIMITATIONS to state plainly: this restores the COUNT only. Pods terminated by a scale-down never come back -- replacements have new names, UIDs and IPs, and their logs and ephemeral local state are gone (StatefulSet pods regain their ordinal NAMES but still get new UIDs/IPs). metadata.generation and resourceVersion stay advanced. If an HPA owns the replica count the restored value may be immediately overridden, so restore/confirm the HPA bounds too. If the StatefulSet sets persistentVolumeClaimRetentionPolicy.whenScaled=Delete, scaling down destroys PVC data that no replica-count restore can recover.\n\nIf scaling to zero releases a claim or its data (a keeper/reaper pattern, StatefulSet whenScaled=Delete), capture the volume with the IN-CLUSTER COPY first: backup PVC + helper pod mounting source readOnly and backup, Retain the backup PV, cp -a, compare count + sha256-list digest on both sides, delete the helper.\n\nIf the scale-down releases a claim, RETAIN AND REBIND its PV first (patch Retain before scaling; recovery_mcp_calls: clear claimRef, re-apply the claim with spec.volumeName, restore reclaimPolicy).",
+   "applies_to": "kubectl_scale",
+   "trigger": "scale",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_patch",
+    "kubectl_rollout",
+    "kubectl_scale",
+    "kubectl_apply",
+    "exec_in_pod",
+    "kubectl_delete"
+   ]
+  },
+  {
+   "action": "Rollout control (undo/restart/pause/resume) on a workload",
+   "skill": "BEFORE any mutating rollout subcommand (undo/restart/pause/resume), persist to a file OUTSIDE the cluster: (a) kubectl_get({resourceType:'deployment|statefulset|daemonset', name, namespace, output:'yaml'}) - the full manifest including metadata.annotations['deployment.kubernetes.io/revision'], .spec.paused, .spec.replicas and the complete .spec.template; (b) the full revision history for its selector - kubectl_get({resourceType:'replicasets'|'controllerrevisions', namespace, labelSelector:<deployment selector>, output:'yaml'}) for EVERY page - recording for each entry the name, uid, pod-template-hash, the deployment.kubernetes.io/revision (or ControllerRevision .revision) number AND its pod template; (c) kubectl_get pods -o wide for the current pod names/IPs (for post-hoc diffing only - pods are NOT restorable). Pin the target as the pair (revision number, ReplicaSet/ControllerRevision name), because revision numbers are renumbered by every undo. Verify the artifact files are non-empty and that the RS/CR count matches the live count before acting. ON RESTORE: re-resolve the captured ReplicaSet/ControllerRevision NAME to its CURRENT revision number via kubectl_get, then kubectl_rollout({subCommand:'undo', resourceType, name, namespace, revision:<that number>}) - pass it as 'revision'; 'toRevision' is ignored by this MCP tool and silently degrades to a plain undo. This single call reverses undo AND restart (it clears the injected kubectl.kubernetes.io/restartedAt annotation). For pause/resume, restore from the CAPTURED .spec.paused value: if it was true re-run subCommand:'pause', if it was absent/false run subCommand:'resume' (resume errors with 'is not paused' if it was never paused). If the target revision was pruned from history, fall back to kubectl_apply({manifest:<saved manifest>}) to recreate the prior pod template - but note apply alone will NOT remove a restartedAt annotation. Finally re-read with kubectl_get -o yaml and diff .spec against the artifact, and confirm kubectl_rollout subCommand:'status'. LIMITATIONS: 'status' and 'history' are read-only and need no backup; the restored state lands on a NEW, higher revision number and generation; pods are replaced with new names/UIDs/IPs and their logs and ephemeral state are unrecoverable; revisions pruned by revisionHistoryLimit are gone.",
+   "applies_to": "kubectl_rollout",
+   "trigger": "rollout",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_generic",
+    "kubectl_rollout",
+    "kubectl_apply"
+   ]
+  },
+  {
+   "action": "Cordon / uncordon a node (node_management scheduling toggle)",
+   "skill": "BEFORE cordon: mcp__k8s__kubectl_get(resourceType='nodes', name=<NODE>, output='yaml') and persist spec.unschedulable (note whether the field is ABSENT vs explicitly false - restore must reproduce absence), the COMPLETE spec.taints list and metadata.labels/annotations into a file outside the cluster; also snapshot the pod inventory bound to the node with mcp__k8s__kubectl_get(resourceType='pods', allNamespaces=true, fieldSelector='spec.nodeName=<NODE>', output='name') plus per-namespace output='yaml' for full manifests, classifying each pod by metadata.ownerReferences (bare/unmanaged pods have none and MUST have their full manifest saved - nothing will recreate them). Verify the artifact files are non-empty and their pod count equals the live listing count BEFORE mutating. ON RESTORE: mcp__k8s__kubectl_patch(resourceType='nodes', name=<NODE>, patchType='merge', patchData={spec:{unschedulable:false, taints:<CAPTURED_TAINTS>}}) - the node controller removes the auto-added node.kubernetes.io/unschedulable:NoSchedule taint by itself; then confirm with kubectl_get that spec.unschedulable is absent/false, the taint list matches the capture, and that any pods left Pending by the cordon have been scheduled.",
+   "applies_to": "node_management",
+   "trigger": "cordon",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_generic",
+    "exec_in_pod",
+    "kubectl_patch",
+    "kubectl_apply"
+   ]
+  },
+  {
+   "action": "Delete a bare/unmanaged pod (kubectl_delete pods) - the destructive core of a drain's eviction",
+   "skill": "BEFORE deleting any pod, capture its full manifest with mcp__k8s__kubectl_get(resourceType='pods', name=<POD>, namespace=<NS>, output='yaml') and check metadata.ownerReferences: if EMPTY the pod is bare and your saved manifest is the ONLY restore source. Save logs with mcp__k8s__kubectl_logs and any in-container/emptyDir data with mcp__k8s__exec_in_pod, because both are destroyed with the pod. Write the manifest to a file outside the cluster and confirm it is non-empty before deleting. ON RESTORE: mcp__k8s__kubectl_apply(namespace=<NS>, manifest=<SAVED_YAML_INLINE>) with status/resourceVersion/uid stripped - pass the YAML inline, never a filename, because the MCP server cannot read your local paths. Verify with a jsonpath read-back and record that uid, podIP, creationTimestamp and logs are permanently changed/lost.",
+   "trigger": "pod_delete",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_logs",
+    "exec_in_pod",
+    "kubectl_apply",
+    "kubectl_generic"
+   ]
+  },
+  {
+   "action": "Start a port-forward to a Kubernetes resource (creates a client-side tunnel/listener and a server-side registry entry)",
+   "skill": "",
+   "applies_to": "port_forward",
+   "trigger": "port-forward",
+   "verified": true,
+   "capture_tools": [
+    "port_forward",
+    "stop_port_forward"
+   ],
+   "reverter": {
+    "mcp_calls": [
+     {
+      "tool": "mcp__k8s__stop_port_forward",
+      "args": {
+       "id": "<RESOURCE_TYPE>-<RESOURCE_NAME>-<LOCAL_PORT>"
+      }
+     }
+    ],
+    "pin": "port-forward id derived from the creation args as '<resourceType>-<resourceName>-<localPort>' (port_forward returns no id; record resourceType, resourceName, namespace, localPort, targetPort at creation time)"
+   }
+  },
+  {
+   "action": "Drain a node (node_management operation='drain')",
+   "skill": "A drain is a mass pod-eviction plus a cordon; treat it as 'delete every pod on this node' and back up accordingly. FIRST run the SAME call with dryRun:true - it mutates nothing and prints the exact list of pods that would be evicted, which is your resolved target set (no other tool scopes a drain; node_management has no namespace filter, so on a single-node cluster the target set is the whole cluster including kube-system). Persist to a file OUTSIDE the cluster: (a) kubectl_get({resourceType:'nodes',name:<NODE>,output:'yaml'}) recording whether spec.unschedulable is ABSENT versus explicitly false and the COMPLETE spec.taints list - restore must reproduce absence, not write false; (b) the pod inventory with owners, kubectl_generic({command:'get',resourceType:'pods',allNamespaces:true,args:['--field-selector','spec.nodeName=<NODE>','-o','custom-columns=NS:.metadata.namespace,NAME:.metadata.name,OWNER:.metadata.ownerReferences[0].kind,OWNERNAME:.metadata.ownerReferences[0].name,PHASE:.status.phase,UID:.metadata.uid']}). Read that inventory before deciding anything: pods with an OWNER are recreated by their controller and need no manifest backup, but pods with EMPTY ownerReferences are bare - drain REFUSES them unless force:true, and with force:true they are deleted with nothing to recreate them, so their full manifests (and logs, and any container-local data) are the only restore source. Also save out-of-cluster any state that was written INTO a container after start (exec-written files, emptyDir contents): eviction destroys it and no controller regenerates it unless the pod spec itself does. Never claim a drain was exercised by deleting pods yourself - run the tool. drain is a no-op without confirmDrain:true; that refusal is a guard, not a failure.",
+   "applies_to": "node_management",
+   "trigger": "drain",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_generic",
+    "node_management",
+    "kubectl_apply"
+   ]
+  },
+  {
+   "action": "Execute a command inside a pod that durably modifies a file in the container (exec_in_pod)",
+   "skill": "Treat any non-read exec as a durable mutation of container-local state. BEFORE executing, parse the command array for every path it writes, and for each one transport the ACTUAL BYTES out of the cluster - not a listing, not a path, not a summary in context: exec_in_pod(['sh','-c','base64 <PATH>']) and write the returned text to a host file, plus ['sh','-c','wc -c <PATH>; sha256sum <PATH>'] so you can prove artifact==source BEFORE you destroy anything. Decode the base64 locally and check its sha256 equals the in-pod sha256; if they differ, abort rather than mutate. Restore by feeding the artifact back the same way: exec_in_pod(['sh','-c','printf %s <BASE64_FROM_FILE> | base64 -d > <PATH>; sha256sum <PATH>; wc -c <PATH>']), then re-read independently and compare the base64 to the artifact. Note exec_in_pod does NOT interpret shell syntax - redirects and pipes only work because the command array explicitly starts with ['sh','-c',...]; a bare argv cannot redirect. This recovers CONTENT only, and only while the container is still running: the container filesystem is ephemeral, so if the pod restarts or is evicted (see the drain pattern) the file is gone regardless, and mode/owner/mtime are not covered.",
+   "applies_to": "exec_in_pod",
+   "trigger": "exec_in_pod",
+   "verified": true,
+   "capture_tools": [
+    "exec_in_pod"
+   ]
+  },
+  {
+   "action": "Change a label or annotation with kubectl_generic (command 'label' / 'annotate', --overwrite)",
+   "skill": "kubectl_generic is a pass-through verb runner with no undo and no server-side history, so the ONLY thing that makes a mutating call reversible is a capture taken before it. For the label/annotate verbs: capture the full live manifest with kubectl_get(output:'yaml') to a host file AND pin the individual values with a jsonpath read (kubectl_generic command:'get', args:['-o','jsonpath={.metadata.labels}{.metadata.annotations.<KEY>}']) so the restore reads a value out of a file rather than out of context. Note the direction matters: overwriting an EXISTING key is reversed with the same verb plus --overwrite and the captured value, but a key that did NOT exist before must be reversed with the 'key-' removal form instead - so the capture has to record absence, not just values. When you diff afterwards, ignore metadata.resourceVersion, metadata.generation and status.observedGeneration: they are monotonic server counters and can never be restored. Do NOT generalise this to other kubectl_generic verbs; delete/replace/edit/set/taint each destroy different things and need their own pattern.",
+   "applies_to": "kubectl_generic",
+   "trigger": "kubectl-mutate",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_get",
+    "kubectl_generic"
+   ]
+  },
+  {
+   "action": "Switch the active kubectl context (kubectl_context operation='set')",
+   "skill": "Only operation='set' mutates; list and get are reads. The mutation is durable and GLOBAL to the MCP server process - it rewrites current-context in the server host's kubeconfig file, so it changes the default target of every later call by every caller, not just yours. BEFORE the set: kubectl_context(operation:'get',showCurrent:true) to pin the exact current context name, kubectl_context(operation:'list',detailed:true) for the full list, AND kubectl_generic(command:'config',subCommand:'view',args:['-o','json']) for the RAW kubeconfig - you need the raw view because kubectl_context list REPORTS namespace 'default' for a context whose kubeconfig entry has NO namespace field, and round-tripping that display value would silently change behaviour. Abort if the captured name is empty or a placeholder; with no valid pre-state there is no way back. Restore is kubectl_context(operation:'set') with the captured name, then re-read and additionally diff the raw kubeconfig. Remember the pointer is all you get back: anything you created while the wrong context was current still lives in the other context and must be reverted separately.",
+   "applies_to": "kubectl_context",
+   "trigger": "context",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_context",
+    "kubectl_generic"
+   ]
+  },
+  {
+   "action": "Stop an existing port-forward (stop_port_forward) - rebuilding it needs creation args captured at START time",
+   "skill": "There is NO tool on this server that enumerates active forwards - tools/list exposes only port_forward and stop_port_forward. That is the whole problem: once a forward is stopped, the server can tell you nothing about what it was, so the five rebuild fields (resourceType, resourceName, namespace, localPort, targetPort) MUST be written to a host file at CREATION time, not at stop time. port_forward also returns no id at all; the registry id is the derived, undocumented string '<resourceType>-<resourceName>-<localPort>' - record the five fields, not just the id, because the format is a server-version detail. To restore, call port_forward again with the captured fields; the re-created forward binds the same local port and answers to the same derived id. What CANNOT be restored is traffic: stop_port_forward kills the forwarding process, so established TCP sessions and any in-flight request are dropped and cannot be replayed - quiesce clients first and treat the tunnel as a fresh one afterwards. Note also that a port_forward which fails because the local port is already bound leaves NO registry entry, so a start failure needs no teardown. See the companion pattern 'Start a port-forward' for the opposite direction.",
+   "applies_to": "stop_port_forward",
+   "trigger": "stop_port_forward",
+   "verified": true,
+   "capture_tools": [
+    "port_forward",
+    "stop_port_forward",
+    "exec_in_pod"
+   ]
+  },
+  {
+   "action": "Cleanup all managed resources (tool: cleanup) - verified NO-OP on this build; NOT a teardown for objects you created",
+   "skill": "Do NOT use cleanup as the inverse of kubectl_create/kubectl_apply. On the tested build of mcp-server-kubernetes cleanup() aborts tracked watches and then deletes only the entries in the manager's in-memory this.resources list - and that list is populated ONLY by trackResource(), which has NO CALLERS anywhere in the installed dist. So nothing you create through the exposed kubectl tools is ever registered, and cleanup returns {\"success\":true} having deleted nothing. An agent that relies on it to tidy up will silently leak every object it made. Track your own objects and tear them down with explicit kubectl_delete calls against names you recorded. Before trusting this on ANY other server, re-read the installed source: the behaviour is a property of this dist, not of the tool's contract - the tool takes no arguments, is flagged destructiveHint, exposes no dryRun and no way to enumerate its tracked set, so a build that does wire up trackResource would become destructive with an identical call signature. Even then it would be only a partial teardown: deleteResource's switch handles ONLY pod, deployment, service and cronjob, silently skipping every other kind, and the tracked list is process memory that a restart empties. cleanup does not touch port-forwards - stop those with stop_port_forward.",
+   "applies_to": "cleanup",
+   "trigger": "cleanup",
+   "verified": true,
+   "capture_tools": [
+    "kubectl_generic",
+    "kubectl_get",
+    "kubectl_delete"
+   ]
+  }
+ ],
+ "appliesTo": [
+  "cluster",
+  "k8s"
+ ]
+}

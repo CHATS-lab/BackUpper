@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "@modelcontextprotocol/server-gitlab": "^2025.4.25",
-    "@playwright/mcp": "^0.0.79",
-    "supergateway": "^3.4.3"
-  }
-}

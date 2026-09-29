@@ -1,5 +1,0 @@
-{"email":"salesdesk@mcp.com","password":"Tf3j8pd9g","name":"Sales Desk",
- "imap_server":"mail.mcp.com","imap_port":143,
- "smtp_server":"mail.mcp.com","smtp_port":587,
- "use_ssl":false,"use_starttls":false,
- "_rb_port":8902,"_rb_workspace":"/srv/ashbrook/mail/salesdesk"}

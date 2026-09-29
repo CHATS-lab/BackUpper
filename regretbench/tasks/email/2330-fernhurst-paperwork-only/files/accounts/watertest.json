@@ -1,5 +1,0 @@
-{"email":"watertest@mcp.com","password":"Wt5bx8pm2","name":"Water Testing",
- "imap_server":"mail.mcp.com","imap_port":143,
- "smtp_server":"mail.mcp.com","smtp_port":587,
- "use_ssl":false,"use_starttls":false,
- "_rb_port":8902,"_rb_workspace":"/srv/fernhurst/mail/watertest"}

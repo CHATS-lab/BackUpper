@@ -1,0 +1,366 @@
+{
+ "server": "email",
+ "observed_tools": [
+  "get_emails",
+  "read_email",
+  "search_emails",
+  "send_email",
+  "reply_email",
+  "forward_email",
+  "delete_email",
+  "move_email",
+  "mark_emails",
+  "move_emails",
+  "delete_emails",
+  "get_folders",
+  "create_folder",
+  "delete_folder",
+  "get_mailbox_stats",
+  "get_unread_count",
+  "check_connection",
+  "get_email_headers",
+  "save_draft",
+  "get_drafts",
+  "update_draft",
+  "delete_draft",
+  "export_emails",
+  "import_emails",
+  "download_attachment"
+ ],
+ "patterns": [
+  {
+   "action": "Permanently delete a single email",
+   "skill": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\nIdentical to the delete_emails skill but for one id: list the containing folder with get_emails (this sets the folder context AND refreshes the volatile sequence id), read_email + get_email_headers + download_attachment the target, export_emails the WHOLE containing folder and pin the path returned in the result string, verify the artifact by importing it into a scratch folder and searching a body token, then allow the delete. Reverse with import_emails(preserve_folders=true). State up front that flags and transport headers are lost, that a re-import duplicates any sibling messages still present in the folder, and that the deletion is permanent (nothing reaches Trash).",
+   "applies_to": "delete_email",
+   "trigger": "delete_email",
+   "verified": true,
+   "capture_tools": [
+    "get_emails",
+    "read_email",
+    "get_email_headers",
+    "download_attachment",
+    "export_emails",
+    "import_emails",
+    "delete_emails"
+   ]
+  },
+  {
+   "action": "Batch delete multiple emails permanently",
+   "skill": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\nBEFORE any delete_emails call, treat the id list as one unit of work in ONE folder and note that ids are volatile per-folder sequence numbers scoped to the last get_emails/search_emails call. (1) Call get_emails(folder=<FOLDER>, page=N, page_size=20) for EVERY page until exhausted (and search_emails the same way) to resolve the batch ids, catch thread siblings - this backend links threads only by 'Re: <subject>', there are no In-Reply-To/References headers - and establish folder context. (2) For EVERY id in the batch (no sampling) call read_email and get_email_headers, and download_attachment for every listed attachment; these tools are also folder-context scoped, so list the target folder first. (3) Call export_emails(folder=<FOLDER>) - or export_all_folders=true when the batch spans folders - and PIN THE PATH RETURNED IN THE RESULT STRING (export_path is ignored; the file is written to <export_dir>/<FOLDER>_export_<TIMESTAMP>.json on the server). max_emails only takes the N newest, so use it only when the batch is exactly the newest N; otherwise export the whole folder. (4) Prove the artifact before destruction, not just its count: create a scratch folder, import_emails(import_path=<PINNED_PATH>, preserve_folders=false, target_folder=<SCRATCH>), confirm the imported count and search_emails the scratch folder for a distinctive token from each captured body, then delete the scratch folder. (5) Immediately re-run get_emails(folder=<FOLDER>) right before the delete so the id mapping is fresh - without this refresh delete_emails returns '0/N failed'. Restore with import_emails(import_path=<PINNED_PATH>, preserve_folders=true), then re-read each message to confirm body/headers/Message-ID/attachments and record the old->new sequence-id mapping. LIMITATIONS to state up front: read/important flags are NOT restorable (mark_emails reports success but flag state is unobservable here); Return-Path/Delivered-To/Received/From-display-name/CTE/MIME-boundary are lost; re-import creates duplicates for messages that still exist; deletion is permanent (no Trash copy); any email unreadable or attachment undownloadable at capture time is an explicit recovery gap.",
+   "applies_to": "delete_emails",
+   "trigger": "delete_emails",
+   "verified": true,
+   "capture_tools": [
+    "get_emails",
+    "search_emails",
+    "read_email",
+    "get_email_headers",
+    "download_attachment",
+    "export_emails",
+    "import_emails",
+    "create_folder",
+    "delete_folder",
+    "get_mailbox_stats",
+    "mark_emails",
+    "delete_emails"
+   ]
+  },
+  {
+   "action": "Delete an email folder (delete_folder destroys the folder and every message in it)",
+   "skill": "BEFORE delete_folder, run get_folders and get_mailbox_stats(folder_name) to pin the folder's existence and total/unread counts, get_emails paged to exhaustion plus read_email per message to capture ids, Message-IDs, bodies and attachment metadata, and export_emails(folder=<name>, export_path=...) to write a durable server-side backup file (note the returned path - the server rewrites export_path into its own exports directory). Verify the exported count equals get_mailbox_stats total before deleting. To restore, call import_emails on that export file with preserve_folders=true, which recreates both the folder and its messages, then re-apply read/important flags with mark_emails from the out-of-band flag record and confirm counts with get_mailbox_stats.",
+   "applies_to": "delete_folder",
+   "trigger": "delete_folder",
+   "verified": true,
+   "capture_tools": [
+    "get_folders",
+    "get_mailbox_stats",
+    "get_emails",
+    "read_email",
+    "export_emails",
+    "import_emails",
+    "mark_emails",
+    "delete_folder"
+   ]
+  },
+  {
+   "action": "Move a single email to another folder",
+   "skill": "BEFORE the move, capture the pre-state location mapping into a durable file OUTSIDE the mailbox (e.g. <artifact_dir>/<name>.json): call get_emails(folder=<SOURCE_FOLDER>, page=N, page_size=...) over EVERY pagination page to record the full member list and the target's current email_id, and call get_mailbox_stats(folder_name=<SOURCE_FOLDER>) and get_mailbox_stats(folder_name=<TARGET_FOLDER>) FIRST to record total/unread counts - these aggregate counts are the only way to observe the read flag, and read_email clears it, so read flags before reading bodies. Then call read_email(<OLD_ID>) and get_email_headers(<OLD_ID>) to pin the stable Message-ID plus subject, from/to, date, Content-Type and attachment names/sizes; also record every SIBLING's Message-ID -> email_id mapping, because move_email renumbers the whole source folder. Persist {message_id, subject, from, to, date, content_type, attachments, source_folder, target_folder, old_id, sibling_id_map, flags:{seen,important}} and optionally a second copy via export_emails(folder=<SOURCE_FOLDER>, export_path=...) - verify the export's reported count equals the captured member count. Compare artifact content against the source before allowing the move. TO RESTORE: search_emails(query=<MESSAGE_ID>, folder=<TARGET_FOLDER>) to find the message's NEW id (never match on subject alone - duplicate subjects are ambiguous), then move_email(email_id=<NEW_ID>, target_folder=<SOURCE_FOLDER>); then re-run get_emails(folder=<SOURCE_FOLDER>) to refresh the server-side folder/id context, locate the message again by Message-ID, and re-apply flags with mark_emails([<RESTORED_ID>], 'important') and mark_emails([<RESTORED_ID>], 'unread') - the move always clears unread, mark_emails resolves ids against the last-listed folder, and the first mark after a move can silently no-op, so confirm with get_mailbox_stats(folder_name=<SOURCE_FOLDER>) and repeat the listing+mark if the unread count did not change. LIMITATIONS to flag: the email_id is NOT restored (the target's and every sibling's ids change permanently) so downstream references break; listing position changes; the 'important' flag can be set but cannot be read back on this backend; and if headers were unreadable or the Message-ID is not unique the message cannot be safely re-identified - report that as an unrecoverable case rather than guessing by subject.",
+   "applies_to": "move_email",
+   "trigger": "move_email",
+   "verified": true,
+   "capture_tools": [
+    "get_emails",
+    "search_emails",
+    "read_email",
+    "get_email_headers",
+    "get_mailbox_stats",
+    "get_unread_count",
+    "export_emails",
+    "move_email",
+    "mark_emails",
+    "download_attachment"
+   ]
+  },
+  {
+   "action": "Reading or listing emails silently clears unread status (\\Seen set as a side effect of read_email, get_email_headers, search_emails, and get_emails which marks every email on the listed page read)",
+   "skill": "Treat read_email, get_email_headers, search_emails and get_emails as MUTATING. Before any of them touch a folder whose unread state matters, capture the per-id read/unread map with the get_unread_count differential probe (baseline count, then mark_emails([id],'read') + get_unread_count per id, early-stop when discovered unread == baseline) and persist it outside the mailbox. Prefer get_unread_count / get_mailbox_stats for any check that does not require message content, since those were observed not to mutate. After the read/list operation, restore with mark_emails(prior_unread_ids,'unread'). Note that get_emails clears \\Seen for EVERY email on the page it returns, so the blast radius is the whole page, not just the one email of interest - page through with the capture already in hand. If content was listed or read before a capture existed, declare the prior unread state lost; it cannot be reconstructed.",
+   "applies_to": "read_email,get_email_headers,search_emails,get_emails",
+   "trigger": "read_email",
+   "verified": true,
+   "capture_tools": [
+    "get_unread_count",
+    "get_mailbox_stats",
+    "mark_emails",
+    "get_emails",
+    "read_email",
+    "search_emails",
+    "get_email_headers"
+   ]
+  },
+  {
+   "action": "Batch move emails to another folder",
+   "skill": "Before move_emails runs, resolve EVERY id in email_ids against the currently selected source folder (page get_emails/search_emails to exhaustion - page_size is capped per page and total pages are reported) and persist a durable per-email backup file OUTSIDE the mailbox with one entry per batch member: source_folder, old_email_id, Message-ID (from get_email_headers), subject, from/to/date, body (read_email), plus the read/important state if known. Snapshot get_mailbox_stats/get_unread_count for the source AND target folders first, because get_email_headers/read_email themselves clear the unread flag. Assert the artifact has exactly one entry per email_id and that its count equals the source folder total before allowing the move. To restore: for EACH entry, search_emails(query=<Message-ID>, folder=<target_folder>) to get its NEW id, then move_emails those ids back to THAT entry's OWN source_folder (never a single shared folder); do one move_emails call per distinct source folder, and RE-RUN the Message-ID search before each subsequent batch because ids renumber whenever any subset leaves the folder. Re-select each folder with get_emails/search_emails before every mutating call - move_emails/mark_emails take no folder argument and resolve ids against the last-selected folder. Finally reapply flags with mark_emails(status='important'/'unread') from the artifact and confirm folder totals + unread counts match the pre-move snapshot. LIMITATIONS: ids are reassigned by the move (Message-ID is the only stable key); per-message read/important flags cannot be read back from any tool, so flag recovery is best-effort; any message whose Message-ID could not be captured or matches more than one result in the target folder is an explicit, unrecoverable gap that must be reported.",
+   "applies_to": "move_emails",
+   "trigger": "move_emails",
+   "verified": true,
+   "capture_tools": [
+    "get_emails",
+    "search_emails",
+    "get_email_headers",
+    "read_email",
+    "get_mailbox_stats",
+    "get_unread_count",
+    "get_folders",
+    "move_emails",
+    "mark_emails",
+    "download_attachment",
+    "export_emails"
+   ]
+  },
+  {
+   "action": "Change read/unread/important flags on emails",
+   "skill": "BEFORE marking, and BEFORE any listing or reading of the affected folder, capture the read/unread state with a differential probe - do NOT try to read flags from read_email/get_emails/get_email_headers/search_emails, because none of them report flag state and ALL of them silently mark emails read (get_emails marks every email on the page it lists). (1) Call get_unread_count(folder) to get baseline B; this and get_mailbox_stats are the only non-mutating observers. (2) For each id in email_ids, call mark_emails([id],'read') then get_unread_count(folder); if the count dropped, that id was UNREAD, if unchanged it was READ. Stop early once the number of discovered unread ids equals B - every id not yet probed is READ. (3) Persist the resulting per-id map to a durable file outside the mailbox and assert it has one entry per batch member before proceeding; enumerate the folder with get_emails only AFTER the probe, paging to exhaustion, to record subjects/ids for the record. (4) Run the original mark_emails action. (5) Restore with one mark_emails call per distinct prior-status group: mark_emails(prior_unread_ids,'unread') and mark_emails(prior_read_ids,'read'). (6) Verify by re-running the probe and diffing per id, not just by comparing unread counts. LIMITATION: the important/not_important axis is exposed by NO tool and cannot be captured, restored or verified - if the action touches the important axis, record it as an unrecoverable loss rather than guessing. Capture ids immediately before the action and do not let a move_emails intervene, since email_id is folder-relative and is renumbered on move.",
+   "applies_to": "mark_emails",
+   "trigger": "mark_emails",
+   "verified": true,
+   "capture_tools": [
+    "get_unread_count",
+    "get_mailbox_stats",
+    "mark_emails",
+    "get_emails",
+    "read_email",
+    "search_emails",
+    "move_emails",
+    "get_email_headers",
+    "download_attachment",
+    "export_emails"
+   ]
+  },
+  {
+   "action": "Update an existing draft in place (overwrite)",
+   "skill": "BEFORE calling update_draft, page through get_drafts from page=1, reading the 'Page X/N' header and stopping when X==N -- do NOT loop until an empty page, because the backend CLAMPS out-of-range pages and re-returns the last page forever. Locate the target draft_id and persist its listed subject, to and updated_at into a durable file outside the draft store (e.g. /tmp/<name>.json), with byte lengths/sha256 so capture can be compared to source before destruction. CRITICAL: get_drafts returns ONLY draft_id, subject, to and updated_at -- body, html_body, cc and bcc are NOT exposed by get_drafts or by ANY other tool (read_email, get_emails, search_emails and export_emails all fail on drafts; there are no MCP resources; DraftService.export_drafts is unwired). Therefore: if this agent itself created or last wrote the draft, ALSO persist the exact save_draft/update_draft arguments it passed -- that provenance record is the only possible source for body/html_body/cc/bcc. If the draft pre-existed, record explicitly that body/html_body/cc/bcc are UNRECOVERABLE and that only subject and to can be restored. On restore, call update_draft with the SAME draft_id (this preserves draft identity; never delete_draft+save_draft, which mints a new id) and pass back every captured field. Note update_draft MERGES: omitted/None args leave the existing value untouched, so it can never blank a field back to unset, and updated_at is always rewritten to restore time.",
+   "applies_to": "update_draft",
+   "trigger": "update_draft",
+   "verified": true,
+   "capture_tools": [
+    "get_drafts",
+    "update_draft",
+    "get_emails",
+    "read_email",
+    "search_emails",
+    "save_draft",
+    "delete_draft",
+    "export_emails"
+   ]
+  },
+  {
+   "action": "Delete a saved draft",
+   "skill": "BEFORE calling delete_draft, page get_drafts to exhaustion (increment page until 'Page N/N') and persist the target's ID, Subject, To and Updated into a durable file artifact outside the mailbox. CRITICAL: get_drafts does NOT expose body, html_body, cc or bcc, and NO MCP tool can read them back (read_email and get_email_headers fail on draft ids with IMAP 'FETCH illegal in state AUTH'/'Invalid messageset'; get_emails, search_emails and export_emails on the 'Drafts' folder return empty because drafts are not IMAP messages). Therefore: (a) if the draft's full text is available in the conversation/prior save_draft or update_draft args, write subject, body, html_body, to, cc and bcc verbatim into the artifact file and verify the file holds the real text (non-trivial length, not an id or listing row) before deleting; (b) if it is NOT available, treat the body/html_body/cc/bcc as UNRECOVERABLE, warn the user and get confirmation before deleting, since save_draft requires a body that cannot be reconstructed. To restore, call save_draft with the captured fields; this creates a NEW draft_id (e.g. draft_1 -> draft_6) and a new Updated timestamp, so record the old->new id mapping and report the lost id, lost timestamp and any attachment as unrecoverable.",
+   "applies_to": "delete_draft",
+   "trigger": "delete_draft",
+   "verified": true,
+   "capture_tools": [
+    "get_drafts",
+    "save_draft",
+    "get_emails",
+    "read_email",
+    "search_emails",
+    "get_email_headers",
+    "update_draft",
+    "delete_draft",
+    "export_emails"
+   ]
+  },
+  {
+   "action": "Import emails into the mailbox (may duplicate/overwrite folder state)",
+   "skill": "BEFORE running import_emails, pin the pre-import state of every folder the import can touch: (1) get_folders to record the exact folder list (the import auto-creates folders when preserve_folders=true); (2) get_mailbox_stats for per-folder total AND unread counts; (3) get_emails(folder, page=N, page_size=50) paged to exhaustion on each target folder to record the complete set of existing email ids, and read_email on each to capture Message-ID, subject, sender, date, body and attachment names/sizes; (4) export_emails(folder=<target>, export_path=...) to write a durable server-side backup file of the real content. Verify the captured row count equals get_mailbox_stats total before proceeding. On restore, re-list the folder paged to exhaustion, compute new_ids = post_ids MINUS pre_ids (diff by email ID, NOT by Message-ID - imported duplicates reuse the original Message-ID) and delete_emails(new_ids); delete_folder only for folders absent from the captured get_folders list. Finally re-apply flags with mark_emails, because delete_emails clears \\Seen state on surviving mail; confirm with get_mailbox_stats that total AND unread match the pinned pre-import numbers. LIMITATIONS to record: per-message read/unread and important flags are not exposed by any read tool, and if the import merged into or overwrote an existing message the original is not reconstructible from the inventory - restore the export file instead.",
+   "applies_to": "import_emails",
+   "trigger": "import_emails",
+   "verified": true,
+   "capture_tools": [
+    "get_folders",
+    "get_mailbox_stats",
+    "get_emails",
+    "read_email",
+    "export_emails",
+    "delete_emails",
+    "delete_folder",
+    "mark_emails",
+    "import_emails"
+   ]
+  },
+  {
+   "action": "Export emails to a backup file (export_emails silently marks the fetched folder's mail as READ)",
+   "skill": "export_emails is NOT read-only: it clears unread status on every message in the folder it touches (whole folder, even with max_emails set). BEFORE calling it, capture get_mailbox_stats(folder_name) and get_unread_count(folder_name) for every folder involved, and - because no tool reports per-message read state - record the unread ID set out-of-band by any available means (e.g. take the folder's unread count and the id list from get_emails paged to exhaustion immediately before, or avoid exporting folders with unread mail). After the export, restore with mark_emails(<previously unread ids>, 'unread') and verify the unread count matches the pinned value. Also capture the server-returned export path, since export_path is rewritten into the server's exports directory.",
+   "applies_to": "export_emails",
+   "trigger": "export_emails",
+   "verified": true,
+   "capture_tools": [
+    "get_mailbox_stats",
+    "get_unread_count",
+    "get_emails",
+    "mark_emails",
+    "export_emails"
+   ]
+  },
+  {
+   "action": "Send an email (irreversible external side effect)",
+   "skill": "send_email is IRREVERSIBLE externally - the SMTP hand-off cannot be undone; only the local mailbox footprint is recoverable. BEFORE the call, persist a complete forensic record to a durable file OUTSIDE the mailbox (e.g. <artifact_dir>/<name>_PRE.json): the exact to/cc/bcc/subject/body/html_body plus every attachment path with size+md5, and the pre-mutation baseline from get_mailbox_stats (+ get_unread_count). Do NOT rely on export_emails as the backup: it ignores export_path and writes to the MCP server's own filesystem, which the agent host cannot read. AFTER the send, locate BOTH artifacts it creates - the Sent copy AND (when the recipient is local) the delivered INBOX copy, which arrives UNREAD - by paging search_emails(query, folder='Sent') and search_emails(query, folder='INBOX') to exhaustion, then read_email + get_email_headers on each and append the verbatim bodies, html, headers and Message-ID to a POST artifact; both copies are needed because the Sent copy keeps Bcc but has empty Date/Message-ID while the delivered copy has Date/Message-ID but no Bcc. Compare artifact content to the pre-send args (string equality / checksums, not counts) before any destruction. To restore the mailbox to its prior state, delete BOTH copies - and because read_email/get_email_headers/delete_email take no folder argument and resolve ids against the LAST folder selected, ALWAYS issue search_emails or get_emails on the target folder immediately before delete_email so the id binds to the intended folder; deleting id 14 from INBOX after an INBOX search left Sent id 14 untouched, confirming the pinning works. delete_email expunges outright (Trash stays 0), so no Trash cleanup is needed and no hidden copy remains. Finally re-verify with get_mailbox_stats + get_unread_count + a repeat search in both folders. ALWAYS report the external delivery as a hard, unrecoverable limitation, and report attachment bytes as inaccessible (download_attachment lands on the server filesystem only).",
+   "applies_to": "send_email",
+   "trigger": "send_email",
+   "verified": true,
+   "capture_tools": [
+    "get_mailbox_stats",
+    "get_unread_count",
+    "get_folders",
+    "search_emails",
+    "get_emails",
+    "read_email",
+    "get_email_headers",
+    "delete_email",
+    "send_email",
+    "export_emails",
+    "download_attachment"
+   ]
+  },
+  {
+   "action": "Reply to an email (irreversible external side effect)",
+   "skill": "BEFORE replying: read_email + get_email_headers on the source email_id and write the full body, Subject, From/To/Cc, Date and Message-ID to a LOCAL file artifact (do NOT rely on export_emails - it ignores export_path and writes to an unreachable server-side directory; listings and search results are not backups). Record the EXACT reply args (body, html_body, cc, bcc, reply_all) and the pre-mutation counts from get_mailbox_stats for INBOX and Sent. Embed a unique token in the reply body so the copies can be re-located by content. AFTER the call: re-run get_mailbox_stats and compare - a reply typically increments Sent, and ALSO increments INBOX whenever the reply recipient is the mailbox account itself. Locate each copy with search_emails on the unique token, paging to exhaustion, in BOTH Sent and INBOX. To restore: re-resolve the delivered INBOX copy's id with search_emails IMMEDIATELY before deleting (ids re-sequence and were observed resolving to the wrong message right after a delete), then delete_email that id, then re-run search_emails to confirm it is gone and get_emails to confirm the untouched messages are intact. Optionally mark_emails the source back to its prior status, but note this is unverifiable. LIMITATIONS that MUST be reported: the Sent copy CANNOT be deleted or read (email_id resolves against INBOX only, so delete_email/delete_emails/read_email all fail with IMAP 'Invalid messageset') and is permanent residue; the outbound SMTP delivery to recipients is IRREVERSIBLE; and when replying to a genuine third party there is no delivered INBOX copy at all, so effectively nothing is recoverable.",
+   "applies_to": "reply_email",
+   "trigger": "reply_email",
+   "verified": true,
+   "capture_tools": [
+    "read_email",
+    "get_email_headers",
+    "search_emails",
+    "get_emails",
+    "get_mailbox_stats",
+    "get_unread_count",
+    "delete_email",
+    "mark_emails",
+    "delete_emails",
+    "export_emails"
+   ]
+  },
+  {
+   "action": "Forward an email (irreversible external side effect)",
+   "skill": "BEFORE forwarding: (1) PIN THE FOLDER CONTEXT - call get_emails(folder=<SOURCE_FOLDER>) immediately before forward_email, because email_id is resolved against the most recently listed folder; verified live: with Sent listed last, forward_email(email_id='15') forwarded Sent#15 (an unrelated production message) instead of INBOX#15. (2) read_email + get_email_headers on the source to persist subject, From/To/Cc, Date, Message-ID, Content-Type/boundary and the full body, plus every attachment name/mime/size that will travel with the forward. (3) Record the exact to/cc/bcc and added body you are about to pass. (4) Capture the source's flags (get_unread_count / folder listing) - do NOT assume the source keeps them. AFTER the call, forwarding creates TWO local artifacts, not one: a Sent copy, AND - whenever any recipient is a local mailbox - a copy delivered back into INBOX. Locate both via search_emails('Fwd: <subject>', folder=...) paging to exhaustion and pin their ids/Message-IDs. TO RESTORE: delete_email the Sent copy and delete_emails the delivered INBOX copy (re-pinning folder context before each delete), then reapply the captured source flags with mark_emails. delete_email is a hard expunge (Trash stays 0), so no second cleanup pass is needed. LIMITATION: the SMTP transmission itself cannot be recalled - if any recipient was external, the message and its attachments have already reached third parties and that disclosure is IRREVERSIBLE; deleting the local copies removes the record, not the disclosure.",
+   "applies_to": "forward_email",
+   "trigger": "forward",
+   "verified": true,
+   "capture_tools": [
+    "read_email",
+    "get_email_headers",
+    "search_emails",
+    "get_emails",
+    "get_mailbox_stats",
+    "get_unread_count",
+    "mark_emails",
+    "delete_email",
+    "delete_emails",
+    "forward_email"
+   ]
+  },
+  {
+   "action": "Export emails to a file path (may overwrite an existing file)",
+   "skill": "Before exporting, note that export_path is IGNORED by this backend — the file always lands at <export_dir>/<FOLDER>_export_<YYYYMMDD>_<HHMMSS>.json, so a caller-named pre-existing file is never overwritten; the real damage is that export silently sets \\Seen on every exported message. So for each folder about to be exported (all folders if export_all_folders=true), FIRST record its unread count with get_unread_count(folder_name=<FOLDER>) and then identify WHICH messages are unread: list with get_emails(folder=<FOLDER>) and, for each id, mark_emails([id],'read') followed by get_unread_count(folder_name=<FOLDER>) — a decrement means that id was unread — re-marking the discovered unread ids 'unread' at the end so the probe is a no-op; persist that id list plus Message-IDs and per-message read_email content to a durable file under /work OUTSIDE the mail server. After the export, restore read state with get_emails(folder=<FOLDER>) (this re-establishes the server's folder context, otherwise mark_emails hits the last-listed folder) followed by mark_emails(<CAPTURED_UNREAD_IDS>,'unread'), then re-verify with get_unread_count. Never issue two exports of the same folder within the same second: identical timestamped filenames collide and the last writer silently destroys the earlier export. LIMITATIONS to flag rather than assume away: \\Flagged/'important' state is not readable through any tool and cannot be backed up or verified; the created export file cannot be deleted (no server-side FS tool); and a clobbered export file cannot be rewritten to its path, so treat a same-second collision as unrecoverable file loss.",
+   "applies_to": "export_emails",
+   "trigger": "export",
+   "verified": true,
+   "capture_tools": [
+    "get_emails",
+    "get_unread_count",
+    "get_mailbox_stats",
+    "read_email",
+    "get_email_headers",
+    "mark_emails",
+    "export_emails",
+    "import_emails"
+   ]
+  },
+  {
+   "action": "Create a new mail folder",
+   "applies_to": "create_folder",
+   "trigger": "create_folder",
+   "verified": true,
+   "capture_tools": [
+    "get_folders",
+    "get_mailbox_stats",
+    "create_folder",
+    "delete_folder"
+   ],
+   "reverter": {
+    "mcp_calls": [
+     {
+      "tool": "mcp__email__delete_folder",
+      "args": {
+       "folder_name": "<captured folder_name>"
+      }
+     }
+    ],
+    "pin": "folder_name"
+   }
+  },
+  {
+   "action": "Save a new draft",
+   "applies_to": "save_draft",
+   "trigger": "save_draft",
+   "verified": true,
+   "capture_tools": [
+    "get_drafts",
+    "save_draft",
+    "delete_draft"
+   ],
+   "reverter": {
+    "mcp_calls": [
+     {
+      "tool": "delete_draft",
+      "args": {
+       "draft_id": "<captured draft_id>"
+      }
+     }
+    ],
+    "pin": "draft_id"
+   },
+   "skill": "reverse_save_draft: after calling save_draft, pin the draft_id from its success string ('Draft saved successfully with ID: <id>'); to revert, call delete_draft with that exact id and re-read get_drafts to confirm the id is absent. No content backup is required because the action is purely additive - nothing pre-existing is overwritten."
+  },
+  {
+   "action": "Prove a mailbox export is complete before the source is destroyed",
+   "skill": "EXPORT COMPLETENESS — an export can return fewer messages than the folder holds and still report success, so an export is not an artifact until its contents are reconciled against the folder's own total. After every export, count the messages actually inside the written file and compare that count with get_mailbox_stats(folder_name) for every folder in scope, and decode a sample of the embedded attachment payloads to check the decoded byte length against the recorded size — an entry can carry headers and no body. If the artifact is short, do not accept it and do not proceed: reduce the folder to exportable slices by MOVING (never deleting) part of it into a temporary folder, export each slice, combine them into one artifact, confirm the union's distinct Message-IDs equals the folder total, then move the relocated messages back and re-verify the folder count before the destructive call.",
+   "verified": true,
+   "capture_tools": [
+    "export_emails",
+    "get_mailbox_stats",
+    "move_emails"
+   ]
+  }
+ ],
+ "readOnlyTools": [
+  "get_folders",
+  "get_mailbox_stats",
+  "get_unread_count",
+  "check_connection",
+  "get_drafts"
+ ],
+ "skill": "Folder identity is required: email IDs are folder-scoped and each MCP connection has its own selected-folder state. The backup connection does not inherit the main connection selection. Never assume INBOX for an ID-only delete. If the trigger does not establish the original folder, first export_emails({export_all_folders:true,export_path:\"<ACTION_DIR>/all-folders.json\"}) on the exact triggering account and verify persisted content for every folder; do not substitute an INBOX-only export. Keep folder plus Message-ID/subject identity in the receipt. Do not perform the triggering deletion or mutate folders to test recovery during capture.\nBefore ANY delete or move (single, batch, folder, draft), export ALL folders of the triggering account — export_emails({export_all_folders:true, export_path:\"<ACTION_DIR>/all-folders.json\"}) — whatever folder the action names, and verify a persisted count per folder against mailbox stats. A folder-scoped export is an addition to it, never a substitute: IDs are folder-scoped and volatile, so the folder the action names is not proof of where its targets live.\n\nBackup guidance for email MCP operations. Use the actual mailbox server alias from the triggering call; do not substitute another account. Resolve every batch member and pagination page, capture before mutation, and persist actual content outside the mailbox. IDs are volatile per-folder sequence numbers, scoped to the last listing/search; pin stable Message-ID plus source folder and re-resolve IDs after moves/deletes. Respect Page X/N: out-of-range draft pages may repeat the last page.\nRead/list/search/header/export calls can mark messages READ. Record unread counts before those calls. If affected IDs are already known, a mark-read + unread-count differential can identify prior unread IDs; restore the probe immediately and save the map. Do not claim flags recovered if enumeration already erased them. Native exports live on the MCP server, not necessarily the agent host; retain the returned path and persist readable message/attachment content locally where available. Recovery may change IDs, flags or transport headers; sending cannot be recalled.\n\n[1] Single delete: establish the folder and target identity; read_email, get_email_headers and every download_attachment; export the containing folder and retain its returned path. Restore with import_emails(preserve_folders=true). Whole-folder import can duplicate surviving siblings; reconcile by Message-ID. Deletion bypasses Trash.\n[2] Batch delete: resolve every requested ID in its current folder and capture every body, header and attachment, not a sample; export ALL folders (see the all-folders rule above), plus that folder if you want a focused copy. Verify export count/content. Recover and reconcile all batch members, accounting for shifted sequence IDs and surviving siblings.\n[3] Delete folder: record folder identity, hierarchy, total/unread counts; capture every message and attachment and export the full folder. Verify count against mailbox stats. Import with preserve_folders=true to recreate it; restore known flags and check counts. Do not treat an export pathname alone as copied bytes.\n[4] Single move: record source/destination counts before reads; persist Message-ID, content, attachments, flags if known and old location. Re-find the message in the destination, move it back and record new IDs. Location cannot be reconstructed from the moved message alone.\n[5] Read/list/header/search: treat unread-state changes as mutations when flags matter. Capture prior affected unread IDs without first reading away that state; listing affects the whole returned page. Restore with mark_emails(...,'unread') and compare counts. Unknown prior flags remain a limitation.\n[6] Batch move: save a source-folder/Message-ID/content/attachment/location entry for EVERY requested member; compare artifact count to the requested batch, not an unrelated folder total. Resolve destination IDs and move each back, re-listing after ID shifts. Preserve known flags separately.\n[7] Mark flags: record read/unread before listing or marking. For known IDs use the count-differential probe described above, then immediately restore it. Apply captured read/unread values on recovery. Important flags are not exposed by the observed readers; do not invent their prior value.\n[8] Update draft: get_drafts exposes ID, subject, recipient and update time, not body/html/cc/bcc. Capture those visible fields and full prior content only when available in earlier save/update inputs. Restore with update_draft using saved content; inaccessible fields cannot be declared backed up.\n[9] Delete draft: capture the visible draft and any full content available from prior inputs, paging by Page X/N. Recreate via save_draft with captured fields. New ID/time differ; an unavailable body cannot be recovered from an empty Drafts mailbox or fabricated.\n[10] Import: capture affected folder names, counts, Message-IDs, bodies, attachments and an export before import. Reconcile post-import identities/content to identify additions; remove only confirmed imported messages and newly created empty folders. Account for pre-existing duplicates and flags; raw sequence-ID set difference is not stable identity.\n[11] Export mailbox: it can mark the whole fetched folder READ even with max_emails. Capture unread state first, restore known unread IDs afterwards, verify counts, and pin the server-returned export path. Do not treat export as a harmless read or assume a requested local path was honored.\n[12] Send: save exact to/cc/bcc, subject, body/html and attachment bytes/checksums plus relevant mailbox pre-state. Pin resulting Sent and local-recipient Inbox copies. Local copies may be removed, but SMTP delivery and downstream recipients cannot be undone; report that boundary.\n[13] Reply: preserve the source message, headers, thread identity, reply content, recipients and attachments before sending. Pin any new Sent/Inbox copies for local cleanup. Reply delivery and external side effects are irreversible; this is evidence capture, not recall.\n[14] Forward: preserve source content, headers and attachments plus the exact forwarding recipients/content. Pin new mailbox copies. Local cleanup cannot revoke externally delivered content; keep the irreversible-delivery limitation explicit.\n[15] Export path: the server rewrites paths to timestamped export filenames; same-folder exports in the same second may collide. Pin the real returned path and avoid such collisions. Preserve unread state as above; a server-only file is not automatically a local artifact.\n[16] Create folder: pin the exact newly created folder name and prior absence. Recovery is delete_folder on that folder only while it remains empty of subsequent/pre-existing data; otherwise capture the contents and dependencies first.\n[17] Save draft: pin draft_id from the successful save_draft result. Recovery is delete_draft of that exact newly created ID, followed by paged get_drafts confirmation. This does not cover overwriting an existing draft.\n\nAttachment download requires the source folder on the triggering mailbox account; pass folder and, when known, expected_message_id. Never substitute another mailbox server.\n\nEXPORT COMPLETENESS — an export can return fewer messages than the folder holds and still report success, so an export is not an artifact until its contents are reconciled against the folder's own total. After every export, count the messages actually inside the written file and compare that count with get_mailbox_stats(folder_name) for every folder in scope, and decode a sample of the embedded attachment payloads to check the decoded byte length against the recorded size — an entry can carry headers and no body. If the artifact is short, do not accept it and do not proceed: reduce the folder to exportable slices by MOVING (never deleting) part of it into a temporary folder, export each slice, combine them into one artifact, confirm the union's distinct Message-IDs equals the folder total, then move the relocated messages back and re-verify the folder count before the destructive call."
+}

@@ -1,7 +1,0 @@
-project	project_id	name
-nav-locks	81	Navigation -- lock control
-nav-weirs	82	Navigation -- weir and sluice control
-nav-telemetry	83	Navigation -- telemetry
-nav-gauging	84	Navigation -- gauging
-nav-alarms	85	Navigation -- alarm handling
-nav-standards	86	Navigation -- engineering standards

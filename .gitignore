@@ -1,6 +1,8 @@
 node_modules/
 dist/
-__pycache__/
-*.pyc
-results/
-*.log
+dist-test/
+src/prompts.generated.ts
+*.tgz
+.backupper/
+npm-debug.log*
+.DS_Store

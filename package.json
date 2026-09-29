@@ -1,0 +1,54 @@
+{
+  "name": "agents-backupper",
+  "version": "0.1.0",
+  "description": "Pre-execution backups for coding agents: a hook for Claude Code, Codex and Hermes that captures what a tool call is about to destroy, so the step can be undone.",
+  "main": "dist/index.js",
+  "bin": {
+    "backupper": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "commands/",
+    "experiences/*.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/gen_prompts.mjs && tsc -p tsconfig.json && node scripts/postbuild.mjs",
+    "typecheck": "node scripts/gen_prompts.mjs && tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/unit/*.test.js && node test/smoke.mjs && node scripts/gen_config_doc.mjs --check",
+    "e2e": "bash test/e2e/run.sh",
+    "docs": "npm run build && node scripts/gen_config_doc.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xli04/BackUpper.git"
+  },
+  "homepage": "https://github.com/xli04/BackUpper#readme",
+  "bugs": {
+    "url": "https://github.com/xli04/BackUpper/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "hermes",
+    "coding-agent",
+    "backup",
+    "undo",
+    "hooks"
+  ],
+  "author": "BackUpper authors",
+  "license": "MIT",
+  "dependencies": {
+    "js-yaml": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

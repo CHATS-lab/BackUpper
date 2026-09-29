@@ -1,9 +1,0 @@
-FILE capture_2026-07-14_SN48213_1240.cap
-WINDOW 12:40:04 16:38:51
-EVENTS 50b8f79227c0885b438b5b92d7b67e78 ae8297ca60cffe10fc025f147032ae86 0e2ee4f2e59027293738b6d659e234cb
-VALUES 36.858 34.167 32.905
-REC {"chan": "vbus", "event_id": "50b8f79227c0885b438b5b92d7b67e78", "flags": "FAULT:UV", "seq": 432, "t": "14:06:55.831", "value": 36.858}
-REC {"chan": "vbus", "event_id": "ae8297ca60cffe10fc025f147032ae86", "flags": "FAULT:UV", "seq": 435, "t": "14:07:32.136", "value": 34.167}
-REC {"chan": "vbus", "event_id": "0e2ee4f2e59027293738b6d659e234cb", "flags": "FAULT:UV", "seq": 438, "t": "14:08:08.441", "value": 32.905}
-COLLIDING capture_2026-07-14_SN48213_0913.cap | capture_2026-07-14_SN48213_1240.cap | capture_2026-07-14_SN48213_1642.cap
-LOADER /srv/ingest/loaded/last-run.json

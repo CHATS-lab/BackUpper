@@ -1,0 +1,2096 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BackUpper</title>
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("backupper-theme") || "light";
+      document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+    } catch (_) { document.documentElement.setAttribute("data-theme", "light"); }
+  })();
+</script>
+<style>
+  /* Ledger aesthetic — a paper flight-recorder for agent actions.
+     Restrained color, hard edges, no shadows; double-rules like a
+     bound ledger; tractor-feed perforation on the timeline tape;
+     ticket-stamp action numbers. Monospace for technical terms.
+
+     Each of the four backup tiers (T0–T3) has one colour, used
+     consistently; the CSS variable index matches the tier number:
+       T0 rewrite  = amber      (--t0)
+       T1 manifest = sage       (--t1)
+       T2 snapshot = teal       (--t2)
+       T3 subagent = slate blue (--t3)  */
+
+  /* Palette: warm cream paper (#faf9f5) with warm-gray ink and a deep
+     green-teal accent (#12867e); dark mode uses navy ink (#10131a) with
+     a mint-teal accent (#54cfc3). Teal doubles as the T2 colour;
+     amber, sage and slate distinguish T0, T1 and T3. */
+  :root, [data-theme="light"] {
+    --bg:         #faf9f5;
+    --bg-soft:    #f2f0e8;
+    --line:       #e6e3d8;
+    --line-strong:#d1cdbf;
+    --text:       #1f1d1a;
+    --text-dim:   #4a473f;
+    --muted:      #9a978d;
+    --accent:     #12867e;
+    --accent-2:   #5c7186;
+    --success:    #45714b;
+    --warn:       #a8740f;
+    --danger:     #b3422e;
+    --hover-bg:   #f5f3ee;
+    --t0: var(--warn);
+    --t1: var(--success);
+    --t2: var(--accent);
+    --t3: var(--accent-2);
+  }
+  [data-theme="dark"] {
+    --bg:         #10131a;
+    --bg-soft:    #171b24;
+    --line:       #262b38;
+    --line-strong:#3a4153;
+    --text:       #e9e6df;
+    --text-dim:   #b5b1a6;
+    --muted:      #7d7a70;
+    --accent:     #54cfc3;
+    --accent-2:   #8aa3c2;
+    --success:    #84b08a;
+    --warn:       #d9a93e;
+    --danger:     #d96553;
+    --hover-bg:   #1a1f2a;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, "Segoe UI", sans-serif;
+    font-size: 16px;
+    font-weight: 450;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, pre, .mono, .num {
+    font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, ui-monospace, monospace;
+    font-size: 0.9em;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Masthead — one sticky instrument bar: brand · tabs · tools.
+     The bottom edge is a ledger double-rule. */
+  header.masthead {
+    position: sticky; top: 0; z-index: 50;
+    border-bottom: 3px double var(--line-strong);
+    padding: 12px 24px 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    background: var(--bg);
+  }
+  .brand { display: flex; align-items: baseline; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; }
+  .brand .sigil {
+    color: var(--accent); font-family: "JetBrains Mono", monospace;
+    border: 1px solid var(--accent); padding: 0 5px; line-height: 1.45; font-size: 12px;
+  }
+  .brand small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 4px; font-style: italic; }
+  .masthead nav { display: flex; gap: 18px; margin-left: auto; align-items: baseline; }
+  .masthead nav button {
+    background: transparent; border: none; color: var(--text-dim);
+    font-size: 12.5px; cursor: pointer; padding: 0 0 2px; font-family: inherit;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    border-bottom: 2px solid transparent;
+  }
+  .masthead nav button:hover { color: var(--text); }
+  .masthead nav button.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+
+  .icon-btn { background: transparent; border: 1px solid var(--line); color: var(--text-dim); cursor: pointer; padding: 4px 10px; font-size: 12.5px; font-family: inherit; transition: background 0.12s, color 0.12s; }
+  .icon-btn:hover { background: var(--hover-bg); color: var(--text); border-color: var(--line-strong); }
+  .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Layout */
+  main { max-width: 1100px; margin: 0 auto; padding: 18px 24px 60px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Compact status strip — one instance, shared by every tab */
+  .status-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--bg-soft); border: 1px solid var(--line); margin-bottom: 12px; font-size: 13px; font-weight: 500; flex-wrap: wrap; }
+  .status-bar .pill { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); white-space: nowrap; }
+  .status-bar .pill code { color: var(--text); font-family: "JetBrains Mono", monospace; }
+  .status-bar .pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .status-bar .pill .dot.on  { background: var(--success); }
+  .status-bar .pill .dot.off { background: var(--muted); }
+  .status-bar .sep { color: var(--line-strong); }
+  .status-bar .progress-wrap { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+  .status-bar .progress { width: 80px; height: 4px; background: var(--line); overflow: hidden; }
+  .status-bar .progress > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+  .status-bar .progress.warn   > div { background: var(--warn); }
+  .status-bar .progress.danger > div { background: var(--danger); }
+
+  /* Filter row */
+  .filter-row { display: flex; gap: 6px; margin-bottom: 10px; align-items: stretch; }
+  .filter-row .search-wrap { flex: 1; position: relative; }
+  .filter-row .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
+  .filter-row input[type=text] { width: 100%; padding: 6px 10px 6px 30px; font-size: 13px; height: 32px; background: var(--bg); border: 1px solid var(--line); color: var(--text); font-family: inherit; }
+  .filter-row input[type=text]:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .filter-row select { padding: 4px 10px; font-size: 12.5px; height: 32px; background: var(--bg); border: 1px solid var(--line); color: var(--text); font-family: inherit; cursor: pointer; }
+  .filter-row select:hover { border-color: var(--line-strong); }
+  .filter-row select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+  /* Split view */
+  .split-view { display: grid; grid-template-columns: 320px 1fr; gap: 10px; align-items: start; }
+  @media (max-width: 780px) { .split-view { grid-template-columns: 1fr; } }
+  /* The timeline pane is the "tape": tractor-feed perforation down the
+     left edge, like the recorder's paper feed. */
+  .timeline-pane { position: relative; background: var(--bg); border: 1px solid var(--line); padding: 4px 6px 4px 18px; max-height: 75vh; overflow-y: auto; }
+  .timeline-pane::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 12px;
+    border-right: 1px dashed var(--line);
+    background-image: radial-gradient(circle at 6px 11px, var(--line) 2.4px, transparent 3px);
+    background-size: 12px 22px; background-repeat: repeat-y;
+  }
+  .detail-pane { background: var(--bg); border: 1px solid var(--line); padding: 16px 18px; min-height: 400px; }
+
+  /* Pane title above the action tape */
+  .tl-pane-title { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); padding: 8px 6px 6px; border-bottom: 3px double var(--line-strong); margin-bottom: 4px; }
+
+  /* Timeline rows */
+  .tl-rows { position: relative; padding: 4px 0; }
+  .tl-vline { position: absolute; left: 20px; top: 14px; bottom: 14px; width: 1px; background: var(--line-strong); z-index: 0; }
+  .tl-row { display: grid; grid-template-columns: 28px 1fr 16px; column-gap: 10px; align-items: center; padding: 8px 6px; font-size: 13.5px; font-weight: 500; cursor: pointer; position: relative; z-index: 1; border-radius: 2px; border-left: 2px solid transparent; }
+  .tl-row:hover { background: var(--hover-bg); }
+  /* Selected row carries its tier color on the left edge. */
+  .tl-row.selected { background: var(--bg-soft); }
+  .tl-row.selected.t-rewrite  { border-left-color: var(--t0); }
+  .tl-row.selected.t-manifest { border-left-color: var(--t1); }
+  .tl-row.selected.t-snapshot { border-left-color: var(--t2); }
+  .tl-row.selected.t-subagent { border-left-color: var(--t3); }
+
+  /* The spine node is the tier label (T0–T3). A bordered chip
+     sitting on the vertical spine, its bg masking the line behind it. */
+  .tl-node {
+    justify-self: center; position: relative; z-index: 2;
+    min-width: 22px; text-align: center;
+    font-family: "JetBrains Mono", monospace; font-size: 9.5px; font-weight: 700;
+    line-height: 1.5; padding: 0 2px;
+    background: var(--bg); border: 1px solid currentColor; border-radius: 2px;
+    color: var(--accent);
+  }
+  .tl-node.t-snapshot { color: var(--t2); }
+  .tl-node.t-rewrite  { color: var(--t0); }
+  .tl-node.t-manifest { color: var(--t1); }
+  .tl-node.t-subagent { color: var(--t3); }
+
+  .tl-content { min-width: 0; display: flex; align-items: baseline; overflow: hidden; }
+  .tl-idx { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 10.5px; margin-right: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .tl-tool { display: inline-block; font-family: "JetBrains Mono", monospace; font-size: 10px; padding: 0 4px; margin-right: 6px; color: var(--text-dim); background: var(--bg-soft); border: 1px solid var(--line); flex-shrink: 0; min-width: 16px; text-align: center; line-height: 1.5; }
+  .tl-tool.E { color: var(--accent);  border-color: var(--accent); }
+  .tl-tool.W { color: var(--success); border-color: var(--success); }
+  .tl-tool.B { color: var(--warn);    border-color: var(--warn); }
+  .tl-file { color: var(--text); font-family: "JetBrains Mono", monospace; font-size: 12.5px; font-weight: 600; flex-shrink: 0; }
+  .tl-sep { color: var(--muted); margin: 0 6px; flex-shrink: 0; }
+  .tl-detail { color: var(--text-dim); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .tl-detail .strike { text-decoration: line-through; text-decoration-color: rgba(182, 45, 28, 0.45); color: var(--text-dim); }
+  .tl-detail .arrow { color: var(--muted); margin: 0 4px; }
+  .tl-detail .new   { color: var(--success); }
+  .tl-cmd { font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .tl-cmd .verb { color: var(--muted); margin-right: 4px; }
+  /* Restore is the whole point — keep it visible, brighten on hover. */
+  .tl-restore { opacity: 0.4; color: var(--muted); font-size: 13px; cursor: pointer; background: transparent; border: none; padding: 2px; transition: opacity 0.1s, color 0.1s; line-height: 1; }
+  .tl-restore:hover { color: var(--accent); opacity: 1; }
+  .tl-row:hover .tl-restore, .tl-row.selected .tl-restore { opacity: 0.9; }
+
+  /* By-file grouping */
+  .tl-group { margin-bottom: 4px; }
+  .tl-group-header { padding: 10px 6px 4px; font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--text); font-weight: 500; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+  .tl-group:first-child .tl-group-header { padding-top: 4px; }
+  .tl-group-header .count { color: var(--muted); font-size: 10px; font-weight: 400; }
+
+  /* Legend */
+  .tl-legend { border-top: 1px dashed var(--line); margin-top: 6px; padding: 9px 6px; display: flex; gap: 16px; font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap; }
+  .tl-legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .tl-legend .item .ld { width: 8px; height: 8px; border-radius: 50%; }
+  .tl-legend .item.snap .ld { background: var(--t2); }
+  .tl-legend .item.rew  .ld { background: var(--t0); }
+  .tl-legend .item.man  .ld { background: var(--t1); }
+  .tl-legend .item.sub  .ld { background: var(--t3); }
+  .tl-legend .item b { color: var(--text); font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 12px; }
+
+  /* Detail pane */
+  .detail-empty { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 14px; }
+  .detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .detail-title-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+  /* Action number as a ticket stamp — double rule, like a punched stub. */
+  .detail-seq { font-family: "JetBrains Mono", monospace; font-weight: 600; font-size: 13px; color: var(--accent); border: 3px double var(--accent); padding: 0 8px; letter-spacing: 0.06em; }
+  /* Strategy chips carry their TIER color — same hue as the timeline. */
+  .detail-strat { font-family: "JetBrains Mono", monospace; font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--line-strong); color: var(--text-dim); }
+  .detail-strat.git_snapshot,
+  .detail-strat.file_copy      { color: var(--t2); border-color: var(--t2); }
+  .detail-strat.subagent,
+  .detail-strat.learned_rule   { color: var(--t3); border-color: var(--t3); }
+  .detail-strat.policy_rewrite { color: var(--t0); border-color: var(--t0); }
+  .detail-strat.pip_freeze,
+  .detail-strat.npm_list,
+  .detail-strat.env_snapshot,
+  .detail-strat.git_tag        { color: var(--t1); border-color: var(--t1); }
+  .detail-meta { font-size: 12.5px; color: var(--muted); }
+  .detail-meta code { color: var(--text-dim); font-family: "JetBrains Mono", monospace; }
+  .detail-instruction { font-size: 15px; font-weight: 550; color: var(--text); margin-bottom: 12px; line-height: 1.5; word-break: break-word; }
+  .detail-section { margin-top: 14px; }
+  .detail-section h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .detail-section .kv { font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 500; color: var(--text-dim); word-break: break-all; }
+  .detail-section .file-list code { font-family: "JetBrains Mono", monospace; color: var(--text); font-size: 12.5px; font-weight: 500; }
+  .file-item { display: inline-flex; align-items: center; gap: 2px; }
+  .file-restore, .step-restore { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; opacity: 0.45; line-height: 1; }
+  .file-restore:hover, .step-restore:hover { color: var(--accent); opacity: 1; }
+  /* Compare select sits inline in the diff section header */
+  #compare-select { margin-left: 8px; font-size: 11px; padding: 1px 4px; background: var(--bg); border: 1px solid var(--line); color: var(--text-dim); font-family: inherit; text-transform: none; letter-spacing: normal; cursor: pointer; }
+  #compare-select:hover { border-color: var(--line-strong); color: var(--text); }
+  .detail-section .stat { font-family: "JetBrains Mono", monospace; color: var(--success); font-size: 12px; }
+  .detail-diff { margin: 0; padding: 10px 12px; background: var(--bg-soft); border: 1px solid var(--line); font-family: "JetBrains Mono", monospace; font-size: 12.5px; line-height: 1.55; max-height: 360px; overflow: auto; white-space: pre; }
+  .diff-add { color: var(--success); }
+  .diff-del { color: var(--danger); }
+  .diff-hdr { color: var(--accent); }
+
+  /* File history strip */
+  .file-history { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .file-history .title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+  .file-history .title code { color: var(--text); text-transform: none; letter-spacing: 0; font-weight: 400; font-family: "JetBrains Mono", monospace; }
+  .file-history .strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-dim); }
+  .file-history .step { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; padding: 2px 4px; transition: background 0.1s; }
+  .file-history .step:hover { background: var(--hover-bg); }
+  .file-history .step.current { color: var(--text); font-weight: 500; }
+  .file-history .step.current .sd { outline: 1.5px solid var(--text); outline-offset: 2px; }
+  .file-history .step .sd { width: 6px; height: 6px; border-radius: 50%; background: var(--t2); }
+  .file-history .step.t-rewrite  .sd { background: var(--t0); }
+  .file-history .step.t-manifest .sd { background: var(--t1); }
+  .file-history .step.t-subagent .sd { background: var(--t3); }
+  .file-history .arrow { color: var(--line-strong); font-size: 11px; }
+
+  /* Backups tab */
+  .bk-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .bk-viewtoggle { display: flex; border: 1px solid var(--line); }
+  .bk-viewtoggle button { background: var(--bg); border: none; color: var(--text-dim); font-size: 12px; padding: 4px 12px; cursor: pointer; font-family: inherit; }
+  .bk-viewtoggle button + button { border-left: 1px solid var(--line); }
+  .bk-viewtoggle button:hover { color: var(--text); }
+  .bk-viewtoggle button.active { background: var(--bg-soft); color: var(--text); }
+  #bk-size-filter { margin-left: 10px; font-size: 12px; padding: 3px 8px; background: var(--bg); border: 1px solid var(--line); color: var(--text-dim); font-family: inherit; cursor: pointer; }
+  #bk-size-filter:hover { border-color: var(--line-strong); color: var(--text); }
+  .bk-summary { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .bk-summary code { color: var(--text-dim); font-family: "JetBrains Mono", monospace; }
+  .bk-table { border: 1px solid var(--line); }
+  .bk-head, .bk-row { display: grid; grid-template-columns: 20px 1.5fr 0.7fr 90px 1.3fr 1.1fr; gap: 10px; padding: 8px 12px; align-items: center; }
+  .bk-head { background: var(--bg-soft); border-bottom: 1px solid var(--line); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .bk-sort-size { cursor: pointer; user-select: none; }
+  .bk-sort-size:hover { color: var(--text); }
+  .bk-sort-ind { color: var(--accent); margin-left: 2px; }
+  .bk-sort-ind.off { color: var(--muted); opacity: 0.6; }
+  .bk-row { border-bottom: 1px solid var(--line); font-size: 13.5px; font-weight: 500; cursor: pointer; }
+  .bk-row:hover { background: var(--hover-bg); }
+  .bk-row.expanded { background: var(--bg-soft); }
+  .bk-caret { color: var(--muted); display: inline-block; transition: transform 0.12s; }
+  .bk-row.expanded .bk-caret { transform: rotate(90deg); }
+  .bk-file { font-family: "JetBrains Mono", monospace; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bk-state { font-family: "JetBrains Mono", monospace; font-size: 11px; }
+  .bk-state.created  { color: var(--success); }
+  .bk-state.modified { color: var(--warn); }
+  .bk-state.deleted  { color: var(--danger); }
+  .bk-tags { display: flex; gap: 5px; flex-wrap: wrap; }
+  .bk-tag { display: inline-block; border: 1px solid currentColor; padding: 0 5px; font-size: 10px; font-family: "JetBrains Mono", monospace; line-height: 1.6; }
+  /* Tier colours, as on the timeline: git=T2, trash=T0, sub=T3. */
+  .bk-tag.git   { color: var(--t2); }
+  .bk-tag.trash { color: var(--t0); }
+  .bk-tag.sub   { color: var(--t3); }
+  .bk-tag.danger { color: var(--danger); }
+  .bk-tag.other { color: var(--text-dim); }
+
+  /* Backups — By-size reference table */
+  .bk-size-note { padding: 8px 12px; font-size: 11.5px; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--bg-soft); }
+  .bk-size-note code { color: var(--text-dim); font-family: "JetBrains Mono", monospace; }
+  .bk-size-head, .bk-size-row { display: grid; grid-template-columns: 28px 1.5fr 90px 1fr 90px; gap: 10px; padding: 7px 12px; align-items: center; }
+  .bk-size-head { background: var(--bg-soft); border-bottom: 1px solid var(--line); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .bk-size-row { border-bottom: 1px solid var(--line); font-size: 13.5px; font-weight: 500; }
+  .bk-size-row:hover { background: var(--hover-bg); }
+  .bk-size-rank { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 11px; text-align: right; }
+  .bk-size-file { font-family: "JetBrains Mono", monospace; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bk-size-bytes { font-family: "JetBrains Mono", monospace; color: var(--text-dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .bk-size-bar { height: 6px; background: var(--bg-soft); border: 1px solid var(--line); overflow: hidden; }
+  .bk-size-bar .fill { display: block; height: 100%; background: var(--accent); }
+
+  /* Backups — By-storage grouped view */
+  .bk-stg-group { border-bottom: 1px solid var(--line); }
+  .bk-stg-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 3px; background: var(--bg-soft); }
+  .bk-stg-label { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: var(--text); font-weight: 500; }
+  .bk-stg-meta { color: var(--muted); font-size: 11px; }
+  .bk-stg-path { padding: 0 12px 6px; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--bg-soft); border-bottom: 1px solid var(--line); }
+  .bk-stg-row { display: grid; grid-template-columns: 38px 110px 1fr; gap: 10px; padding: 7px 12px; align-items: center; font-size: 13px; font-weight: 500; cursor: pointer; }
+  .bk-stg-row:hover { background: var(--hover-bg); }
+  .bk-stg-row .seq { color: var(--accent); font-family: "JetBrains Mono", monospace; }
+  .bk-stg-row .tool { color: var(--warn); font-family: "JetBrains Mono", monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bk-stg-row .desc { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bk-storage { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bk-detail { display: none; padding: 4px 12px 14px 30px; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
+  .bk-row.expanded + .bk-detail { display: block; }
+  .bk-detail-line { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 11.5px; font-family: "JetBrains Mono", monospace; color: var(--text-dim); }
+  .bk-detail-line .seq  { color: var(--accent); flex-shrink: 0; }
+  .bk-detail-line .time { color: var(--muted); flex-shrink: 0; }
+  .bk-detail-line .path { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .bk-detail-line .btn { margin-left: auto; flex-shrink: 0; }
+  .bk-detail-bar { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Backups — Restore log (the rewind audit trail) */
+  .bk-log-head, .bk-log-row { display: grid; grid-template-columns: 160px 70px 1fr 200px; gap: 10px; padding: 7px 12px; align-items: center; }
+  .bk-log-head { background: var(--bg-soft); border-bottom: 1px solid var(--line); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .bk-log-row { border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 500; }
+  .bk-log-row .when { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bk-log-row .target { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bk-log-row .outcome { font-family: "JetBrains Mono", monospace; font-size: 11px; }
+  .bk-log-row .outcome.ok  { color: var(--success); }
+  .bk-log-row .outcome.bad { color: var(--danger); }
+
+  /* Experiences tab: read-only view of per-MCP-server capture playbooks.
+     One card per server; verified patterns are listed first. */
+  .pat-card { border: 1px solid var(--line); margin-bottom: 12px; }
+  .pat-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--line); }
+  .pat-server { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--text); font-weight: 600; }
+  .pat-meta { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .pat-row { display: flex; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13.5px; align-items: flex-start; }
+  .pat-row:last-child { border-bottom: none; }
+  .pat-badge { flex-shrink: 0; font-family: "JetBrains Mono", monospace; font-size: 10px; border: 1px solid currentColor; padding: 0 5px; line-height: 1.7; margin-top: 1px; min-width: 62px; text-align: center; }
+  .pat-badge.verified { color: var(--success); }
+  .pat-badge.proposed { color: var(--muted); }
+  .pat-badge.failed   { color: var(--danger); }
+  .pat-action { color: var(--text); font-weight: 650; }
+  .pat-win { color: var(--text-dim); margin-top: 2px; line-height: 1.45; }
+  .pat-win .ew { color: var(--success); font-family: "JetBrains Mono", monospace; font-size: 10px; margin-right: 5px; letter-spacing: 0.05em; }
+  .pat-note { color: var(--muted); font-size: 11px; margin-top: 3px; font-style: italic; }
+
+  /* Collapsible detail sections — key info first, expand for more */
+  .detail-acc { margin-top: 10px; border: 1px solid var(--line); background: var(--bg); }
+  .detail-acc summary { cursor: pointer; padding: 7px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; user-select: none; list-style: none; display: flex; align-items: center; gap: 7px; }
+  .detail-acc summary::-webkit-details-marker { display: none; }
+  .detail-acc summary::before { content: "▸"; color: var(--accent); transition: transform 0.12s; }
+  .detail-acc[open] summary::before { transform: rotate(90deg); }
+  .detail-acc summary:hover { background: var(--hover-bg); color: var(--text); }
+  .detail-acc .acc-body { padding: 4px 10px 12px; }
+  .detail-acc summary .hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); margin-left: auto; font-size: 11px; }
+
+  .detail-section h4 .sec-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); margin-left: 6px; }
+
+  /* Timeline rows scroll inside a capped viewport (~14 rows); the
+     selected-action box and legend stay pinned below. */
+  .tl-scroll { max-height: 470px; overflow-y: auto; }
+  /* Clickable tier legend + description box */
+  .tl-legend .item { cursor: pointer; }
+  .tl-legend .item:hover b { color: var(--accent); }
+  .tl-tier-info { display: none; margin: 4px 6px 6px; padding: 7px 10px; border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--bg-soft); font-size: 11.5px; line-height: 1.5; color: var(--text-dim); }
+  .tl-tier-info.show { display: block; }
+  .tl-tier-info b { color: var(--accent); font-family: "JetBrains Mono", monospace; }
+
+  /* Accordion contents stay compact — the fold is for detail, not headlines */
+  .detail-acc .acc-body { font-size: 11.5px; }
+  .detail-acc .acc-body .kv { font-size: 11.5px; font-weight: 400; }
+  .detail-acc .acc-body .detail-diff { font-size: 11px; max-height: 280px; }
+  .detail-acc .acc-body .file-list code { font-size: 11px; font-weight: 400; }
+  .detail-acc .acc-body .stat { font-size: 11px; }
+  .detail-acc .acc-body ol { font-size: 11px !important; }
+  .detail-acc .acc-body .file-history .strip { font-size: 11px; }
+
+  /* Key terms: dotted underline, definition on hover (native tooltip).
+     Only the tier legend under the timeline is click-to-explain. */
+  .term { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+
+  /* Sort-direction hint in the timeline title */
+  .tl-dir { font-weight: 400; color: var(--muted); font-size: 10.5px; margin-left: 8px; letter-spacing: 0; text-transform: none; }
+
+  /* Clickable file names → content viewer */
+  .file-link { cursor: pointer; }
+  .file-link:hover { color: var(--accent); text-decoration: underline; }
+  .modal.modal-wide { width: min(860px, 94vw); }
+  .file-view { max-height: 62vh; overflow: auto; background: var(--bg-soft); border: 1px solid var(--line); padding: 10px 12px; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5; white-space: pre; margin: 10px 0 0; }
+
+  /* Identity pills — agent in teal, session in slate; outlined chips so
+     the "who/which conversation" block stands out among the gray pills */
+  .pill.agent-pill code { color: var(--accent); border: 1px solid var(--accent); padding: 0 6px; font-size: 10.5px; line-height: 1.7; font-weight: 600; }
+  .pill.session-pill code { color: var(--accent-2); border: 1px solid var(--accent-2); padding: 0 6px; font-size: 10.5px; line-height: 1.7; font-weight: 600; }
+
+  /* Live-updates pill (status strip) */
+  .pill.live { cursor: pointer; user-select: none; }
+  .pill.live .dot.on { animation: livepulse 2s ease-in-out infinite; }
+  @keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Config form (carried over) */
+  .section-head { margin-top: 4px; margin-bottom: 14px; display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  .section-head .num   { color: var(--muted); font-weight: 400; }
+  .section-head h2     { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .section-head .meta  { margin-left: auto; color: var(--muted); font-size: 13px; }
+  .cfg-section { margin-bottom: 26px; }
+  .cfg-section h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .cfg-field { display: grid; grid-template-columns: 1fr 220px; gap: 18px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .cfg-field.stacked { grid-template-columns: 1fr; }
+  .cfg-field.stacked .cfg-input { margin-top: 6px; }
+  .cfg-label .title { font-size: 15px; font-weight: 600; }
+  .cfg-label .desc  { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+  .cfg-input input[type=text], .cfg-input input[type=number], .cfg-input select { background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: 6px 10px; font-size: 14px; font-family: inherit; width: 100%; }
+  .cfg-input input:focus, .cfg-input select:focus { outline: 1px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+  .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider { position: absolute; cursor: pointer; inset: 0; background: var(--bg-soft); border: 1px solid var(--line); transition: background 0.15s, border-color 0.15s; }
+  .toggle-slider::before { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: var(--muted); transition: transform 0.15s, background 0.15s; }
+  .toggle input:checked + .toggle-slider { background: var(--accent); border-color: var(--accent); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(18px); background: var(--bg); }
+  textarea { width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: 8px 10px; font-family: "JetBrains Mono", monospace; font-size: 12.5px; min-height: 90px; resize: vertical; }
+  textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .cfg-actions { margin-top: 18px; display: flex; gap: 8px; align-items: center; padding-top: 16px; border-top: 1px solid var(--line); }
+  .btn { background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: 5px 12px; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  .btn:hover { background: var(--hover-bg); border-color: var(--line-strong); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn.primary:hover { background: var(--accent); opacity: 0.9; }
+  .btn.danger { color: var(--danger); border-color: var(--danger); }
+  .btn.danger:hover { background: var(--danger); color: white; }
+  .btn.small { padding: 4px 10px; font-size: 12px; }
+  .save-msg { font-size: 13px; margin-left: auto; color: var(--muted); }
+  .save-msg.ok  { color: var(--success); }
+  .save-msg.err { color: var(--danger); }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+
+  /* Modal */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal-backdrop.show { display: flex; }
+  .modal { background: var(--bg); border: 3px double var(--line-strong); width: min(560px, 90vw); padding: 22px 26px; }
+  /* Dry-run preview inside the restore modal */
+  .modal-preview { margin-top: 12px; border: 1px solid var(--line); background: var(--bg-soft); padding: 10px 12px; font-size: 12px; color: var(--text-dim); max-height: 240px; overflow-y: auto; }
+  .modal-preview h5 { margin: 0 0 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .modal-preview h5 + h5, .modal-preview .pv-block + h5 { margin-top: 10px; }
+  .modal-preview .pv-file { font-family: "JetBrains Mono", monospace; font-size: 11px; display: flex; gap: 8px; padding: 1px 0; }
+  .modal-preview .pv-file .pm { color: var(--muted); margin-left: auto; flex-shrink: 0; }
+  .modal-preview .pv-file .pm .p { color: var(--success); }
+  .modal-preview .pv-file .pm .m { color: var(--danger); }
+  .modal-preview .pv-step { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 1px 0; color: var(--text-dim); }
+  .modal-preview .pv-step .sq { color: var(--accent); }
+  .modal-preview .pv-cmd { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--muted); padding: 1px 0 1px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .modal-preview .pv-note { color: var(--muted); font-style: italic; }
+  .modal h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+  .modal p  { margin: 6px 0; color: var(--text-dim); font-size: 14.5px; line-height: 1.5; }
+  .modal .modal-actions { margin-top: 20px; display: flex; gap: 8px; justify-content: flex-end; }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); padding: 12px 16px; font-size: 13.5px; color: var(--text); max-width: 460px; z-index: 110; transform: translateY(20px); opacity: 0; transition: transform 0.18s, opacity 0.18s; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.err  { border-left-color: var(--danger); }
+  .toast.ok   { border-left-color: var(--success); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--line-strong); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="brand">
+    <span class="sigil">REC</span>
+    BackUpper
+    <small id="brand-meta">records · rewinds · restores</small>
+  </div>
+  <nav>
+    <button id="tab-timeline" class="active">Timeline</button>
+    <button id="tab-backups">Backups</button>
+    <button id="tab-patterns">Experiences</button>
+    <button id="tab-config">Config</button>
+    <button id="refresh" class="icon-btn" style="margin-left: 14px;">↻ Refresh</button>
+    <button id="theme-toggle" class="icon-btn" title="Toggle theme">☼</button>
+  </nav>
+</header>
+
+<main>
+  <div class="status-bar" id="status-bar">
+    <span class="pill" style="color: var(--muted);">Loading status…</span>
+  </div>
+
+  <div id="panel-timeline" class="panel active">
+    <div class="filter-row">
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" id="search" placeholder="Filter actions — file, command, content…" />
+      </div>
+      <select id="filter-view" title="Group view">
+        <option value="time">By time</option>
+        <option value="file">By file</option>
+      </select>
+    </div>
+
+    <div class="split-view">
+      <div class="timeline-pane" id="timeline-pane">
+        <div class="empty">Loading…</div>
+      </div>
+      <div class="detail-pane" id="detail-pane">
+        <div class="detail-empty">Select an action from the timeline to see details.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="panel-backups" class="panel">
+    <div class="bk-toolbar">
+      <div class="bk-viewtoggle">
+        <button id="bk-view-file" class="active">By file</button>
+        <button id="bk-view-storage">Location Table</button>
+        <button id="bk-view-log">Restore log</button>
+      </div>
+      <select id="bk-size-filter" title="Show only files whose backed-up size is at least this">
+        <option value="0">any size</option>
+        <option value="10240">≥ 10 KB</option>
+        <option value="102400">≥ 100 KB</option>
+        <option value="1048576">≥ 1 MB</option>
+      </select>
+      <span class="bk-summary" id="bk-summary"></span>
+    </div>
+    <div class="bk-table" id="bk-table">
+      <div class="empty">Loading…</div>
+    </div>
+  </div>
+
+  <div id="panel-patterns" class="panel">
+    <div class="bk-toolbar">
+      <span class="bk-summary" id="pat-summary"></span>
+    </div>
+    <div id="pat-list">
+      <div class="empty">Loading…</div>
+    </div>
+  </div>
+
+  <div id="panel-config" class="panel">
+    <div class="section-head">
+      <span class="num">00</span>
+      <h2>Configuration</h2>
+      <span class="meta">edit and save</span>
+    </div>
+    <div id="cfg-form"></div>
+    <div class="cfg-actions">
+      <button class="btn primary" id="save-btn">Save changes</button>
+      <button class="btn" id="reload-btn">Discard</button>
+      <span class="save-msg" id="save-msg"></span>
+    </div>
+  </div>
+</main>
+
+<div class="modal-backdrop" id="modal-restore">
+  <div class="modal">
+    <h3 id="modal-title">Restore action</h3>
+    <p id="modal-desc"></p>
+    <p style="font-size:12.5px; color:var(--muted);">
+      <strong>Reverse-loop</strong> undoes every action from the latest back to
+      this one (e.g. #7 → #6 → #5) — safest, also reverses packages, env vars
+      and remote state.<br>
+      <strong>Direct jump</strong> applies just this action's workspace snapshot —
+      fast, but skips the actions in between and anything outside the workspace.
+    </p>
+    <div class="modal-preview" id="modal-preview">Computing preview…</div>
+    <div class="modal-actions">
+      <button class="btn" id="modal-cancel">Cancel</button>
+      <button class="btn" id="modal-direct">Direct jump</button>
+      <button class="btn primary" id="modal-loop">Reverse-loop</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-file">
+  <div class="modal modal-wide">
+    <h3 id="file-modal-title" style="font-family:'JetBrains Mono',monospace;font-size:13px;word-break:break-all;"></h3>
+    <pre class="file-view" id="file-modal-body"></pre>
+    <div class="modal-actions">
+      <button class="btn" id="file-modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// Theme
+function applyTheme(mode) {
+  document.documentElement.setAttribute("data-theme", mode);
+  try { localStorage.setItem("backupper-theme", mode); } catch {}
+  const btn = $("theme-toggle");
+  if (btn) btn.textContent = mode === "dark" ? "☾" : "☼";
+}
+(function init() {
+  let saved = "light";
+  try { saved = localStorage.getItem("backupper-theme") || "light"; } catch {}
+  applyTheme(saved);
+})();
+$("theme-toggle").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  applyTheme(cur === "dark" ? "light" : "dark");
+};
+
+// Tabs
+function switchTab(name) {
+  for (const id of ["timeline", "backups", "patterns", "config"]) {
+    $("tab-" + id).classList.toggle("active", id === name);
+    $("panel-" + id).classList.toggle("active", id === name);
+  }
+}
+$("tab-timeline").onclick = () => switchTab("timeline");
+$("tab-backups").onclick  = () => switchTab("backups");
+$("tab-patterns").onclick = () => switchTab("patterns");
+$("tab-config").onclick   = () => switchTab("config");
+$("refresh").onclick      = refreshAll;
+
+// State
+let currentActions = [];
+let currentStatus  = null;
+let selectedSeq    = null;
+let searchQuery    = "";
+let toolFilter     = "";
+let groupView      = "time";
+
+try {
+  const saved = localStorage.getItem("backupper-view");
+  if (saved === "time" || saved === "file") groupView = saved;
+} catch {}
+
+$("search").addEventListener("input", (e) => {
+  searchQuery = e.target.value.trim().toLowerCase();
+  renderTimeline();
+});
+$("filter-view").addEventListener("change", (e) => {
+  groupView = e.target.value;
+  try { localStorage.setItem("backupper-view", groupView); } catch {}
+  renderTimeline();
+});
+$("filter-view").value = groupView;
+
+// Status
+async function loadStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    currentStatus = s;
+    lastStatusKey = JSON.stringify(s);
+    renderStatus();
+  } catch (e) {
+    const errHtml = `<span class="pill" style="color:var(--danger)">Status unavailable</span>`;
+    for (const el of document.querySelectorAll(".status-bar")) el.innerHTML = errHtml;
+  }
+}
+// Plain-language definitions for key terms — surfaced as hover
+// tooltips so the dashboard is self-contained for new users.
+const TERM_HELP = {
+  policy_rewrite: "Tier 0 backup: the destructive command was rewritten into a reversible form (e.g. rm becomes move-to-trash) before it ran. Restore replays the exact inverse; no model is involved.",
+  git_snapshot: "Tier 2 backup: the workspace was committed to a hidden shadow git repository before this action ran. Restore checks that snapshot back out.",
+  file_copy: "Tier 2 backup: an exact pre-image copy of a single file outside the workspace, taken before the action. Restore writes it back.",
+  subagent: "Tier 3 backup: a backup subagent captured state that lives outside the workspace (remote service, database, system files) and recorded recovery commands.",
+  learned_rule: "Tier 3 backup: a deterministic capture rule learned from earlier tier-3 subagent runs, applied without invoking a model.",
+  pip_freeze: "Tier 1 backup: a package-version manifest (pip freeze) taken before the action. Restore reinstalls those exact versions.",
+  npm_list: "Tier 1 backup: an npm package manifest taken before the action.",
+  env_snapshot: "Tier 1 backup: a snapshot of environment variables taken before the action.",
+  git_tag: "Tier 1 backup: a git tag recorded at the pre-action commit.",
+  "shadow.git": "The hidden shadow git repository (.backupper/shadow-repo) holding all workspace snapshots, deduplicated and compressed.",
+  "external-shadow": "A tier-3 shadow git repository covering files outside the workspace.",
+  git: "Workspace snapshots in the shadow git repository (tier 2).",
+  trash: "The per-action trash folder where tier-0 rewrites place files instead of deleting them.",
+  created: "This file did not exist before — it was created during these actions.",
+  modified: "This file existed before and its content was changed.",
+  deleted: "This file was removed (a tier-0 rewrite keeps its content in trash, so it is recoverable).",
+};
+const TIER_HELP = {
+  T0: "Tier 0 — policy rewrite: the destructive command is replaced with a reversible one (rm → trash). Cheapest and exact.",
+  T1: "Tier 1 — targeted manifest: an environment recipe (pip freeze, npm list, env dump) recorded before the action.",
+  T2: "Tier 2 — workspace snapshot: the workspace is committed to the shadow git repository (or a single out-of-workspace file is copied verbatim) before the action.",
+  T3: "Tier 3 — backup subagent: a subagent (or a rule learned from earlier subagent runs) captures out-of-workspace or remote state.",
+};
+function helpAttr(label) {
+  const h = TERM_HELP[label];
+  return h ? ` title="${escapeHtml(h)}"` : "";
+}
+
+// Adapter names → display labels for the masthead/status agent badge.
+const AGENT_LABELS = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  hermes: "Hermes",
+};
+
+// Identify this dashboard instance: project name + agent in the brand
+// line and the browser tab title, so multiple dashboards (different
+// projects / different agents) are distinguishable at a glance.
+function renderIdentity(s) {
+  const agentLabel = (s.agents || []).map((a) => AGENT_LABELS[a] || a).join(" + ");
+  const meta = $("brand-meta");
+  if (meta && s.projectName) {
+    meta.textContent = agentLabel
+      ? `${s.projectName} · ${agentLabel}`
+      : s.projectName;
+    if (s.projectRoot) meta.title = s.projectRoot;
+  }
+  document.title = `BackUpper · ${s.projectName || "?"}${agentLabel ? ` (${agentLabel})` : ""}`;
+}
+
+function renderStatus() {
+  const s = currentStatus;
+  if (!s) return;
+  renderIdentity(s);
+  const left = [];
+  left.push(livePaused
+    ? `<span class="pill live" id="live-pill" title="Click to resume live updates"><span class="dot off"></span>paused</span>`
+    : `<span class="pill live" id="live-pill" title="Updating every ${LIVE_POLL_MS / 1000}s — click to pause"><span class="dot on"></span>live</span>`);
+  left.push(`<span class="sep">·</span>`);
+  if (s.agents && s.agents.length) {
+    const label = s.agents.map((a) => AGENT_LABELS[a] || a).join(" + ");
+    left.push(`<span class="pill agent-pill" title="Agent(s) wired in this project"><code>${escapeHtml(label)}</code></span>`);
+    left.push(`<span class="sep">·</span>`);
+  }
+  if (s.session && s.session.id) {
+    const tip = s.session.prompt
+      ? `Conversation ${s.session.id}\nLast prompt: ${s.session.prompt}`
+      : `Conversation ${s.session.id}`;
+    left.push(`<span class="pill session-pill" title="${escapeHtml(tip)}">session <code>${escapeHtml(String(s.session.id).slice(0, 8))}</code></span>`);
+    left.push(`<span class="sep">·</span>`);
+  }
+  left.push(`<span class="pill"><span class="dot ${s.enabled ? "on" : "off"}"></span>${s.enabled ? "enabled" : "disabled"}</span>`);
+  left.push(`<span class="sep">·</span>`);
+  left.push(`<span class="pill">mode <code>${escapeHtml(s.mode)}</code></span>`);
+  left.push(`<span class="sep">·</span>`);
+  if (s.subagentEnabled) {
+    const runner = s.subagentRunner || "auto";
+    const sub = s.subagentModel ? `${runner}/${s.subagentModel}` : runner;
+    const tip = s.subagentModel ? "Tier-3 runner / model" : "Tier-3 runner (runner's default model)";
+    left.push(`<span class="pill" title="${escapeHtml(tip)}">T3 subagent <code>${escapeHtml(sub)}</code></span>`);
+  } else {
+    left.push(`<span class="pill">T3 subagent <code style="color:var(--muted)">off</code></span>`);
+  }
+
+  const max = s.maxActions || 50;
+  const pct = max > 0 ? Math.min(100, (s.actionCount / max) * 100) : 0;
+  const cls = pct >= 90 ? "danger" : pct >= 70 ? "warn" : "";
+  const right = `<span class="progress-wrap">
+    <span class="pill" style="color:var(--muted)">actions</span>
+    <span class="pill" style="font-variant-numeric:tabular-nums"><code>${s.actionCount}</code><span style="color:var(--muted)">/${max}</span></span>
+    <span class="progress ${cls}"><div style="width:${pct.toFixed(1)}%"></div></span>
+    <span class="sep">·</span>
+    <span class="pill" style="color:var(--muted)">disk</span>
+    <span class="pill"><code>${formatBytes(s.totalSizeBytes || 0)}</code></span>
+  </span>`;
+  const html = left.join("") + right;
+  for (const el of document.querySelectorAll(".status-bar")) el.innerHTML = html;
+  const lp = $("live-pill");
+  if (lp) lp.onclick = () => { livePaused = !livePaused; renderStatus(); };
+}
+
+// Actions
+async function loadActions() {
+  try {
+    const d = await (await fetch("/api/actions")).json();
+    currentActions = d.actions || [];
+  } catch (e) {
+    currentActions = [];
+  }
+  lastActionsKey = actionsKey(currentActions);
+  renderTimeline();
+  loadBackups();
+  const sorted = [...currentActions].sort((a, b) => b.seq - a.seq);
+  if (selectedSeq !== null && currentActions.some((a) => a.seq === selectedSeq)) {
+    selectAction(selectedSeq);
+  } else if (sorted.length > 0) {
+    selectAction(sorted[0].seq);
+  } else {
+    selectedSeq = null;
+    $("detail-pane").innerHTML = `<div class="detail-empty">Nothing recorded yet — run a mutating tool call through your agent.</div>`;
+  }
+}
+
+function getFilteredActions() {
+  return currentActions.filter((a) => {
+    if (searchQuery) {
+      const hay = [
+        a.instruction || "",
+        a.originalAction || "",
+        a.toolName || "",
+        (a.files || []).join(" "),
+        (a.strategies || []).join(" "),
+      ].join(" ").toLowerCase();
+      if (!hay.includes(searchQuery)) return false;
+    }
+    return true;
+  });
+}
+
+// Backup strategy → tier:
+//   T0 policy rewrite     (rm → trash)                      policy_rewrite
+//   T1 targeted manifest  (pip freeze, npm list, env dump)  pip_freeze, npm_list, env_snapshot, git_tag
+//   T2 workspace snapshot (shadow git; single-file copy)    git_snapshot, file_copy
+//   T3 backup subagent    (out-of-workspace / remote)       subagent, learned_rule
+const T1_STRATS = ["pip_freeze", "npm_list", "env_snapshot", "git_tag"];
+const T3_STRATS = ["subagent", "learned_rule"];
+function tierOf(a) {
+  const s = a.strategies || [];
+  if (s.some((x) => T3_STRATS.includes(x))) return { tag: "T3", name: "subagent", cls: "t-subagent" };
+  if (s.includes("policy_rewrite")) return { tag: "T0", name: "rewrite",  cls: "t-rewrite" };
+  if (s.some((x) => T1_STRATS.includes(x))) return { tag: "T1", name: "manifest", cls: "t-manifest" };
+  return { tag: "T2", name: "snapshot", cls: "t-snapshot" };
+}
+function classifyAction(a) {
+  return tierOf(a).cls;
+}
+
+// Compact representation of an action for the row.
+function compactContent(a) {
+  const tool = (a.toolName || "").toLowerCase();
+  const instr = a.instruction || a.originalAction || "";
+  const file = (a.files && a.files[0]) || null;
+
+  if (tool === "edit") {
+    // Backreferenced quotes — closing must match opening so embedded
+    // quotes of the other type don't trip up the match.
+    const m = instr.match(/change\s+(['"])(.*?)\1\s+in\s+(\S+)\s+to\s+(['"])(.*?)\4/s);
+    if (m) return { kind: "edit", file: baseName(m[3]), before: m[2], after: m[5] };
+    if (file) return { kind: "edit", file: baseName(file), before: "", after: "" };
+  }
+
+  if (tool === "write") {
+    const m = instr.match(/create\s+(?:the\s+file\s+at\s+)?(\S+?)(?:\s+(?:in|with)|\s*$)/);
+    const target = m ? m[1] : file;
+    if (target) return { kind: "write", file: baseName(target) };
+  }
+
+  if (tool === "bash") {
+    const m = instr.match(/run:?\s*(.+)$/s);
+    if (m) {
+      const cmd = m[1].trim().replace(/\s+/g, " ");
+      const v = cmd.match(/^(\S+)\s+(.*)$/);
+      if (v) return { kind: "bash", verb: v[1], target: simplifyArgs(v[2]) };
+      return { kind: "bash", verb: cmd, target: "" };
+    }
+  }
+
+  return { kind: "raw", text: truncate(instr, 70) };
+}
+
+function baseName(p) {
+  if (!p) return "";
+  const cleaned = String(p).replace(/[`'"]/g, "").trim();
+  const parts = cleaned.split(/[/\\]/);
+  return parts[parts.length - 1] || cleaned;
+}
+function simplifyArgs(s) {
+  if (!s) return "";
+  return s.split(/\s+/).map((p) => {
+    if (p.startsWith("-")) return p;
+    if (p.includes("/")) return baseName(p);
+    return p;
+  }).join(" ");
+}
+function firstLine(s) {
+  if (!s) return "";
+  return String(s).replace(/\\n/g, "\n").split("\n").map((l) => l.trim()).find((l) => l.length > 0) || "";
+}
+function shrink(s, n) {
+  s = firstLine(s);
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function renderTimelineRowHtml(a) {
+  const klass = classifyAction(a);
+  const c = compactContent(a);
+  let content;
+  if (c.kind === "edit") {
+    const before = shrink(c.before, 18);
+    const after  = shrink(c.after, 18);
+    let det = "";
+    if (before) det += `<span class="strike">${escapeHtml(before)}</span>`;
+    det += `<span class="arrow">→</span>`;
+    det += `<span class="new">${escapeHtml(after) || "(empty)"}</span>`;
+    content =
+      `<span class="tl-file">${escapeHtml(c.file)}</span>` +
+      `<span class="tl-sep">·</span>` +
+      `<span class="tl-detail">${det}</span>`;
+  } else if (c.kind === "write") {
+    content = `<span class="tl-file">${escapeHtml(c.file)}</span>`;
+  } else if (c.kind === "bash") {
+    content = `<span class="tl-cmd"><span class="verb">${escapeHtml(c.verb)}</span>${escapeHtml(shrink(c.target, 32))}</span>`;
+  } else {
+    content = `<span class="tl-detail">${escapeHtml(c.text)}</span>`;
+  }
+  const tier = tierOf(a);
+
+  // The spine node is the tier label (T0–T3); colour reinforces it.
+  return `<div class="tl-row ${tier.cls}" data-seq="${a.seq}">
+    <div class="tl-node ${tier.cls} term" title="${escapeHtml(TIER_HELP[tier.tag] || tier.name)}">${tier.tag}</div>
+    <div class="tl-content">
+      <span class="tl-idx" title="action ${String(a.seq).padStart(3, "0")}">${String(a.seq).padStart(2, "0")}</span>
+      ${content}
+    </div>
+    <button class="tl-restore" data-seq="${a.seq}" title="Restore to this state">↶</button>
+  </div>`;
+}
+
+function renderTimeline() {
+  const pane = $("timeline-pane");
+  const filtered = getFilteredActions();
+  if (filtered.length === 0) {
+    pane.innerHTML = currentActions.length === 0
+      ? `<div class="empty">Tape is blank — run a mutating tool call through your agent.</div>`
+      : `<div class="empty">No matches. Try a different filter.</div>`;
+    return;
+  }
+  const title = `<div class="tl-pane-title">Action Timeline <span class="tl-dir" title="The newest action is at the top">newest ↓ oldest</span></div>`;
+  pane.innerHTML = title + (groupView === "file" ? renderByFile(filtered) : renderByTime(filtered));
+  wireRowEvents();
+}
+
+function renderByTime(actions) {
+  const sorted = [...actions].sort((a, b) => b.seq - a.seq);
+  const rows = sorted.map(renderTimelineRowHtml).join("");
+  return `<div class="tl-scroll"><div class="tl-rows"><div class="tl-vline"></div>${rows}</div></div>` + legendHtml();
+}
+
+function renderByFile(actions) {
+  const groups = new Map();
+  for (const a of actions) {
+    const f = inferFile(a) || "(other operations)";
+    if (!groups.has(f)) groups.set(f, []);
+    groups.get(f).push(a);
+  }
+  const entries = [...groups.entries()].sort((a, b) => {
+    const maxA = Math.max(...a[1].map((x) => x.seq));
+    const maxB = Math.max(...b[1].map((x) => x.seq));
+    return maxB - maxA;
+  });
+  let html = "";
+  for (const [file, acts] of entries) {
+    const sorted = [...acts].sort((a, b) => b.seq - a.seq);
+    html += `<div class="tl-group">
+      <div class="tl-group-header">${escapeHtml(file)} <span class="count">${sorted.length}</span></div>
+      ${sorted.map(renderTimelineRowHtml).join("")}
+    </div>`;
+  }
+  return `<div class="tl-scroll">${html}</div>` + legendHtml();
+}
+
+function legendHtml() {
+  const item = (cls, tag, word) =>
+    `<span class="item ${cls}" data-tier="${tag}" title="Click for a description"><span class="ld"></span><b>${tag}</b> ${word}</span>`;
+  return `<div class="tl-legend">
+    ${item("rew", "T0", "rewrite")}${item("man", "T1", "manifest")}${item("snap", "T2", "snapshot")}${item("sub", "T3", "subagent")}
+  </div><div class="tl-tier-info" id="tier-info"></div>`;
+}
+
+function inferFile(a) {
+  if (a.files && a.files[0]) return baseName(a.files[0]);
+  const c = compactContent(a);
+  if (c.kind === "edit" || c.kind === "write") return c.file;
+  if (c.kind === "bash" && c.target) {
+    const parts = c.target.split(/\s+/).filter((p) => !p.startsWith("-"));
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      if (p.includes(".") || p.includes("/")) return baseName(p);
+    }
+  }
+  return null;
+}
+
+function showTierInfo(tag, toggle) {
+  const box = $("tier-info");
+  if (!box || !tag) return;
+  if (toggle && box.dataset.cur === tag && box.classList.contains("show")) {
+    box.classList.remove("show");
+    box.dataset.cur = "";
+    return;
+  }
+  box.dataset.cur = tag;
+  box.innerHTML = `<b>${tag}</b> · ${escapeHtml(TIER_HELP[tag] || "")}`;
+  box.classList.add("show");
+}
+
+function wireLegendClicks() {
+  for (const el of document.querySelectorAll(".tl-legend .item")) {
+    el.addEventListener("click", () => showTierInfo(el.dataset.tier, true));
+  }
+}
+
+function wireRowEvents() {
+  wireLegendClicks();
+  for (const row of document.querySelectorAll(".tl-row")) {
+    row.addEventListener("click", (ev) => {
+      if (ev.target.closest(".tl-restore")) return;
+      const seq = parseInt(row.dataset.seq, 10);
+      selectAction(seq);
+    });
+  }
+  for (const btn of document.querySelectorAll(".tl-restore")) {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openRestoreModal(parseInt(btn.dataset.seq, 10));
+    });
+  }
+  if (selectedSeq !== null) {
+    const row = document.querySelector(`.tl-row[data-seq="${selectedSeq}"]`);
+    if (row) row.classList.add("selected");
+  }
+}
+
+// Detail pane
+function selectAction(seq) {
+  selectedSeq = seq;
+  document.querySelectorAll(".tl-row").forEach((r) => {
+    r.classList.toggle("selected", parseInt(r.dataset.seq, 10) === seq);
+  });
+  // Expand the tier description matching the selected action.
+  const a = currentActions.find((x) => x.seq === seq);
+  if (a) showTierInfo(tierOf(a).tag, false);
+  renderDetail(seq);
+}
+
+function renderDetail(seq) {
+  const pane = $("detail-pane");
+  const a = currentActions.find((x) => x.seq === seq);
+  if (!a) {
+    pane.innerHTML = `<div class="detail-empty">Action not found.</div>`;
+    return;
+  }
+  const strats = (a.strategies || [])
+    .map((s) => `<span class="detail-strat ${escapeAttr(s)}${TERM_HELP[s] ? " term" : ""}"${helpAttr(s)}>${escapeHtml(s)}</span>`)
+    .join(" ");
+  const ageLabel = (a.ageMs && a.ageMs > 0) ? formatAge(a.ageMs) : "";
+  const metaBits = [];
+  if (a.timeFormatted)   metaBits.push(escapeHtml(a.timeFormatted));
+  if (ageLabel)          metaBits.push(escapeHtml(ageLabel));
+  if (typeof a.sizeBytes === "number") metaBits.push(escapeHtml(formatBytes(a.sizeBytes)));
+  if (a.toolName)        metaBits.push(`<code>${escapeHtml(a.toolName)}</code> tool`);
+  if (typeof a.backupMs === "number")
+    metaBits.push(`<span class="term" title="Backup latency: time BackUpper held the agent between emitting this tool call and executing it — the cost of safety for this action">+${a.backupMs < 1000 ? a.backupMs + " ms" : (a.backupMs / 1000).toFixed(1) + " s"} backup</span>`);
+
+  const headerHtml = `<div class="detail-header">
+    <div>
+      <div class="detail-title-row">
+        <span class="detail-seq">action ${String(a.seq).padStart(3, "0")}</span>
+        ${strats}
+      </div>
+      <div class="detail-meta">${metaBits.join(" · ")}</div>
+    </div>
+    <button class="btn small primary" id="detail-restore-btn">↶ Restore</button>
+  </div>`;
+
+  const instr = a.instruction
+    ? `<div class="detail-instruction">${escapeHtml(a.instruction)}</div>`
+    : "";
+
+  // Layout: key info shows inline (command rewrite, files, subagent
+  // summary, history strip); only verbose detail folds (diff, command
+  // lists, remote-state JSON).
+  const sec = (title, body) => body
+    ? `<div class="detail-section"><h4>${title}</h4>${body}</div>`
+    : "";
+
+  let subagentSection = "";
+  if (a.subagent) {
+    const meta = [];
+    if (a.subagent.externalShadowFileCount > 0) meta.push(`${a.subagent.externalShadowFileCount} files`);
+    if (a.subagent.recoveryCommandCount > 0)    meta.push(`${a.subagent.recoveryCommandCount} recovery cmds`);
+    if (a.subagent.liveRestore)                 meta.push(`live-restore`);
+    subagentSection = `<details class="detail-acc"><summary>Subagent capture</summary><div class="acc-body"><div class="kv" style="font-size:11.5px;font-weight:400">${escapeHtml(a.subagent.description || "")}</div>${meta.length ? `<div class="kv" style="color:var(--muted);margin-top:3px;font-size:11px">${meta.join(" · ")}</div>` : ""}</div></details>`;
+  }
+
+  let filesBody = "";
+  if (a.files && a.files.length) {
+    const shown = a.files.slice(0, 8);
+    const extra = a.files.length - shown.length;
+    filesBody = `<div class="file-list">${shown.map((f) =>
+      `<span class="file-item"><code class="file-link" data-view-file="${escapeHtml(f)}" title="Click to view current file content">${escapeHtml(f)}</code><button class="file-restore" data-file-restore="${escapeHtml(f)}" title="Restore only this file from this action's snapshot">↶</button></span>`
+    ).join(", ")}${extra > 0 ? ` <span style="color:var(--muted)">+${extra} more</span>` : ""}${a.stats ? ` <span class="stat" style="font-size:11px;margin-left:6px">${escapeHtml(a.stats)}</span>` : ""}</div>`;
+  }
+
+  const others = currentActions.filter((x) => x.seq !== a.seq).sort((x, y) => y.seq - x.seq);
+  const cmpOptions = others
+    .map((x) => `<option value="${x.seq}">action ${String(x.seq).padStart(2, "0")}</option>`)
+    .join("");
+  const diffBody = `${others.length
+      ? `<div style="margin-bottom:6px"><select id="compare-select" title="Diff this action's snapshot against another action's"><option value="">compare with…</option>${cmpOptions}</select></div>`
+      : ""}
+    <pre class="detail-diff" id="detail-diff">Loading diff…</pre>`;
+
+  const historySection = renderFileHistory(a);
+
+  pane.innerHTML = headerHtml + instr
+    + `<div id="detail-extra"></div>`
+    + subagentSection
+    + sec(`Changed files${a.files && a.files.length ? ` <span class="sec-hint">${a.files.length}</span>` : ""}`, filesBody)
+    + sec(`<span id="diff-label">Diff vs current</span>`, diffBody)
+    + (historySection || "");
+
+  $("detail-restore-btn").onclick = () => openRestoreModal(a.seq);
+  for (const el of pane.querySelectorAll(".file-history .step")) {
+    el.addEventListener("click", (ev) => {
+      if (ev.target.closest(".step-restore")) return;
+      const s = parseInt(el.dataset.seq, 10);
+      if (!isNaN(s)) selectAction(s);
+    });
+  }
+  for (const btn of pane.querySelectorAll("[data-file-restore]")) {
+    const s = btn.dataset.fileSeq ? parseInt(btn.dataset.fileSeq, 10) : a.seq;
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      restoreSingleFile(s, btn.dataset.fileRestore);
+    });
+  }
+  for (const el of pane.querySelectorAll("[data-view-file]")) {
+    el.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openFileModal(el.dataset.viewFile);
+    });
+  }
+  const cmp = $("compare-select");
+  if (cmp) {
+    cmp.onchange = () => {
+      const v = cmp.value;
+      if (v) loadCompare(a.seq, parseInt(v, 10));
+      else renderDetail(a.seq);   // back to "diff vs current"
+    };
+  }
+  loadDiff(seq);
+}
+
+// File content viewer — fetches the file's CURRENT workspace content.
+async function openFileModal(relPath) {
+  $("file-modal-title").textContent = relPath;
+  $("file-modal-body").textContent = "Loading…";
+  $("modal-file").classList.add("show");
+  try {
+    const r = await fetch(`/api/file?path=${encodeURIComponent(relPath)}`);
+    const d = await r.json();
+    $("file-modal-body").textContent = r.ok
+      ? d.content + (d.truncated ? "\n\n… (truncated — file is larger)" : "")
+      : (d.error || `HTTP ${r.status}`);
+  } catch (e) {
+    $("file-modal-body").textContent = String(e);
+  }
+}
+$("file-modal-close").onclick = () => $("modal-file").classList.remove("show");
+$("modal-file").addEventListener("click", (ev) => {
+  if (ev.target === $("modal-file")) $("modal-file").classList.remove("show");
+});
+
+// Restore a single file from one action's snapshot (other files and
+// later actions untouched); equivalent to `backupper restore N --file <path>`.
+async function restoreSingleFile(seq, relPath) {
+  if (!relPath) return;
+  if (!confirm(`Restore only "${relPath}" from action #${seq}'s snapshot?\nEverything else is left untouched.`)) return;
+  toast(`Restoring ${relPath} from #${seq}…`);
+  try {
+    const r = await fetch(`/api/restore/${seq}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: relPath }),
+    });
+    const d = await r.json();
+    const allOk = r.ok && (d.results || []).every((x) => x.success);
+    if (allOk) {
+      toast(`Restored ${relPath} from #${seq}.`, "ok");
+      await refreshAll();
+    } else {
+      const why = (d.results && d.results[0] && d.results[0].description) || d.error || `HTTP ${r.status}`;
+      toast(`File restore failed: ${why}`, "err");
+    }
+  } catch (e) {
+    toast(`File restore failed: ${e}`, "err");
+  }
+}
+
+// Diff two actions' snapshots (older → newer) into the detail diff box.
+async function loadCompare(aSeq, bSeq) {
+  const el = $("detail-diff");
+  const label = $("diff-label");
+  if (!el) return;
+  el.textContent = "Comparing…";
+  el.style.color = "";
+  try {
+    const d = await (await fetch(`/api/actions/${aSeq}/diff/${bSeq}`)).json();
+    if (label) label.textContent = `Diff action ${String(d.a).padStart(2, "0")} → action ${String(d.b).padStart(2, "0")} (snapshot → snapshot)`;
+    if (d.diff) {
+      el.innerHTML = colorizeDiff(d.diff);
+    } else {
+      el.textContent = d.note || "(no differences between these snapshots)";
+      el.style.color = "var(--muted)";
+    }
+  } catch (e) {
+    el.textContent = "compare failed: " + String(e);
+    el.style.color = "var(--danger)";
+  }
+}
+
+async function loadDiff(seq) {
+  const diffEl = $("detail-diff");
+  if (!diffEl) return;
+  try {
+    const d = await (await fetch(`/api/actions/${seq}/diff`)).json();
+    if (d.diff) {
+      diffEl.innerHTML = colorizeDiff(d.diff);
+    } else if (d.note) {
+      diffEl.textContent = d.policyRewrite
+        ? "tier-0 rewrite — no workspace snapshot needed (see Command rewrite above)"
+        : d.note;
+      diffEl.style.color = "var(--muted)";
+    } else {
+      diffEl.textContent = "(no diff available)";
+      diffEl.style.color = "var(--muted)";
+    }
+    // Everything renders inline — no folds.
+    const accx = (title, body) =>
+      `<div class="detail-section"><h4>${title}</h4>${body}</div>`;
+    let extraHtml = "";
+    // Tier-0 command rewrite: raw and revised command shown inline;
+    // recovery commands folded.
+    if (d.policyRewrite) {
+      const pr = d.policyRewrite;
+      // Strip a "Bash(...)" wrapper for readability.
+      const origCmd = (pr.original || "").replace(/^\w+\((.*)\)$/s, "$1") || pr.original;
+      let rw = `<div class="kv" style="margin-bottom:3px;font-size:11.5px;font-weight:400"><span style="color:var(--muted)">raw command&nbsp;</span> <span class="strike" style="text-decoration-color:var(--danger);color:var(--text)">${escapeHtml(origCmd)}</span></div>
+        <div class="kv" style="font-size:11.5px;font-weight:400"><span style="color:var(--muted)">revised command&nbsp;</span> <span style="color:var(--success)">${escapeHtml(pr.description || "intercepted")}</span></div>`;
+      extraHtml += `<div class="detail-section"><h4><span class="term"${helpAttr("policy_rewrite")}>Command rewrite</span></h4>${rw}</div>`;
+    }
+    if (d.remoteState) {
+      extraHtml += accx("Captured remote state",
+        `<pre class="detail-diff">${escapeHtml(JSON.stringify(d.remoteState, null, 2))}</pre>`);
+    }
+    const slot = $("detail-extra");
+    if (slot && extraHtml) slot.innerHTML = extraHtml;
+  } catch (e) {
+    diffEl.textContent = "error loading diff: " + String(e);
+    diffEl.style.color = "var(--danger)";
+  }
+}
+
+function renderFileHistory(a) {
+  const primary = inferFile(a);
+  if (!primary) return "";
+  const related = currentActions
+    .filter((x) => inferFile(x) === primary)
+    .sort((x, y) => x.seq - y.seq);
+  if (related.length <= 1) return "";
+
+  const steps = related.map((x) => {
+    const klass = classifyAction(x);
+    const isCurrent = x.seq === a.seq;
+    const c = compactContent(x);
+    let label;
+    if (c.kind === "write") label = "created";
+    else if (c.kind === "edit") {
+      label = (c.before && c.after)
+        ? `${shrink(c.before, 10)} → ${shrink(c.after, 10)}`
+        : "edited";
+    }
+    else if (c.kind === "bash") label = c.verb;
+    else label = "modified";
+    const rel = (x.files || []).find((f) => baseName(f) === primary) || primary;
+    return `<span class="step ${klass}${isCurrent ? " current" : ""}" data-seq="${x.seq}">
+      <span class="sd"></span>
+      <span title="action ${String(x.seq).padStart(3, "0")}">${String(x.seq).padStart(2, "0")} ${escapeHtml(label)}</span>
+      <button class="step-restore" data-file-restore="${escapeHtml(rel)}" data-file-seq="${x.seq}" title="Restore just this file from #${x.seq}">↶</button>
+    </span>`;
+  }).join(`<span class="arrow">→</span>`);
+
+  return `<div class="file-history">
+    <div class="title">History of <code>${escapeHtml(primary)}</code></div>
+    <div class="strip">${steps}</div>
+  </div>`;
+}
+
+function colorizeDiff(diff) {
+  return escapeHtml(diff).split("\n").map((line) => {
+    if (line.startsWith("+++") || line.startsWith("---")) return `<span class="diff-hdr">${line}</span>`;
+    if (line.startsWith("@@"))  return `<span class="diff-hdr">${line}</span>`;
+    if (line.startsWith("+"))   return `<span class="diff-add">${line}</span>`;
+    if (line.startsWith("-"))   return `<span class="diff-del">${line}</span>`;
+    return line;
+  }).join("\n");
+}
+
+// Backups tab — file-centric inventory of what's preserved + where.
+// Derives entirely from currentActions; no extra fetch.
+let bkView = "file";
+let bkExpanded = null;
+let bkSort = "recent";   // "recent" (default) | "size" — file-view ranking
+
+function setBkView(v) {
+  bkView = v;
+  for (const id of ["file", "storage", "log"]) {
+    $("bk-view-" + id).classList.toggle("active", id === v);
+  }
+  $("bk-size-filter").style.display = v === "file" ? "" : "none";
+  renderBackups();
+}
+$("bk-view-file").onclick    = () => setBkView("file");
+$("bk-view-storage").onclick = () => setBkView("storage");
+$("bk-view-log").onclick     = () => setBkView("log");
+let bkSizeMin = 0;
+$("bk-size-filter").addEventListener("change", (e) => {
+  bkSizeMin = parseInt(e.target.value, 10) || 0;
+  renderBackups();
+});
+
+function loadBackups() {
+  bkSizeData = null;           // invalidate — sizes change when actions change
+  bkLogData = null;            // restores may have happened
+  renderBackups();
+  loadBkSizes();               // size column in the by-file view
+}
+
+// Restore-history ledger (audit trail of every rewind, CLI included).
+let bkLogData = null;
+async function loadBkLog() {
+  try {
+    bkLogData = await (await fetch("/api/restore-history")).json();
+  } catch {
+    bkLogData = { entries: [] };
+  }
+  if (bkView === "log") renderBackups();
+}
+
+function renderBkLogView() {
+  const table = $("bk-table");
+  if (!bkLogData) {
+    table.innerHTML = `<div class="empty">Loading restore log…</div>`;
+    loadBkLog();
+    return;
+  }
+  const entries = bkLogData.entries || [];
+  if (!entries.length) {
+    table.innerHTML = `<div class="empty">No restores recorded yet. Every restore — from this dashboard or the CLI — is logged here.</div>`;
+    return;
+  }
+  let html = `<div class="bk-log-head"><span>When</span><span>Mode</span><span>Target</span><span>Outcome</span></div>`;
+  for (const e of entries) {
+    const when = (e.ts || "").replace("T", " ").slice(0, 19);
+    const ok = e.failed === 0;
+    const target = e.seq !== null && e.seq !== undefined
+      ? `action ${String(e.seq).padStart(2, "0")}` + (e.fileOnly ? ` · ${e.fileOnly}` : "")
+      : (e.action || "?");
+    html += `<div class="bk-log-row">
+      <span class="when">${escapeHtml(when)}</span>
+      <span class="bk-tag ${e.mode === "loop" ? "git" : e.mode === "file" ? "other" : "sub"}">${escapeHtml(e.mode || "?")}</span>
+      <span class="target">${escapeHtml(target)}</span>
+      <span class="outcome ${ok ? "ok" : "bad"}">${e.ok}/${e.steps} steps ok${ok ? "" : ` · ${e.failed} failed`}</span>
+    </div>`;
+  }
+  table.innerHTML = html;
+}
+
+// Size reference: per-file backed-up bytes, fetched from the server
+// (real blob sizes from the shadow repo + trash). Cached after first load.
+let bkSizeData = null;
+async function loadBkSizes() {
+  try {
+    bkSizeData = await (await fetch("/api/storage-by-file")).json();
+  } catch {
+    bkSizeData = { files: [], totalBytes: 0, shadowOnDiskBytes: 0 };
+  }
+  renderBackups();
+}
+
+// Short label for a storage path, detected from its prefix.
+function bkStorageLabel(p) {
+  if (!p) return "";
+  if (p.includes("shadow-repo")) return "shadow.git";
+  if (p.includes("external-shadow")) return "external-shadow";
+  if (p.includes("/trash") || /(^|\/)trash$/.test(p)) return "trash";
+  return baseName(p) || "manifest";
+}
+
+function bkTierForStrategy(strat) {
+  if (T3_STRATS.includes(strat)) return { tag: "T3", cls: "sub" };
+  if (strat === "policy_rewrite") return { tag: "T0", cls: "trash" };
+  if (T1_STRATS.includes(strat)) return { tag: "T1", cls: "git" };
+  return { tag: "T2", cls: "git" };  // git_snapshot, file_copy
+}
+
+// "By storage" — group every storage entry by physical location
+// (shadow.git, trash, external-shadow, …) and list the actions
+// that wrote into each.
+function renderBkStorageView() {
+  const table = $("bk-table");
+  const groups = new Map();   // label → { strategy, paths:Set, actions:[] }
+  for (const a of currentActions) {
+    for (const s of (a.storage || [])) {
+      const label = bkStorageLabel(s.path) || "(unknown)";
+      if (!groups.has(label)) groups.set(label, { strategy: s.strategy, paths: new Set(), actions: [] });
+      const g = groups.get(label);
+      g.paths.add(s.path);
+      g.actions.push({ seq: a.seq, tool: a.toolName || "?", desc: shrink(a.instruction || a.originalAction || "", 60) });
+    }
+  }
+  if (!groups.size) {
+    table.innerHTML = `<div class="empty">No backups yet.</div>`;
+    return;
+  }
+  const entries = [...groups.entries()].sort((x, y) => y[1].actions.length - x[1].actions.length);
+  let html = "";
+  for (const [label, g] of entries) {
+    const tier = bkTierForStrategy(g.strategy);
+    const acts = [...g.actions].sort((a, b) => b.seq - a.seq);
+    const onePath = g.paths.size === 1 ? [...g.paths][0] : `${g.paths.size} locations`;
+    html += `<div class="bk-stg-group">
+      <div class="bk-stg-head">
+        <span class="bk-tag ${tier.cls}">${tier.tag}</span>
+        <code class="bk-stg-label">${escapeHtml(label)}</code>
+        <span class="bk-stg-meta">${escapeHtml(g.strategy)} · ${acts.length} action${acts.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="bk-stg-path" title="${escapeHtml([...g.paths].join("\n"))}">${escapeHtml(onePath)}</div>
+      ${acts.map((x) => `<div class="bk-stg-row" data-seq="${x.seq}">
+        <span class="seq" title="action ${String(x.seq).padStart(3, "0")}">${String(x.seq).padStart(2, "0")}</span>
+        <span class="tool">${escapeHtml(x.tool)}</span>
+        <span class="desc">${escapeHtml(x.desc)}</span>
+      </div>`).join("")}
+    </div>`;
+  }
+  table.innerHTML = html;
+  for (const row of table.querySelectorAll(".bk-stg-row")) {
+    row.addEventListener("click", () => openRestoreModal(parseInt(row.dataset.seq, 10)));
+  }
+}
+
+// Walk a file's actions (ascending seq) and resolve a final state.
+function bkFileState(actions) {
+  let state = null;
+  for (const a of [...actions].sort((x, y) => x.seq - y.seq)) {
+    const c = compactContent(a);
+    const tool = (a.toolName || "").toLowerCase();
+    const cmd = c.kind === "bash" ? `${c.verb} ${c.target || ""}` : "";
+    if (tool === "bash" && /^rm\b/.test(cmd.trim())) { state = "deleted"; continue; }
+    if (tool === "write" || c.kind === "write") {
+      state = state ? "modified" : "created";
+    } else if (tool === "edit" || c.kind === "edit") {
+      state = "modified";
+    } else {
+      state = state || "modified";
+    }
+  }
+  return state || "modified";
+}
+
+// Best display path for a file: prefer a workspace-relative path from
+// the git snapshot; else an absolute/external path mined from the
+// instruction, prettified to …/parent/name.
+function bkDisplayPath(file, actions) {
+  for (const a of actions) {
+    if (Array.isArray(a.files)) {
+      const hit = a.files.find((x) => baseName(x) === file);
+      if (hit) return { shown: hit, full: hit };
+    }
+  }
+  for (const a of actions) {
+    const text = a.instruction || a.originalAction || "";
+    const m = text.match(new RegExp("([\\w./~-]*\\/" + file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")"));
+    if (m) {
+      const full = m[1];
+      const parts = full.split("/").filter(Boolean);
+      const shown = parts.length > 1 ? "…/" + parts.slice(-2).join("/") : full;
+      return { shown, full };
+    }
+  }
+  return { shown: file, full: file };
+}
+
+function bkTagClass(strategy) {
+  if (strategy === "git_snapshot") return "git";
+  if (strategy === "policy_rewrite") return "trash";
+  if (strategy === "subagent") return "sub";
+  return "other";
+}
+
+function bkDetailHtml(file, acts) {
+  const lines = [...acts].sort((a, b) => a.seq - b.seq).map((a) => {
+    const t = (a.timeFormatted || "").split(" ")[1] || "";
+    const st = (a.storage || []).map((s) => {
+      const cls = bkTagClass(s.strategy);
+      let p = s.path || "(no path)";
+      if (s.strategy === "git_snapshot" && s.ref) {
+        p = `${bkStorageLabel(s.path) || "shadow.git"} @ ${s.ref.slice(0, 7)}`;
+      }
+      return `<span class="bk-tag ${cls}">${escapeHtml(s.strategy)}</span>` +
+        `<span class="path" title="${escapeHtml(s.path || "")}">${escapeHtml(p)}</span>`;
+    }).join("");
+    return `<div class="bk-detail-line">
+      <span class="seq" title="action ${String(a.seq).padStart(3, "0")}">${String(a.seq).padStart(2, "0")}</span>
+      <span class="time">${escapeHtml(t)}</span>
+      ${st || `<span class="path" style="color:var(--muted)">no storage recorded</span>`}
+      <button class="btn small" data-bk-restore="${a.seq}">↶ Checkout</button>
+    </div>`;
+  }).join("");
+  const latest = Math.max(...acts.map((a) => a.seq));
+  const shadow = acts.flatMap((a) => a.storage || [])
+    .find((s) => s.strategy === "git_snapshot" && s.path);
+  return `${lines}
+    <div class="bk-detail-bar">
+      <button class="btn primary" data-bk-restore="${latest}">↶ Restore latest pre-state</button>
+      <button class="btn" data-bk-shadow="${escapeAttr(shadow ? shadow.path : "")}">View in shadow repo</button>
+      <button class="btn" data-bk-copyfile="${escapeAttr(file)}">Copy paths</button>
+    </div>`;
+}
+
+function renderBackups() {
+  const table = $("bk-table");
+  // Restore log is meaningful even when every action has been pruned.
+  if (bkView === "log") {
+    $("bk-summary").innerHTML = "";
+    renderBkLogView();
+    return;
+  }
+  if (!currentActions.length) {
+    table.innerHTML = `<div class="empty">No backups yet — run a mutating tool call through your agent.</div>`;
+    $("bk-summary").innerHTML = "";
+    return;
+  }
+
+  // Group actions by the file they touched.
+  const map = new Map();
+  for (const a of [...currentActions].sort((x, y) => x.seq - y.seq)) {
+    const f = inferFile(a);
+    if (!f) continue;
+    if (!map.has(f)) map.set(f, []);
+    map.get(f).push(a);
+  }
+
+  // Summary strip — counts across all storage entries.
+  let nGit = 0, nTrash = 0, nSub = 0;
+  for (const a of currentActions) {
+    for (const s of (a.storage || [])) {
+      if (s.strategy === "git_snapshot") nGit++;
+      else if (s.strategy === "policy_rewrite") nTrash++;
+      else if (s.strategy === "subagent") nSub++;
+    }
+  }
+  $("bk-summary").innerHTML =
+    `<code>${map.size}</code> files · <code>${nGit}</code> snapshots · ` +
+    `<code>${nTrash}</code> rewrites · <code>${nSub}</code> subagent`;
+
+  if (bkView === "storage") {
+    renderBkStorageView();
+    return;
+  }
+
+  // Per-file backed-up size from /api/storage-by-file (heaviest
+  // snapshot per path, summed when several paths share a basename).
+  const sizeByBase = {};
+  for (const r of (bkSizeData && bkSizeData.files) || []) {
+    const b = baseName(r.file);
+    sizeByBase[b] = (sizeByBase[b] || 0) + r.bytes;
+  }
+
+  // Rank either by recency (default) or by backed-up size (click the
+  // Size header to toggle). Size sort is descending — heaviest first.
+  const maxSeq = (acts) => Math.max(...acts.map((x) => x.seq));
+  const entries = [...map.entries()].sort((a, b) =>
+    bkSort === "size"
+      ? (sizeByBase[b[0]] || 0) - (sizeByBase[a[0]] || 0) || maxSeq(b[1]) - maxSeq(a[1])
+      : maxSeq(b[1]) - maxSeq(a[1]));
+
+  const sizeHdr = bkSort === "size"
+    ? `Size <span class="bk-sort-ind">▼</span>`
+    : `Size <span class="bk-sort-ind off">↕</span>`;
+  let html = `<div class="bk-head">
+    <span></span><span>File</span><span>State</span><span class="bk-sort-size" id="bk-sort-size" title="Rank by backed-up size">${sizeHdr}</span>
+    <span>Backed up to</span><span>Storage</span>
+  </div>`;
+
+  let hidden = 0;
+  for (const [file, acts] of entries) {
+    const dp = bkDisplayPath(file, acts);
+    const state = bkFileState(acts);
+    if (bkSizeMin > 0 && (sizeByBase[file] || 0) < bkSizeMin) { hidden++; continue; }
+    let g = 0, t = 0, s = 0;
+    const labels = new Set();
+    for (const a of acts) {
+      for (const stg of (a.storage || [])) {
+        if (stg.strategy === "git_snapshot") g++;
+        else if (stg.strategy === "policy_rewrite") t++;
+        else if (stg.strategy === "subagent") s++;
+        const lb = bkStorageLabel(stg.path);
+        if (lb) labels.add(lb);
+      }
+    }
+    const tags = [];
+    if (g) tags.push(`<span class="bk-tag git term"${helpAttr("git")}>git × ${g}</span>`);
+    if (t) tags.push(`<span class="bk-tag trash term"${helpAttr("trash")}>trash × ${t}</span>`);
+    if (s) tags.push(`<span class="bk-tag sub term"${helpAttr("subagent")}>subagent × ${s}</span>`);
+    const storageLabel = [...labels].join(" + ") || "—";
+    const exp = bkExpanded === file;
+
+    const szCell = sizeByBase[file] !== undefined
+      ? formatBytes(sizeByBase[file])
+      : (bkSizeData ? "—" : "…");
+    html += `<div class="bk-row${exp ? " expanded" : ""}" data-file="${escapeAttr(file)}">
+      <span class="bk-caret">›</span>
+      <span class="bk-file" title="${escapeHtml(dp.full)}">${escapeHtml(dp.shown)}</span>
+      <span class="bk-state ${state}${TERM_HELP[state] ? " term" : ""}"${helpAttr(state)}>${state}</span>
+      <span class="bk-size-bytes" title="Backed-up bytes for this file (heaviest snapshot)">${szCell}</span>
+      <span class="bk-tags">${tags.join("") || "—"}</span>
+      <span class="bk-storage${TERM_HELP[storageLabel] ? " term" : ""}" title="${escapeHtml(TERM_HELP[storageLabel] || storageLabel)}">${escapeHtml(storageLabel)}</span>
+    </div>`;
+    html += `<div class="bk-detail">${bkDetailHtml(file, acts)}</div>`;
+  }
+  if (hidden > 0) {
+    html += `<div class="bk-size-note" style="border-top:1px solid var(--line);border-bottom:none">${hidden} file${hidden === 1 ? "" : "s"} below the size filter hidden.</div>`;
+  }
+  table.innerHTML = html;
+
+  const sortHdr = $("bk-sort-size");
+  if (sortHdr) {
+    sortHdr.addEventListener("click", () => {
+      bkSort = bkSort === "size" ? "recent" : "size";
+      renderBackups();
+    });
+  }
+  for (const row of table.querySelectorAll(".bk-row")) {
+    row.addEventListener("click", () => {
+      const f = row.dataset.file;
+      bkExpanded = (bkExpanded === f) ? null : f;
+      renderBackups();
+    });
+  }
+  for (const btn of table.querySelectorAll("[data-bk-restore]")) {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openRestoreModal(parseInt(btn.dataset.bkRestore, 10));
+    });
+  }
+  for (const btn of table.querySelectorAll("[data-bk-shadow]")) {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const p = btn.dataset.bkShadow;
+      toast(p ? `Shadow repo: ${p}` : "No shadow repo for this file.", p ? "" : "err");
+    });
+  }
+  for (const btn of table.querySelectorAll("[data-bk-copyfile]")) {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const f = btn.dataset.bkCopyfile;
+      const paths = [...new Set(
+        currentActions
+          .filter((a) => inferFile(a) === f)
+          .flatMap((a) => (a.storage || []).map((s) => s.path).filter(Boolean))
+      )];
+      const txt = paths.join("\n");
+      if (navigator.clipboard && txt) {
+        navigator.clipboard.writeText(txt).then(
+          () => toast(`Copied ${paths.length} path(s).`, "ok"),
+          () => toast("Copy failed.", "err"),
+        );
+      } else {
+        toast(txt || "No paths to copy.");
+      }
+    });
+  }
+}
+
+// Restore modal
+let restoreSeq = null;
+function openRestoreModal(seq) {
+  restoreSeq = seq;
+  const a = currentActions.find((x) => x.seq === seq);
+  $("modal-title").textContent = `Restore action ${String(seq).padStart(3, "0")}`;
+  $("modal-desc").textContent = a && a.instruction
+    ? `Pre-state of: "${truncate(a.instruction, 140)}"`
+    : `Pre-state of action #${seq}.`;
+  $("modal-restore").classList.add("show");
+  loadRestorePreview(seq);
+}
+
+// Dry-run preview — what the restore WOULD touch, before committing.
+async function loadRestorePreview(seq) {
+  const box = $("modal-preview");
+  box.innerHTML = `<span class="pv-note">Computing preview…</span>`;
+  try {
+    const d = await (await fetch(`/api/restore/${seq}/preview`)).json();
+    if (restoreSeq !== seq) return; // modal moved on
+    let html = "";
+
+    const files = (d.direct && d.direct.files) || [];
+    const dCmds = (d.direct && d.direct.commands) || [];
+    html += `<h5>Direct jump — ${files.length} file${files.length === 1 ? "" : "s"} would change${dCmds.length ? ` · ${dCmds.length} command${dCmds.length === 1 ? "" : "s"}` : ""}</h5>`;
+    html += `<div class="pv-block">`;
+    if (files.length) {
+      for (const f of files.slice(0, 8)) {
+        html += `<div class="pv-file"><span>${escapeHtml(f.file)}</span><span class="pm"><span class="p">+${f.plus}</span> <span class="m">−${f.minus}</span></span></div>`;
+      }
+      if (files.length > 8) html += `<div class="pv-note">…and ${files.length - 8} more</div>`;
+    } else if (d.direct && d.direct.note) {
+      html += `<div class="pv-note">${escapeHtml(d.direct.note)}</div>`;
+    } else {
+      html += `<div class="pv-note">workspace already matches this snapshot</div>`;
+    }
+    for (const c of dCmds.slice(0, 5)) html += `<div class="pv-cmd">$ ${escapeHtml(c)}</div>`;
+    if (dCmds.length > 5) html += `<div class="pv-note">…and ${dCmds.length - 5} more commands</div>`;
+    html += `</div>`;
+
+    const steps = (d.loop && d.loop.steps) || [];
+    const totalCmds = steps.reduce((s, x) => s + (x.commands || 0), 0);
+    html += `<h5>Reverse-loop — ${steps.length} action${steps.length === 1 ? "" : "s"} would be undone${totalCmds ? ` · ${totalCmds} recorded command${totalCmds === 1 ? "" : "s"}` : ""}</h5>`;
+    html += `<div class="pv-block">`;
+    for (const s of steps.slice(0, 8)) {
+      html += `<div class="pv-step"><span class="sq">${String(s.seq).padStart(2, "0")}</span> ${escapeHtml((s.strategies || []).join(", "))}${s.commands ? ` · ${s.commands} cmd${s.commands === 1 ? "" : "s"}` : ""}</div>`;
+    }
+    if (steps.length > 8) html += `<div class="pv-note">…and ${steps.length - 8} more</div>`;
+    html += `</div>`;
+
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = `<span class="pv-note">Preview unavailable: ${escapeHtml(String(e))}</span>`;
+  }
+}
+function closeRestoreModal() {
+  $("modal-restore").classList.remove("show");
+  restoreSeq = null;
+}
+$("modal-cancel").onclick = closeRestoreModal;
+$("modal-restore").addEventListener("click", (ev) => {
+  if (ev.target === $("modal-restore")) closeRestoreModal();
+});
+$("modal-direct").onclick = () => doRestore("direct");
+$("modal-loop").onclick   = () => doRestore("loop");
+
+async function doRestore(mode) {
+  if (restoreSeq === null) return;
+  const seq = restoreSeq;
+  closeRestoreModal();
+  toast(`Restoring action #${seq} (${mode})…`);
+  try {
+    const r = await fetch(`/api/restore/${seq}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      const okCount = (d.results || []).filter((x) => x.success).length;
+      const total   = (d.results || []).length;
+      toast(`Restore #${seq} done — ${okCount}/${total} steps succeeded.`, "ok");
+      await refreshAll();
+    } else {
+      toast(`Restore failed: ${d.error || r.status}`, "err");
+    }
+  } catch (e) {
+    toast(`Restore failed: ${e}`, "err");
+  }
+}
+
+// ── Live updates ──────────────────────────────────────────────────────
+// Poll quietly; re-render only when something actually changed, so the
+// open detail pane / scroll position never flickers on idle ticks.
+// ageMs ticks on every response → stripped before comparing.
+const LIVE_POLL_MS = 5000;
+let livePaused = false;
+let lastStatusKey = "";
+let lastActionsKey = "";
+let lastExpKey = "";
+
+function actionsKey(actions) {
+  return JSON.stringify(actions.map((a) => {
+    const { ageMs, ...rest } = a;
+    return rest;
+  }));
+}
+
+async function livePoll() {
+  if (livePaused || document.hidden) return;
+  try {
+    const [s, d, e] = await Promise.all([
+      (await fetch("/api/status")).json(),
+      (await fetch("/api/actions")).json(),
+      (await fetch("/api/experiences")).json(),
+    ]);
+
+    const sk = JSON.stringify(s);
+    if (sk !== lastStatusKey) {
+      lastStatusKey = sk;
+      currentStatus = s;
+      renderStatus();
+    }
+
+    const actions = d.actions || [];
+    const ak = actionsKey(actions);
+    if (ak !== lastActionsKey) {
+      lastActionsKey = ak;
+      currentActions = actions;
+      renderTimeline();
+      loadBackups();
+      if (selectedSeq !== null && currentActions.some((x) => x.seq === selectedSeq)) {
+        renderDetail(selectedSeq);
+      } else if (currentActions.length) {
+        selectAction([...currentActions].sort((x, y) => y.seq - x.seq)[0].seq);
+      }
+    }
+
+    const ek = JSON.stringify(e);
+    if (ek !== lastExpKey) {
+      lastExpKey = ek;
+      expData = e;
+      renderPatterns();
+    }
+  } catch {
+    // server briefly unreachable — try again next tick
+  }
+}
+setInterval(livePoll, LIVE_POLL_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) livePoll(); });
+
+// ── Experiences tab: read-only view of GET /api/experiences ─────
+let expData = null;
+
+async function loadExperiences() {
+  try {
+    expData = await (await fetch("/api/experiences")).json();
+  } catch {
+    expData = { servers: [] };
+  }
+  lastExpKey = JSON.stringify(expData);
+  renderPatterns();
+}
+
+function patBadge(p) {
+  if (p.verified === true)  return `<span class="pat-badge verified">✓ verified</span>`;
+  if (p.verified === false) return `<span class="pat-badge failed">✗ failed</span>`;
+  return `<span class="pat-badge proposed">proposed</span>`;
+}
+function listText(v) { return Array.isArray(v) ? v.join(", ") : (v ? String(v) : ""); }
+function patRank(p) { return p.verified === true ? 0 : p.verified === undefined || p.verified === null ? 1 : 2; }
+
+function renderPatterns() {
+  const box = $("pat-list");
+  if (!expData) {
+    box.innerHTML = `<div class="empty">Loading…</div>`;
+    return;
+  }
+
+  const servers = expData.servers || [];
+  let nPat = 0, nVer = 0;
+  for (const sv of servers) {
+    nPat += (sv.patterns || []).length;
+    nVer += (sv.patterns || []).filter((p) => p.verified === true).length;
+  }
+  $("pat-summary").innerHTML = servers.length
+    ? `<code>${servers.length}</code> server${servers.length === 1 ? "" : "s"} · <code>${nPat}</code> patterns · <code>${nVer}</code> verified`
+    : "";
+
+  if (!servers.length) {
+    box.innerHTML = `<div class="empty">No experiences found. Experiences are per-MCP-server capture
+      playbooks stored in <code>.backupper/experiences/&lt;server&gt;.json</code>
+      (<code>backupper init</code> copies the bundled starter set there). They are injected
+      into the tier-3 backup subagent's prompt.</div>`;
+    return;
+  }
+
+  let html = "";
+  for (const sv of servers) {
+    const pats = [...(sv.patterns || [])].sort((a, b) => patRank(a) - patRank(b));
+    const ver = pats.filter((p) => p.verified === true).length;
+    const meta = [];
+    meta.push(`${pats.length} pattern${pats.length === 1 ? "" : "s"} · ${ver} verified`);
+    if (Array.isArray(sv.observed_tools) && sv.observed_tools.length) meta.push(`${sv.observed_tools.length} tools observed`);
+    const svExtra = [];
+    if (sv.skill) svExtra.push(`<div class="pat-win"><span class="ew">SKILL →</span>${escapeHtml(sv.skill)}</div>`);
+    if (Array.isArray(sv.appliesTo) && sv.appliesTo.length) svExtra.push(`<div class="pat-note">applies to: ${escapeHtml(sv.appliesTo.join(", "))}</div>`);
+    if (Array.isArray(sv.readOnlyTools) && sv.readOnlyTools.length) svExtra.push(`<div class="pat-note">read-only tools: ${escapeHtml(sv.readOnlyTools.join(", "))}</div>`);
+    html += `<div class="pat-card">
+      <div class="pat-head">
+        <span class="bk-tag sub">T3</span>
+        <code class="pat-server">${escapeHtml(sv.server || "?")}</code>
+        <span class="pat-meta">${meta.join(" · ")}</span>
+      </div>
+      ${svExtra.length ? `<div class="pat-row"><div>${svExtra.join("")}</div></div>` : ""}
+      ${pats.map((p) => `<div class="pat-row">
+        ${patBadge(p)}
+        <div>
+          <div class="pat-action">${escapeHtml(p.action || "")}</div>
+          ${p.skill ? `<div class="pat-win"><span class="ew">SKILL →</span>${escapeHtml(p.skill)}</div>` : ""}
+          ${p.trigger ? `<div class="pat-note">trigger: ${escapeHtml(typeof p.trigger === "string" ? p.trigger : JSON.stringify(p.trigger))}</div>` : ""}
+          ${listText(p.applies_to) ? `<div class="pat-note">applies to: ${escapeHtml(listText(p.applies_to))}</div>` : ""}
+          ${listText(p.capture_tools) ? `<div class="pat-note">capture tools: ${escapeHtml(listText(p.capture_tools))}</div>` : ""}
+          ${p.reverter ? `<div class="pat-note">reverter: ${escapeHtml(typeof p.reverter === "string" ? p.reverter : JSON.stringify(p.reverter))}</div>` : ""}
+        </div>
+      </div>`).join("")}
+    </div>`;
+  }
+  box.innerHTML = html;
+}
+
+// Config form
+const CONFIG_SECTIONS = [
+  { title: "Core", fields: [
+    { key: "enabled", type: "bool", title: "Enabled", desc: "Master switch for BackUpper." },
+    { key: "mode", type: "select", title: "Mode", desc: "checker = tiers 0–2 run on every mutating call; tier 3 runs when the agent marks the step [Backup needed] or a tool-less read-only checker judges the call not read-only. off = nothing runs, including deny rules.", options: ["checker", "off"] },
+    { key: "notifyOnSuccess", type: "bool", title: "Notify on success", desc: "Report to the agent when a backup completes." },
+    { key: "announceOnce", type: "bool", title: "Announce once", desc: "Announce BackUpper to the agent only once per session." },
+    { key: "verbose", type: "bool", title: "Verbose", desc: "Print extra diagnostic messages." },
+  ]},
+  { title: "Retention", fields: [
+    { key: "maxActions", type: "number", title: "Max action count", desc: "Keep at most this many action folders. 0 = unlimited." },
+    { key: "maxTotalSizeMB", type: "number", title: "Max total size (MB)", desc: "Cap the combined size of action folders. 0 = unlimited." },
+    { key: "maxAgeHours", type: "number", title: "Max age (hours)", desc: "Drop action folders older than this. 0 = unlimited." },
+  ]},
+  { title: "Subagent (tier-3 backup)", fields: [
+    { key: "subagentEnabled", type: "bool", title: "Enabled", desc: "Run a backup subagent for out-of-workspace and remote state." },
+    { key: "subagentRunner", type: "select", title: "Runner", desc: "CLI that runs the subagent. auto follows the agent whose hook fired.", options: ["auto", "claude", "codex", "hermes"] },
+    { key: "subagentModel", type: "text", title: "Model", desc: "Model name passed to the runner; overrides every runner. Empty = the per-runner default in subagentModels (claude: haiku, codex: gpt-6-luna, hermes: its provider default)." },
+    { key: "subagentProvider", type: "text", title: "Provider", desc: "Hermes runner only. Empty = Hermes's configured provider." },
+    { key: "subagentTimeoutSeconds", type: "number", title: "Timeout (seconds)", desc: "Maximum time to wait for the subagent to finish." },
+    { key: "subagentPermissionMode", type: "select", title: "Permission mode", desc: "Claude runner only. bypassPermissions = unrestricted · acceptEdits = file edits only.", options: ["bypassPermissions", "acceptEdits"] },
+  ]},
+  { title: "Learning", fields: [
+    { key: "selfImproving", type: "bool", title: "Self-improving", desc: "Learn deterministic capture rules from tier-3 subagent runs." },
+    { key: "selfImprovingGeneralize", type: "bool", title: "Generalize learned rules", desc: "Generalize each newly learned rule beyond the exact call that produced it." },
+    { key: "personalization", type: "select", title: "Personalization", desc: "Restrict tier-3 backups to one class of action. none = no restriction.", options: ["", "hard-to-reverse-only", "unrequested-effects-only", "human-authored-only"] },
+  ]},
+];
+
+let currentConfig = null;
+async function loadConfig() {
+  currentConfig = await (await fetch("/api/config")).json();
+  renderConfigForm();
+}
+function renderConfigForm() {
+  const c = $("cfg-form");
+  c.innerHTML = "";
+  for (const s of CONFIG_SECTIONS) {
+    const sec = document.createElement("div");
+    sec.className = "cfg-section";
+    const h = document.createElement("h3");
+    h.textContent = s.title;
+    sec.appendChild(h);
+    for (const f of s.fields) sec.appendChild(renderField(f, currentConfig[f.key]));
+    c.appendChild(sec);
+  }
+}
+function renderField(field, value) {
+  const row = document.createElement("div");
+  row.className = "cfg-field" + (field.type === "textarea" ? " stacked" : "");
+  const label = document.createElement("div");
+  label.className = "cfg-label";
+  label.innerHTML = `<div class="title">${escapeHtml(field.title)}</div><div class="desc">${escapeHtml(field.desc)}</div>`;
+  row.appendChild(label);
+  const inputWrap = document.createElement("div");
+  inputWrap.className = "cfg-input";
+  let input;
+  if (field.type === "bool") {
+    const wrap = document.createElement("label");
+    wrap.className = "toggle";
+    input = document.createElement("input"); input.type = "checkbox"; input.checked = !!value;
+    const sl = document.createElement("span"); sl.className = "toggle-slider";
+    wrap.appendChild(input); wrap.appendChild(sl);
+    inputWrap.appendChild(wrap);
+  } else if (field.type === "number") {
+    input = document.createElement("input"); input.type = "number"; input.value = value ?? 0; input.min = 0;
+    inputWrap.appendChild(input);
+  } else if (field.type === "select") {
+    input = document.createElement("select");
+    for (const opt of field.options) {
+      const o = document.createElement("option"); o.value = opt; o.textContent = opt === "" ? "none" : opt;
+      if (opt === value) o.selected = true;
+      input.appendChild(o);
+    }
+    inputWrap.appendChild(input);
+  } else if (field.type === "textarea") {
+    input = document.createElement("textarea");
+    input.value = Array.isArray(value) ? value.join("\n") : (value ?? "");
+  } else {
+    input = document.createElement("input"); input.type = "text"; input.value = value ?? "";
+    inputWrap.appendChild(input);
+  }
+  input.dataset.key = field.key; input.dataset.type = field.type;
+  if (field.type === "textarea") row.appendChild(input);
+  else row.appendChild(inputWrap);
+  return row;
+}
+async function saveConfig() {
+  const updates = {};
+  for (const el of $("cfg-form").querySelectorAll("[data-key]")) {
+    const key = el.dataset.key, type = el.dataset.type;
+    if (type === "bool") updates[key] = el.checked;
+    else if (type === "number") { const n = Number(el.value); updates[key] = Number.isFinite(n) ? n : 0; }
+    else if (type === "text") updates[key] = el.value.trim();
+    else if (type === "textarea") updates[key] = el.value.split("\n").map((x) => x.trim()).filter(Boolean);
+    else updates[key] = el.value;
+  }
+  const msg = $("save-msg");
+  msg.className = "save-msg"; msg.textContent = "Saving…";
+  try {
+    const r = await fetch("/api/config", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    const body = await r.json();
+    if (r.ok) {
+      currentConfig = body.config;
+      msg.className = "save-msg ok"; msg.textContent = "✓ Saved";
+      loadStatus();
+      setTimeout(() => { msg.textContent = ""; msg.className = "save-msg"; }, 2200);
+    } else {
+      msg.className = "save-msg err"; msg.textContent = body.error || `Error ${r.status}`;
+    }
+  } catch (e) {
+    msg.className = "save-msg err"; msg.textContent = String(e);
+  }
+}
+$("save-btn").onclick = saveConfig;
+$("reload-btn").onclick = () => { loadConfig(); $("save-msg").textContent = ""; };
+
+// Refresh + toast
+async function refreshAll() {
+  const btn = $("refresh"); btn.disabled = true;
+  const orig = btn.textContent; btn.textContent = "↻ …";
+  await Promise.all([loadStatus(), loadActions()]);
+  loadBackups();
+  btn.textContent = orig; btn.disabled = false;
+}
+
+let toastTimer = null;
+function toast(msg, kind) {
+  const t = $("toast");
+  t.className = "toast" + (kind ? " " + kind : "") + " show";
+  t.textContent = msg;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.classList.remove("show"); }, 3500);
+}
+
+// Utils
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function escapeAttr(s) { return escapeHtml(s).replace(/\s/g, "-"); }
+function truncate(s, n) { s = String(s); return s.length > n ? s.slice(0, n) + "…" : s; }
+function formatBytes(n) {
+  if (!n) return "0 B";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + " MB";
+  return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+function formatAge(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s ago";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h ago";
+  const d = Math.floor(h / 24);
+  return d + "d ago";
+}
+
+// Boot
+loadStatus();
+loadActions();
+loadConfig();
+loadExperiences();
+</script>
+</body>
+</html>

@@ -1,5 +1,0 @@
-{"email":"calibration@mcp.com","password":"Cb5tw9mp3","name":"Laboratory",
- "imap_server":"mail.mcp.com","imap_port":143,
- "smtp_server":"mail.mcp.com","smtp_port":587,
- "use_ssl":false,"use_starttls":false,
- "_rb_port":8901,"_rb_workspace":"/srv/harbrook/mail/lab"}
