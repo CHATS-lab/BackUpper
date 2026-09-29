@@ -1,5 +1,5 @@
 <div align="center">
-<h1>BackUpper: Undo for Coding Agents</h1>
+<h1>BackUpper: Back Up Before Your Agent Changes Things</h1>
 
 [![GitHub](https://img.shields.io/badge/GitHub-BackUpper-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/xli04/BackUpper) [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=for-the-badge&logo=node.js&logoColor=white)](#installation) [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
@@ -21,7 +21,7 @@
   <a href="#citation">Citation</a>
 </p>
 
-**BackUpper** gives your coding agent an undo button. It sits in front of every tool call and keeps a copy of whatever that call is about to delete or overwrite, so a bad step can be rolled back with one command. Just `npm install -g agents-backupper`, run `backupper install` for your agent, and keep working. Everything it records stays in `.backupper/` inside your project.
+**BackUpper** backs up what your coding agent is about to change, before the change happens. It sits in front of every tool call and keeps a copy of whatever that call is about to delete or overwrite, so a bad step can be rolled back with `backupper restore`. Just `npm install -g agents-backupper`, run `backupper install` for your agent, and keep working. Everything it records stays in `.backupper/` inside your project.
 
 ## What it does
 
