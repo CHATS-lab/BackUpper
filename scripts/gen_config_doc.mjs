@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Generate README's configuration table from the built schema (dist/config/schema.js) and
+ * Generate the configuration table in src/config/README.md from the built schema (dist/config/schema.js) and
  * defaults (dist/types.js), between the `config-table` markers.
  *
- *   node scripts/gen_config_doc.mjs           rewrite README.md
- *   node scripts/gen_config_doc.mjs --check   exit 1 when README.md is out of date
+ *   node scripts/gen_config_doc.mjs           rewrite src/config/README.md
+ *   node scripts/gen_config_doc.mjs --check   exit 1 when src/config/README.md is out of date
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -48,19 +48,19 @@ const rows = keys
   .map((k) => `| \`${k}\` | ${kindText(CONFIG_SCHEMA[k])} | ${defaultText(DEFAULT_CONFIG[k])} | ${CONFIG_DOCS[k]} |`);
 const table = [START, "", "| key | values | default | meaning |", "|---|---|---|---|", ...rows, "", END].join("\n");
 
-const readmePath = path.join(ROOT, "README.md");
+const readmePath = path.join(ROOT, "src", "config", "README.md");
 const readme = fs.readFileSync(readmePath, "utf-8");
 const i = readme.indexOf(START);
 const j = readme.indexOf(END);
 if (i < 0 || j < i) {
-  console.error("README.md has no config-table markers");
+  console.error("src/config/README.md has no config-table markers");
   process.exit(1);
 }
 const next = readme.slice(0, i) + table + readme.slice(j + END.length);
 
 if (process.argv.includes("--check")) {
   if (next !== readme) {
-    console.error("README.md configuration table is out of date: run `npm run docs`");
+    console.error("src/config/README.md configuration table is out of date: run `npm run docs`");
     process.exit(1);
   }
   console.log(`README configuration table is current (${rows.length} keys)`);

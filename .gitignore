@@ -1,8 +1,13 @@
 node_modules/
 dist/
-dist-test/
 src/prompts.generated.ts
 *.tgz
 .backupper/
 npm-debug.log*
 .DS_Store
+# RegretBench: tasks are distributed separately; run outputs stay local.
+regretbench/tasks/*
+!regretbench/tasks/README.md
+regretbench/results/
+results/
+.unit-build-*/

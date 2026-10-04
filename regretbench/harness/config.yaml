@@ -1,0 +1,33 @@
+# Defaults for run.sh: which agent harness it drives and with what settings.
+# Benchmark semantics (turns, hooks) live in run.sh, not here.
+
+# Which adapter run.sh drives. One of the stems in harness/adapters/.
+#   claude  -- Claude Code inside the task container
+#   hermes  -- hermes on the host, via OpenRouter
+#   codex   -- codex-cli inside the task container, via OpenRouter
+# Override per invocation with `--harness NAME` or RB_HARNESS=NAME.
+harness: claude
+
+# Task directory relative to regretbench/; select a domain with --tasks-dir tasks/<domain>.
+tasks_dir: tasks/terminal
+
+defaults:
+  samples: 1
+  # One timeout per agent turn, used when a task sets no agent_timeout_sec.
+  agent_timeout_sec: 600
+
+harnesses:
+  claude:
+    model: claude-sonnet-5
+    # Default for RB_CLAUDE_AUTH. The credential is copied into the container,
+    # never bind-mounted.
+    auth: subscription
+    results_dir: results/claude
+  hermes:
+    model: deepseek/deepseek-v4-pro
+    results_dir: results/hermes
+  codex:
+    model: openai/gpt-5.6-terra
+    # Not read by adapters/codex.sh; kept for schema parity.
+    auth: direct
+    results_dir: results/codex

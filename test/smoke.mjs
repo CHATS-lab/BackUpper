@@ -88,9 +88,10 @@ await test("config set validates keys and values", () => {
 await test("config and config --json show every documented key, internals apart", () => {
   const p = project("config-all");
   cli(p, "init");
-  const readme = fs.existsSync(path.join(ROOT, "README.md")) ? fs.readFileSync(path.join(ROOT, "README.md"), "utf-8") : "";
+  const ref = path.join(ROOT, "src", "config", "README.md");
+  const readme = fs.existsSync(ref) ? fs.readFileSync(ref, "utf-8") : "";
   const j = JSON.parse(cli(p, "config", "--json").out);
-  // The README's configuration table when this runs from a checkout; the JSON's own keys otherwise.
+  // The configuration reference table when this runs from a checkout; the JSON's own keys otherwise.
   const fromReadme = [...readme.matchAll(/^\| `([A-Za-z]+)` \|/gm)].map((m) => m[1]);
   const documented = fromReadme.length ? fromReadme : Object.keys(j).filter((k) => k !== "internal");
   assert.ok(documented.length >= 28);
