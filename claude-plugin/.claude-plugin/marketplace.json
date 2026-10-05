@@ -4,7 +4,7 @@
   "plugins": [
     {
       "name": "backupper",
-      "source": "./claude-plugin",
+      "source": "./",
       "description": "BackUpper side panel: what each tool call captured, with one-key restore"
     }
   ]

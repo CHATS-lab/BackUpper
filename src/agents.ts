@@ -127,7 +127,7 @@ function isCaptureAllowRule(r: unknown): boolean {
 
 type HookGroup = { matcher?: string; hooks?: Array<{ type?: string; command?: string }> };
 
-/** The side-panel plugin and the marketplace (this package's folder) it is installed from. */
+/** The side-panel plugin and the marketplace (claude-plugin/ in this package) it is installed from. */
 const PLUGIN_MARKETPLACE = "backupper";
 const PLUGIN_ID = `backupper@${PLUGIN_MARKETPLACE}`;
 
@@ -251,7 +251,7 @@ export const claudeCodeAdapter: AgentAdapter = {
     }
 
     // Side panel: a Claude Code plugin that draws the pane beside the transcript.
-    const pkgDir = path.resolve(pkgRoot, "..");
+    const pkgDir = path.resolve(pkgRoot, "..", "claude-plugin");
     const add = claudePlugin(projectRoot, ["marketplace", "add", pkgDir, "--scope", "local"]);
     const inst = add?.ok ? claudePlugin(projectRoot, ["install", PLUGIN_ID, "--scope", "local"]) : add;
     if (inst?.ok) {

@@ -11,7 +11,13 @@ const out = fs.mkdtempSync(path.join(ROOT, ".unit-build-"));
 let code = 0;
 try {
   const tsc = path.join(ROOT, "node_modules", "typescript", "bin", "tsc");
-  execFileSync(process.execPath, [tsc, "-p", path.join(ROOT, "tsconfig.test.json"), "--outDir", out], { stdio: "inherit" });
+  const config = path.join(out, "tsconfig.json");
+  fs.writeFileSync(config, JSON.stringify({
+    extends: "../tsconfig.json",
+    compilerOptions: { rootDir: "..", outDir: "." },
+    include: ["../src/**/*", "../test/unit/**/*"],
+  }));
+  execFileSync(process.execPath, [tsc, "-p", config], { stdio: "inherit" });
   const dir = path.join(out, "test", "unit");
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".test.js")).map((f) => path.join(dir, f));
   execFileSync(process.execPath, ["--test", ...files], { stdio: "inherit", cwd: ROOT });
