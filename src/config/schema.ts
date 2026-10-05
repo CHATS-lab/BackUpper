@@ -1,5 +1,5 @@
 /**
- * User-settable configuration keys: their value kind, for `config set`, the dashboard and
+ * User-settable configuration keys: their value kind, for `config set` and
  * `doctor`. Keys absent here are internal and set by the tiers themselves.
  */
 
@@ -55,6 +55,7 @@ export const CONFIG_SCHEMA: Record<string, Kind> = {
   experienceForServer: { type: "json", shape: "object" },
   notifyOnSuccess: { type: "boolean" },
   announceOnce: { type: "boolean" },
+  panel: { type: "boolean" },
   verbose: { type: "boolean" },
 };
 
@@ -91,6 +92,7 @@ export const CONFIG_DOCS: Record<keyof typeof CONFIG_SCHEMA, string> = {
   experienceForServer: "Maps an MCP server to an experience file, e.g. `{\"playwright\": \"shop\"}`.",
   notifyOnSuccess: "Tells the agent about every successful backup. Failures and unverified backups are always reported.",
   announceOnce: "Briefs the agent once per session about the `[BACKUP NEEDED]` marker.",
+  panel: "Opens the `backupper watch` side panel once at the start of each agent session. Off by default; `backupper panel on` opens it on demand.",
   verbose: "Writes hook decisions to stderr.",
 };
 

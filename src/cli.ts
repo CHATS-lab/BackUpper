@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * BackUpper command-line interface: project setup (init, install, uninstall, doctor, demo),
- * read views over the action store (list, show, diff, status, config, dashboard) and undo
- * (restore, clear). Read commands accept --json.
+ * read views over the action store (list, show, diff, status, config), the live side panel
+ * (watch, panel) and undo (restore, clear). Read commands accept --json.
  */
 
 import * as fs from "node:fs";
@@ -13,11 +13,11 @@ import { CONFIG_SCHEMA, parseConfigValue } from "./config/schema.js";
 import { ALL_ADAPTERS, findAdapter, ignoreStore, installedAdapters, type AgentAdapter } from "./agents/index.js";
 import { resolveRunner, subagentModelFor } from "./backup/runner_caps.js";
 import { dirSize } from "./backup/strategies.js";
-import { actionDetail, actionNames, backupRoot, listActionSummaries, resolveAction, tierOf } from "./view/actions.js";
+import { actionDetail, actionNames, backupRoot, listActionSummaries, resolveAction, snapshotDiff, tierOf } from "./view/actions.js";
 import type { RestoreResult } from "./restore/restore.js";
 import { storeDirOverride } from "./types.js";
 
-/** The installed dist/ directory; hook scripts and static assets are resolved from it. */
+/** The installed dist/ directory; hook scripts are resolved from it. */
 const PKG_DIST = path.resolve(__dirname);
 const PKG_ROOT = path.dirname(PKG_DIST);
 
@@ -369,30 +369,22 @@ function diffCommand(projectRoot: string, args: string[]): void {
   const ref = positionals(args)[0] ?? "latest";
   const name = resolveAction(config, ref);
   if (!name) fail(actionNames(config).length ? `No action ${ref}.` : "No actions recorded yet.", "backupper list");
-  const snap = actionDetail(config, name, projectRoot).artifacts.find((a) => a.strategy === "git_snapshot");
-  const commit = snap?.commitHash ?? snap?.id;
-  if (!snap || !commit || !fs.existsSync(snap.artifactPath)) {
+  let d: ReturnType<typeof snapshotDiff>;
+  try {
+    d = snapshotDiff(config, name, projectRoot);
+  } catch (e) {
+    fail(`Diff failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+  }
+  if (!d) {
     if (JSON_OUT) printJson({ action: name, stat: "", diff: "", note: "no workspace snapshot in this action" });
     else console.log(`Action ${name} has no workspace snapshot to diff against.`);
     return;
   }
-  const opts = {
-    encoding: "utf-8" as const, timeout: 30_000, cwd: projectRoot, stdio: "pipe" as const,
-    env: { ...process.env, GIT_DIR: snap.artifactPath, GIT_WORK_TREE: projectRoot },
-  };
-  try {
-    execFileSync("git", ["add", "-A"], opts);
-    const stat = execFileSync("git", ["diff", "--cached", "--stat", commit], opts).trim();
-    const diff = execFileSync("git", ["diff", "--cached", "--no-color", commit], opts).trim();
-    execFileSync("git", ["reset", "--quiet"], opts);
-    if (JSON_OUT) { printJson({ action: name, commit, stat, diff }); return; }
-    if (!stat) { console.log(`No workspace changes since the snapshot of ${name}.`); return; }
-    console.log(`Changes since the snapshot taken before action #${name.split("_")[1].replace(/^0+/, "")} (${commit.slice(0, 8)}):\n`);
-    console.log(stat);
-    console.log(`\n${diff}`);
-  } catch (e) {
-    fail(`Diff failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
-  }
+  if (JSON_OUT) { printJson({ action: name, ...d }); return; }
+  if (!d.stat) { console.log(`No workspace changes since the snapshot of ${name}.`); return; }
+  console.log(`Changes since the snapshot taken before action #${name.split("_")[1].replace(/^0+/, "")} (${d.commit.slice(0, 8)}):\n`);
+  console.log(d.stat);
+  console.log(`\n${d.diff}`);
 }
 
 // ── Undo ─────────────────────────────────────────────────────────────
@@ -440,7 +432,7 @@ async function restoreCommand(projectRoot: string, args: string[]): Promise<void
 }
 
 /** Store entries `clear` keeps: configuration and learned knowledge, not recorded backups. */
-const KEEP_ON_CLEAR = new Set(["config.json", "experiences", "learned-backup-rules.json", "tool-registry.json"]);
+const KEEP_ON_CLEAR = new Set(["config.json", "experiences", "learned-backup-rules.json", "tool-registry.json", "panel.json"]);
 
 function clearCommand(projectRoot: string, args: string[]): void {
   const store = getConfigDir(projectRoot);
@@ -460,23 +452,18 @@ function clearCommand(projectRoot: string, args: string[]): void {
   console.log(`Removed ${entries.length} item(s) from ${store}. Hooks and config are untouched.`);
 }
 
-// ── Dashboard ────────────────────────────────────────────────────────
+// ── Side panel ───────────────────────────────────────────────────────
 
-async function dashboardCommand(projectRoot: string, args: string[]): Promise<void> {
-  const portArg = flagValue(args, "--port");
-  let port: number | undefined;
-  if (portArg !== undefined) {
-    port = parseInt(portArg, 10);
-    if (!(port > 0 && port < 65536)) fail(`Invalid --port: ${portArg}`);
-  }
-  const { startDashboard } = require("./dashboard/server.js") as typeof import("./dashboard/server.js");
-  const handle = await startDashboard({ projectRoot, port, pkgRoot: PKG_DIST }).catch((e: unknown) =>
-    fail(e instanceof Error ? e.message : String(e)));
-  console.log(`BackUpper dashboard for ${projectRoot}: http://127.0.0.1:${handle.port}`);
-  console.log("Press Ctrl+C to stop.");
-  const stop = () => { handle.close(); process.exit(0); };
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+/** argv that starts `backupper watch` from this install, independent of the pane's PATH. */
+function watchArgv(): string[] {
+  return [process.execPath, path.join(PKG_DIST, "cli.js"), "watch"];
+}
+
+function panelCli(projectRoot: string, action: string): void {
+  const { panelCommand } = require("./cli/panel.js") as typeof import("./cli/panel.js");
+  const r = panelCommand(action, { projectRoot, watch: watchArgv() });
+  for (const l of r.lines) console.log(l);
+  if (!r.ok) process.exitCode = 1;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -500,7 +487,11 @@ Inspect
   config                        Effective value of every setting
   config get <key>              One setting's effective value
   config set <key> <value>      Change one setting
-  dashboard [--port N]          Local web UI on 127.0.0.1 (default port 7321)
+
+Side panel
+  panel [on|off|toggle|status]  Live view of captures in a pane to the right (default: toggle)
+  split                         Same as panel on
+  watch                         The panel itself: live action list, r restores, d diffs
 
 Undo
   restore <N|last>              Undo action N and every action after it
@@ -547,7 +538,13 @@ async function main(): Promise<void> {
     case "diff": diffCommand(projectRoot, rest); break;
     case "status": statusCommand(projectRoot); break;
     case "config": configCommand(projectRoot, rest); break;
-    case "dashboard": await dashboardCommand(projectRoot, rest); break;
+    case "watch": {
+      const { watch } = require("./cli/watch.js") as typeof import("./cli/watch.js");
+      await watch(projectRoot);
+      break;
+    }
+    case "panel": panelCli(projectRoot, positionals(rest)[0] ?? "toggle"); break;
+    case "split": panelCli(projectRoot, "on"); break;
     case "restore": await restoreCommand(projectRoot, rest); break;
     case "restore_direct": await restoreCommand(projectRoot, [...rest, "--direct"]); break;
     case "clear": clearCommand(projectRoot, rest); break;

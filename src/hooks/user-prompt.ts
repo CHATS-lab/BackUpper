@@ -3,14 +3,20 @@
  * UserPromptSubmit hook: emits the one-time session briefing and writes the
  * user's prompt, truncated to one line, to .backupper/current-instruction.txt
  * so action folders can record what was asked.
+ *
+ * A prompt that is only `/backupper-panel [on|off|toggle|status]` is answered here and blocked,
+ * so toggling the side panel never reaches the model. With `panel: true` the panel is opened
+ * once per session, in a detached process the hook does not wait for.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 import { loadConfig } from "../config/load.js";
 import { storeDirOverride } from "../types.js";
 import { BRIEFING_CHECKER, render } from "../prompts.generated.js";
 import { adoptHostAgent } from "./host.js";
+import { panelCommand, parsePanelPrompt } from "../cli/panel.js";
 
 interface PromptContext {
   hook_event?: string;
@@ -42,12 +48,27 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // ── Side panel toggle: handled here, never sent to the model ───────
+  const panelAction = parsePanelPrompt(String(ctx.prompt ?? ctx.user_prompt ?? ctx.message ?? ""));
+  if (panelAction) {
+    let lines: string[];
+    try {
+      lines = panelCommand(panelAction, { projectRoot: process.cwd(), watch: watchArgv() }).lines;
+    } catch (e) {
+      lines = [`BackUpper panel: ${(e as Error).message}`];
+    }
+    process.stdout.write(JSON.stringify({ decision: "block", reason: lines.join("\n") }));
+    process.exit(0);
+  }
+
   const config = loadConfig();
   if (!config.enabled) {
     process.exit(0);
   }
 
   const sandboxDir = path.dirname(path.resolve(config.backupDir));
+
+  if (config.panel) openPanelOnce(sandboxDir, String(ctx.session_id ?? "default"));
 
   // ── One-time session briefing ──────────────────────────────────────
   // Emitted on the first prompt of each session, tracked by a session-id
@@ -112,6 +133,34 @@ async function main(): Promise<void> {
   }
 
   process.exit(0);
+}
+
+/** argv that starts `backupper watch` from this install (hooks live in dist/hooks/). */
+function watchArgv(): string[] {
+  return [process.execPath, path.join(__dirname, "..", "cli.js"), "watch"];
+}
+
+/**
+ * `panel: true`: open the side panel on the first prompt of a session. Runs `panel on` in a
+ * detached child the hook never waits for; any failure stays inside that child.
+ */
+function openPanelOnce(sandboxDir: string, sessionKey: string): void {
+  try {
+    const marker = path.join(sandboxDir, "panel-sessions.json");
+    let seen: string[] = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(marker, "utf-8"));
+      if (Array.isArray(parsed)) seen = parsed.map(String);
+    } catch { /* fresh */ }
+    if (seen.includes(sessionKey)) return;
+    fs.mkdirSync(sandboxDir, { recursive: true });
+    fs.writeFileSync(marker, JSON.stringify([...seen, sessionKey].slice(-200)), "utf-8");
+    const child = spawn(process.execPath, [path.join(__dirname, "..", "cli.js"), "panel", "on"], {
+      cwd: process.cwd(), detached: true, stdio: "ignore",
+    });
+    child.on("error", () => { /* best effort */ });
+    child.unref();
+  } catch { /* never fail the hook */ }
 }
 
 /** The briefing text comes from prompts/briefing-checker.md via prompts.generated.ts. */

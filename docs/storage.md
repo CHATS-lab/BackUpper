@@ -34,6 +34,8 @@ backups/action_<N>_<time>/    one folder per backed-up action:
   subagent_<id>.transcript.*    the subagent's step transcript, or a .MISSING.txt note on why none
 current-instruction.txt       the latest user prompt, copied into each action folder
 announced-sessions.json       sessions already briefed about the [BACKUP NEEDED] marker
+panel.json                    the open side panel: terminal, pane id, `watch` pid
+panel-sessions.json           sessions the panel was auto-opened for (`panel: true`)
 tool-registry.json            which MCP server owns which tool name
 external-copies.json          the first pre-agent copy of each outside file, reused later
 effects.jsonl                 what each call changed

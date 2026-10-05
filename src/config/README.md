@@ -38,6 +38,7 @@ argument, e.g. `backupper config set subagentModels '{"claude":"sonnet"}'`.
 | `experienceForServer` | JSON object | unset | Maps an MCP server to an experience file, e.g. `{"playwright": "shop"}`. |
 | `notifyOnSuccess` | boolean | `false` | Tells the agent about every successful backup. Failures and unverified backups are always reported. |
 | `announceOnce` | boolean | `true` | Briefs the agent once per session about the `[BACKUP NEEDED]` marker. |
+| `panel` | boolean | `false` | Opens the `backupper watch` side panel once at the start of each agent session. Off by default; `backupper panel on` opens it on demand. |
 | `verbose` | boolean | `false` | Writes hook decisions to stderr. |
 
 <!-- config-table:end -->

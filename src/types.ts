@@ -226,6 +226,8 @@ export interface SandboxConfig {
   notifyOnSuccess: boolean;
   /** Show the one-time backup briefing on the first UserPromptSubmit of a session (default true). */
   announceOnce: boolean;
+  /** Open the `backupper watch` side panel once at the start of each agent session. */
+  panel: boolean;
 }
 
 // ── Default deny rules ───────────────────────────────────────────────
@@ -397,6 +399,7 @@ export const DEFAULT_CONFIG: SandboxConfig = {
   // Silent on success; announce once at session start.
   notifyOnSuccess: false,
   announceOnce: true,
+  panel: false,
 };
 
 // ── Backup artifact ──────────────────────────────────────────────────

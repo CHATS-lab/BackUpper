@@ -90,11 +90,13 @@ backupper restore last          # undo only the most recent action
 backupper restore 3 --file src/app.py   # restore one file from action #3
 ```
 
-Or browse everything in a local web dashboard:
+Or keep a live side panel next to your agent. It is off by default; toggle it whenever you want:
 
 ```bash
-backupper dashboard             # http://127.0.0.1:7321
+backupper panel                 # toggle; also: panel on | off | status
 ```
+
+In Claude Code, type `/backupper-panel`. The prompt hook handles it, so it costs no model turn. The panel opens to the right of your terminal (tmux, Zellij, WezTerm, kitty, iTerm2), lists each action as `#N <tool call> → Tier K <artifact>`, and restores the selected one when you press `r` and confirm. In VS Code, press `Cmd+\` (`Ctrl+Shift+5`) to split the terminal and run `backupper watch` in the new pane.
 
 ### Customize What Gets Backed Up
 
@@ -148,7 +150,7 @@ Add `--backupper on` to evaluate with BackUpper.
 
 ```
 BackUpper/
-├── src/                     # npm-installable backup layer (hooks, tiers, restore, CLI, dashboard)
+├── src/                     # npm-installable backup layer (hooks, tiers, restore, CLI, side panel)
 ├── prompts/                 # prompts for the checker, backup subagent and self-improvement
 ├── experiences/             # bundled backup experiences for MCP servers (postgres, playwright, k8s, email)
 ├── commands/                # slash commands installed into Claude Code

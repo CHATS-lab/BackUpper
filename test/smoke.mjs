@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -57,7 +57,7 @@ async function test(name, fn) {
 await test("--help lists the commands", () => {
   const r = cli(tmp, "--help");
   assert.equal(r.code, 0);
-  for (const c of ["init", "install", "doctor", "demo", "list", "show", "restore", "dashboard"]) assert.match(r.out, new RegExp(`\\b${c}\\b`));
+  for (const c of ["init", "install", "doctor", "demo", "list", "show", "restore", "panel", "watch"]) assert.match(r.out, new RegExp(`\\b${c}\\b`));
 });
 
 await test("init writes a checker config and seeds experiences", () => {
@@ -108,7 +108,7 @@ await test("config and config --json show every documented key, internals apart"
 await test("<command> --help prints usage and does not act", () => {
   const p = project("subhelp");
   cli(p, "init");
-  for (const c of ["list", "restore", "show", "clear", "dashboard", "config", "status", "install"]) {
+  for (const c of ["list", "restore", "show", "clear", "panel", "watch", "config", "status", "install"]) {
     const r = cli(p, c, "--help");
     assert.equal(r.code, 0, `${c} --help: ${r.err}`);
     assert.match(r.out, new RegExp(`Usage: backupper ${c}`), c);
@@ -177,9 +177,13 @@ await test("hook capture, list/show --json, restore", () => {
   assert.ok(!fs.existsSync(path.join(p, "notes.txt")));
   const list = JSON.parse(cli(p, "list", "--json").out);
   assert.equal(list.total, 1);
-  assert.deepEqual(list.actions[0].tiers, [0]);
+  assert.deepEqual(list.actions[0].tiers, [1]);
   const show = JSON.parse(cli(p, "show", "--latest", "--json").out);
   assert.equal(show.artifacts[0].strategy, "policy_rewrite");
+  const snap = cli(p, "watch");
+  assert.equal(snap.code, 0, snap.err);
+  assert.match(snap.out, /#1 Bash\(rm notes\.txt\) → Tier 1 command rewriting/);
+  assert.match(snap.out, /RESTORE\s+press r to undo #1/);
   assert.equal(cli(path.join(p), "restore", "last").code, 0);
   assert.equal(fs.readFileSync(path.join(p, "notes.txt"), "utf-8"), "keep me\n");
 });
@@ -194,29 +198,27 @@ await test("doctor reports and exits non-zero on a missing install", () => {
   assert.match(hooks.fix, /backupper install claude-code/);
 });
 
-await test("dashboard serves the page and API on loopback only", async () => {
-  const p = project("dash");
-  cli(p, "init");
-  const port = 17000 + Math.floor(Math.random() * 2000);
-  const child = spawn(BIN[0], [...BIN.slice(1), "dashboard", "--port", String(port)], { cwd: p, env: ENV });
-  try {
-    const base = `http://127.0.0.1:${port}`;
-    let page;
-    for (let i = 0; i < 50 && !page; i++) {
-      try { page = await (await fetch(base + "/")).text(); } catch { await new Promise((r) => setTimeout(r, 100)); }
-    }
-    assert.match(page ?? "", /<title>BackUpper<\/title>/);
-    const status = await (await fetch(base + "/api/status")).json();
-    assert.equal(status.mode, "checker");
-    const cross = await fetch(base + "/api/config", {
-      method: "POST", headers: { "content-type": "application/json", origin: "http://evil.example" }, body: "{}",
-    });
-    assert.equal(cross.status, 403);
-    const bad = await fetch(base + "/api/config", { method: "POST", headers: { "content-type": "application/json" }, body: '{"mode":"smart"}' });
-    assert.equal(bad.status, 400);
-  } finally {
-    child.kill("SIGTERM");
-  }
+await test("/backupper-panel is answered by the prompt hook and never reaches the model", () => {
+  const p = project("panel");
+  cli(p, "install", "claude-code");
+  assert.ok(fs.existsSync(path.join(p, ".claude", "commands", "backupper-panel.md")));
+  const settings = JSON.parse(fs.readFileSync(path.join(p, ".claude", "settings.local.json"), "utf-8"));
+  const cmd = settings.hooks.UserPromptSubmit[0].hooks[0].command;
+  const env = { ...ENV };
+  for (const k of ["TMUX", "ZELLIJ", "TERM_PROGRAM", "WEZTERM_PANE", "KITTY_WINDOW_ID", "ITERM_SESSION_ID"]) delete env[k];
+  const send = (prompt) => spawnSync("sh", ["-c", cmd], {
+    cwd: p, env, encoding: "utf-8", input: JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt, session_id: "s", cwd: p }),
+  });
+  const r = send("/backupper-panel status");
+  assert.equal(r.status, 0, r.stderr);
+  const j = JSON.parse(r.stdout);
+  assert.equal(j.decision, "block");
+  assert.match(j.reason, /panel is off/);
+  assert.match(JSON.parse(send("/backupper-panel").stdout).reason, /No scriptable terminal split/);
+  assert.ok(!fs.existsSync(path.join(p, ".backupper", "current-instruction.txt")), "panel prompts are not recorded as instructions");
+  const normal = send("please tidy the repo");
+  assert.ok(!/"decision"/.test(normal.stdout));
+  assert.equal(cli(p, "panel", "status").code, 0);
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

@@ -1,10 +1,11 @@
 /**
- * Read-side view of the action store, shared by the CLI (`list`, `show`) and the dashboard.
+ * Read-side view of the action store, shared by the CLI (`list`, `show`, `watch`).
  * An action is one folder `backups/action_<seq>_<timestamp>/` whose metadata.json lists the
  * artifacts every tier produced for a single tool call.
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { BackupArtifact, SandboxConfig } from "../types.js";
@@ -12,15 +13,15 @@ import { dirSize } from "../backup/strategies.js";
 
 /** Tier that produces each artifact strategy. */
 export const STRATEGY_TIER: Record<string, number> = {
-  policy_rewrite: 0,
-  pip_freeze: 1,
-  npm_list: 1,
-  env_snapshot: 1,
-  git_tag: 1,
-  git_snapshot: 2,
-  file_copy: 2,
-  subagent: 3,
-  learned_rule: 3,
+  policy_rewrite: 1,
+  pip_freeze: 2,
+  npm_list: 2,
+  env_snapshot: 2,
+  git_tag: 2,
+  git_snapshot: 3,
+  file_copy: 3,
+  subagent: 4,
+  learned_rule: 4,
 };
 
 export function tierOf(strategy: string): number | null {
@@ -236,4 +237,33 @@ export function actionDetail(config: SandboxConfig, name: string, workTree: stri
     if (f) subagentResult = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
   } catch { /* none */ }
   return { ...summary, artifacts: readArtifacts(config, name), subagentResult };
+}
+
+/**
+ * Workspace changes since an action's tier-3 snapshot. The work tree is staged into a throwaway
+ * index, so a diff never takes the shadow repo's index lock a concurrent backup may need.
+ * Returns null when the action has no snapshot. Throws when git fails.
+ */
+export function snapshotDiff(
+  config: SandboxConfig,
+  name: string,
+  workTree: string,
+): { commit: string; stat: string; diff: string } | null {
+  const snap = readArtifacts(config, name).find((a) => a.strategy === "git_snapshot");
+  const commit = String(snap?.commitHash ?? snap?.id ?? "");
+  if (!snap || !commit || !fs.existsSync(snap.artifactPath)) return null;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "backupper-diff-"));
+  const opts = {
+    encoding: "utf-8" as const, timeout: 30_000, cwd: workTree, stdio: "pipe" as const,
+    env: { ...process.env, GIT_DIR: snap.artifactPath, GIT_WORK_TREE: workTree, GIT_INDEX_FILE: path.join(tmp, "index") },
+  };
+  try {
+    execFileSync("git", ["read-tree", commit], opts);
+    execFileSync("git", ["add", "-A"], opts);
+    const stat = execFileSync("git", ["diff", "--cached", "--stat", commit], opts).trim();
+    const diff = execFileSync("git", ["diff", "--cached", "--no-color", commit], opts).trim();
+    return { commit, stat, diff };
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
