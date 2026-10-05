@@ -96,7 +96,7 @@ Or keep a live side panel next to your agent. It is off by default; toggle it wh
 backupper panel                 # toggle; also: panel on | off | status
 ```
 
-In Claude Code, type `/backupper-panel`. `backupper install claude-code` adds it as a Claude Code plugin, so the pane sits beside the transcript inside Claude Code itself, in any terminal including VS Code's, and costs no model turn. It lists each action as `#N Tier K <artifact>` under its tool call and updates after every tool call. Press `ctrl+x tab` to reach its keys: `j`/`k` select, `r` restores the selected action after you confirm, `d` shows the diff. For Codex and Hermes, `backupper panel` opens the same view to the right of your terminal (tmux, Zellij, WezTerm, kitty, iTerm2). In VS Code's terminal, press `Cmd+\` (`Ctrl+Shift+5`) and run `backupper watch` in the new pane.
+In Claude Code, type `/backupper-panel`. `backupper install claude-code` adds it as a Claude Code plugin (needs a recent Claude Code; `claude update` if the installer says it cannot load), so the pane sits beside the transcript inside Claude Code itself, in any terminal including VS Code's, and costs no model turn. It lists each action as `#N Tier K <artifact>` under its tool call and updates after every tool call. Press `ctrl+x tab` to reach its keys: `j`/`k` select, `r` restores the selected action after you confirm, `d` shows the diff. For Codex and Hermes, `backupper panel` opens the same view to the right of your terminal (tmux, Zellij, WezTerm, kitty, iTerm2). In VS Code's terminal, press `Cmd+\` (`Ctrl+Shift+5`) and run `backupper watch` in the new pane.
 
 <p align="center">
   <img src="assets/panel.png" alt="BackUpper side panel" width="85%">

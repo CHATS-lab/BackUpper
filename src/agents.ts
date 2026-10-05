@@ -254,7 +254,20 @@ export const claudeCodeAdapter: AgentAdapter = {
     const pkgDir = path.resolve(pkgRoot, "..", "claude-plugin");
     const add = claudePlugin(projectRoot, ["marketplace", "add", pkgDir, "--scope", "local"]);
     const inst = add?.ok ? claudePlugin(projectRoot, ["install", PLUGIN_ID, "--scope", "local"]) : add;
+    // Claude Code versions without plugin modules install the plugin but fail to load it.
+    let loadError = "";
     if (inst?.ok) {
+      try {
+        const listed = JSON.parse(claudePlugin(projectRoot, ["list", "--json"])?.out ?? "[]") as Array<{ id?: string; errors?: string[] }>;
+        loadError = listed.find((p) => p.id === PLUGIN_ID)?.errors?.[0] ?? "";
+      } catch { /* list unavailable: assume it loads */ }
+    }
+    if (inst?.ok && loadError) {
+      log.push(
+        `Side panel plugin ${PLUGIN_ID} installed, but this Claude Code version cannot load it.`,
+        `  Update Claude Code (\`claude update\`), then type /backupper-panel. Backups work either way.`,
+      );
+    } else if (inst?.ok) {
       log.push(`Side panel plugin ${PLUGIN_ID} installed for this project: type /backupper-panel in Claude Code`);
     } else {
       log.push(
