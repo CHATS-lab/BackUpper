@@ -9,6 +9,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import { expandHome, isNullDevice } from "../util/shell.js";
 
 export interface CmdSegment {
   /** The simple command as written (keyword and `NAME=value` prefixes removed, heredoc body dropped). */
@@ -230,11 +231,6 @@ export function wordsAndRedirects(text: string): { words: string[]; redirects: s
   return { words, redirects };
 }
 
-function expandHome(p: string): string {
-  if (p === "~") return os.homedir();
-  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
 
 /** Strip keyword and assignment prefixes; returns the remaining command text. */
 function stripPrefixes(text: string): string {
@@ -252,7 +248,6 @@ function stripPrefixes(text: string): string {
   return seg;
 }
 
-const isNullDevice = (t: string): boolean => /^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/.test(t);
 
 function planInto(command: string, cwd: string | null, depth: number, out: CmdSegment[], state: { unwrapped: boolean; cwdChanged: boolean }): void {
   if (depth > 4) {

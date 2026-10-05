@@ -13,29 +13,17 @@ _hermes_scrub_credentials() {
   rm -f "$RUN/home/.hermes/auth.json" 2>/dev/null
 }
 
+# shellcheck source=_common.sh
+. "$HERE/adapters/_common.sh"
+
 adapter_setup() {
-  local TASKDIR="$1" RUN="$2"
-  RB_RESULTS_DIR="$(dirname "$RUN")" RB_RUN_DIR="$RUN" \
-    bash "$HERE/run_task.sh" "$TASKDIR" ${MODEL:+"$MODEL"} \
-    > "$RUN/setup.log" 2>&1
-  local rc=$?
-  # Adopt the setup's run dir if it minted its own.
-  if [ ! -s "$RUN/session.env" ]; then
-    local src; src="$(tail -1 "$RUN/setup.log" 2>/dev/null)"
-    [ -s "$src/session.env" ] && cp "$src/session.env" "$RUN/session.env" \
-      && cp -a "$src"/. "$RUN"/ 2>/dev/null
-  fi
-  [ -s "$RUN/session.env" ] || {
-    echo "[fail] setup produced no session.env (see $RUN/setup.log)" >&2
-    tail -20 "$RUN/setup.log" >&2
-    return 1; }
+  local rc=0
+  rb_adapter_setup run_task.sh "$1" "$2" || rc=$?
+  [ -s "$2/session.env" ] || return "$rc"
   # hermes hooks cannot add text to the conversation, so the BackUpper briefing
   # is delivered with the first user message (see bu_announce.sh).
-  if [ "${RB_BACKUPPER:-0}" = 1 ]; then
-    bash "$HERE/bu_announce.sh" "$RUN" >> "$RUN/setup.log" 2>&1 \
-      || echo "[warn] briefing capture failed; this run measures discovery, not the tool" >&2
-  fi
-  return $rc
+  rb_bu_announce "$2"
+  return "$rc"
 }
 
 adapter_turn() {
@@ -107,11 +95,7 @@ adapter_turn() {
     echo "[warn] no hermes session file for $TID at $sess" >> "$RUN/driver.log"
   fi
 
-  local wall=$(( $(date +%s) - start ))
-  echo "  rc=$rc wall=${wall}s" | tee -a "$RUN/driver.log"
-  # 124 = timeout(1) fired; the driver then stops delivering turns.
-  [ "$rc" = 124 ] && echo "timeout at $TID" > "$RUN/TIMEOUT"
-  return $rc
+  rb_turn_end "$RUN" "$TID" "$start" "$rc"
 }
 
 adapter_collect() {
@@ -119,25 +103,12 @@ adapter_collect() {
   # shellcheck disable=SC1091
   source "$RUN/session.env"
 
-  # --- RB_BACKUPPER: trim the (bind-mounted) store ---------------------------
-  # pre/, trash/ and external-shadow/ are replaced by a file manifest.
-  if [ "${RB_BACKUPPER:-0}" = 1 ] && [ -d "$RUN/.backupper" ]; then
-    rm -rf "$RUN/.backupper/shadow-repo"
-    local ntrimmed=0 dir nbytes nfiles ndecl
-    while IFS= read -r dir; do
-      [ -d "$dir" ] || continue
-      nbytes="$(du -sb "$dir" 2>/dev/null | cut -f1)"
-      nfiles="$(find "$dir" -type f 2>/dev/null | wc -l)"
-      { echo "# replaced by adapter_collect: bytes not carried out of the run dir"
-        echo "# total: $nbytes bytes, $nfiles files"
-        find "$dir" -type f -printf '%s\t%P\n' 2>/dev/null | sort -k2
-      } > "$dir.manifest.txt" 2>/dev/null
-      rm -rf "$dir"
-      ntrimmed=$((ntrimmed + 1))
-    done < <(find "$RUN/.backupper/backups" -mindepth 2 -maxdepth 2 -type d \
-                  \( -name pre -o -name trash -o -name external-shadow \) 2>/dev/null)
-    ndecl="$(wc -l < "$RUN/.backupper/declarations.jsonl" 2>/dev/null || echo 0)"
-    echo "[backupper] store on host (bind mount); trimmed $ntrimmed dir(s) to manifest; declared $ndecl time(s)"
+  # --- RB_BACKUPPER: the store is already on the host (bind mount) ----------
+  # Moved to the run's store name (the container's mount follows the move) and
+  # trimmed to a record.
+  if [ "${RB_BACKUPPER:-0}" = 1 ] && [ -d "$RUN/.backupper" ] && [ ! -e "$RUN/$RB_STORE_NAME" ]; then
+    mv "$RUN/.backupper" "$RUN/$RB_STORE_NAME"
+    rb_store_trim "$RUN/$RB_STORE_NAME"
   fi
 
   docker diff "$CID" | sort > "$RUN/diff_post_agent.txt" 2>/dev/null
@@ -188,18 +159,7 @@ PYEOF
   # The normalized stream doubles as the session transcript.
   cp "$RUN/claude_stream.jsonl" "$RUN/claude_session.jsonl" 2>/dev/null || true
 
-  : > "$RUN/instruction.txt"
-  for p in $(ls -tr "$RUN"/turn-*.prompt 2>/dev/null); do
-    printf '### %s\n%s\n\n' "$(basename "$p" .prompt | sed 's/^turn-//')" "$(cat "$p")" \
-      >> "$RUN/instruction.txt"
-  done
-  [ -s "$RUN/instruction.txt" ] || echo "(no turn prompts recorded)" > "$RUN/instruction.txt"
-
-  "$PY" "$HERE/cc_trajectory.py" --out "$RUN/trajectory.json" --log "$RUN/agent.log" \
-    --instruction-file "$RUN/instruction.txt" \
-    --model "$MODEL" --agent hermes --session "$RUN/claude_session.jsonl" \
-    --stream "$RUN/claude_stream.jsonl" >> "$RUN/driver.log" 2>&1 \
-    || echo "[warn] cc_trajectory failed; judge cannot score this run" >> "$RUN/driver.log"
+  rb_build_trajectory "$RUN" --agent hermes
 
   _hermes_scrub_credentials "$RUN"
 }
@@ -209,22 +169,9 @@ adapter_teardown() {
   _hermes_scrub_credentials "$RUN"
   # shellcheck disable=SC1091
   source "$RUN/session.env" 2>/dev/null || return 0
-  # Copy the BackUpper store out before the container is removed.
-  if [ -n "${CID:-}" ] && [ -n "${CWD:-}" ]; then
-    if docker exec "$CID" test -d "${BU_STORE_IN:-$CWD/.backupper}" >/dev/null 2>&1; then
-      if docker cp "$CID:${BU_STORE_IN:-$CWD/.backupper}" "$RUN/backupper" >/dev/null 2>&1; then
-        _acts=$(wc -l < "$RUN/backupper/effects.jsonl" 2>/dev/null | tr -d ' ')
-        _subs=$(grep -c 'subagent verdict' "$RUN/backupper/subagent.log" 2>/dev/null)
-        echo "[backupper] store harvested: ${_acts:-0} effect line(s), ${_subs:-0} tier-4 verdict(s)"
-      fi
-    fi
-  fi
+  # Copy the BackUpper store out before the container is removed (a no-op when
+  # adapter_collect already moved the bind-mounted store into place).
+  rb_store_harvest "${CID:-}" "${BU_STORE:-${CWD:+$CWD/.backupper}}" "$RUN"
   # Remove exactly the containers this run created, never by name.
-  if [ -s "${IDFILE:-}" ]; then
-    while read -r c; do
-      [ -n "$c" ] && docker rm -f "$c" >/dev/null 2>&1
-    done < <(sort -u "$IDFILE")
-  else
-    [ -n "${CID:-}" ] && docker rm -f "$CID" >/dev/null 2>&1
-  fi
+  rb_rm_containers "${IDFILE:-}" "${CID:-}"
 }

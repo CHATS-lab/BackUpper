@@ -41,9 +41,9 @@ except Exception:
 ' 2>>"$LOG")"
 
 # Reset the announced-sessions record so the probe session does not appear in it.
-docker exec -i "$CID" sh -c \
+docker exec "$CID" sh -c \
   "f=${BU_STORE:-$CWD/.backupper}/announced-sessions.json; [ -f \"\$f\" ] && printf '%s' '[]' > \"\$f\"" \
-  >>"$LOG" 2>&1
+  </dev/null >>"$LOG" 2>&1
 
 if [ -z "$txt" ]; then
   echo "[announce] could not capture the briefing (hook rc=$rc) — see $LOG" >&2

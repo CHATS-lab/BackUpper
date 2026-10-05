@@ -6,9 +6,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SandboxConfig } from "../types.js";
 import { readRestoreHistory } from "../restore/restore.js";
+import { storeRoot } from "../store/layout.js";
 
 function markerPath(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), ".restore-seen");
+  return path.join(storeRoot(config), ".restore-seen");
 }
 
 /**

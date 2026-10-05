@@ -18,6 +18,7 @@ import { storeDirOverride } from "../types.js";
 import { BRIEFING_CHECKER, render } from "../prompts.generated.js";
 import { adoptHostAgent } from "./host.js";
 import { panelCommand, parsePanelPrompt } from "../cli/panel.js";
+import { storeRoot } from "../store/layout.js";
 
 interface PromptContext {
   hook_event?: string;
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const sandboxDir = path.dirname(path.resolve(config.backupDir));
+  const sandboxDir = storeRoot(config);
 
   if (config.panel && !ownPanel) openPanelOnce(sandboxDir, String(ctx.session_id ?? "default"));
 
@@ -173,7 +174,7 @@ function openPanelOnce(sandboxDir: string, sessionKey: string): void {
  */
 function briefingWorkspace(config: { backupDir: string }): string {
   if (storeDirOverride()) return path.resolve(process.cwd());
-  return path.dirname(path.dirname(path.resolve(config.backupDir)));
+  return path.dirname(storeRoot(config));
 }
 
 function buildAnnouncement(config: { backupDir: string }): string {

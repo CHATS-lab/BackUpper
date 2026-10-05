@@ -5,6 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SandboxConfig } from "../types.js";
+import { storeRoot } from "../store/layout.js";
 
 export interface ToolRegistry { [server: string]: string[]; }
 
@@ -27,7 +28,7 @@ export const DEFAULT_TOOL_REGISTRY: ToolRegistry = {
 };
 
 export function registryPath(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), "tool-registry.json");
+  return path.join(storeRoot(config), "tool-registry.json");
 }
 
 /** DEFAULT_TOOL_REGISTRY, extended and overridden by a project-local

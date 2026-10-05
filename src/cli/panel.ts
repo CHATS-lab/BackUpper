@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { getConfigDir } from "../config/load.js";
+import { quote } from "../util/shell.js";
 
 export type TerminalKind = "tmux" | "zellij" | "wezterm" | "kitty" | "iterm2" | "vscode" | "unknown";
 
@@ -44,7 +45,7 @@ export function detectTerminal(env: NodeJS.ProcessEnv): TerminalKind {
 
 /** POSIX shell quoting for one argument. */
 export function shq(s: string): string {
-  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+  return quote(s);
 }
 
 function appleString(s: string): string {

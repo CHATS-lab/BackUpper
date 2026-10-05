@@ -19,6 +19,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 import type { HookContext, SandboxConfig } from "../types.js";
+import { appendJsonl } from "../util/jsonfile.js";
 
 /** What the checker answered, once parsed and shape-checked. */
 export interface CheckerVerdict {
@@ -393,8 +394,7 @@ export function checkerLogPath(config?: SandboxConfig): string {
 export function logCheckerVerdict(config: SandboxConfig | undefined, record: Record<string, unknown>): void {
   const p = checkerLogPath(config);
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.appendFileSync(p, JSON.stringify({ timestamp: new Date().toISOString(), ...record }) + "\n", "utf-8");
+    appendJsonl(p, { timestamp: new Date().toISOString(), ...record });
   } catch { /* the trace must never break the hook */ }
   // Also note the verdict in subagent.log.
   try {

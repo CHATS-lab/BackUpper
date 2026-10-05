@@ -8,12 +8,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { BackupArtifact } from "../types.js";
+import { readJson } from "../util/jsonfile.js";
 
 export function settleDeferredCopies(actionDir: string | null | undefined): void {
   if (!actionDir) return;
   const metaPath = path.join(actionDir, "metadata.json");
-  let artifacts: BackupArtifact[];
-  try { artifacts = JSON.parse(fs.readFileSync(metaPath, "utf-8")); } catch { return; }
+  const artifacts = readJson<BackupArtifact[] | null>(metaPath, null);
   if (!Array.isArray(artifacts)) return;
   const kept = artifacts.filter((a) => !a.deferredCopies?.length || a.deferredCopies.every((p) => fs.existsSync(p)));
   if (kept.length === artifacts.length) return;

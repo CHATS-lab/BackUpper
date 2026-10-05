@@ -14,6 +14,7 @@ import { type BackupArtifact, type HookContext, normalizeHookContext } from "../
 import { timingFilePath } from "./timing-path.js";
 import { adoptHostAgent } from "./host.js";
 import { settleDeferredCopies } from "./deferred.js";
+import { readJson } from "../util/jsonfile.js";
 
 async function main(): Promise<void> {
   adoptHostAgent();
@@ -229,9 +230,7 @@ function workspaceMatchesSnapshot(a: BackupArtifact): boolean {
  * as changed.
  */
 function provablyUnchanged(actionDir: string): boolean {
-  let artifacts: BackupArtifact[];
-  try { artifacts = JSON.parse(fs.readFileSync(path.join(actionDir, "metadata.json"), "utf-8")); }
-  catch { return false; }
+  const artifacts = readJson<BackupArtifact[] | null>(path.join(actionDir, "metadata.json"), null);
   if (!Array.isArray(artifacts) || artifacts.length === 0) return false;
   if (fs.existsSync(path.join(actionDir, "incomplete.json"))) return false;
   for (const a of artifacts) {

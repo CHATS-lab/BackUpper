@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import {createHash} from 'node:crypto';
 import type {HookContext, SandboxConfig} from '../types.js';
 import {collectArgumentPaths} from './readonly_checker.js';
+import { storeRoot } from "../store/layout.js";
 
 type Ctx = HookContext & {provenance_action_id?: string};
 
@@ -35,7 +36,7 @@ const sha256 = (data: string | Buffer) => createHash('sha256').update(data).dige
 /** The session's provenance directory, or null when the hook carries no session id. */
 function provenanceDir(ctx: Ctx, config: SandboxConfig) {
   if (!ctx.session_id) return null;
-  return path.join(path.dirname(path.resolve(config.backupDir)), 'provenance', sha256(ctx.session_id));
+  return path.join(storeRoot(config), 'provenance', sha256(ctx.session_id));
 }
 
 /** The id that pairs a pre-tool record with its post-tool record (the tool_use id). */

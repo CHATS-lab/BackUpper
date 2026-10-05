@@ -10,6 +10,8 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { BackupArtifact, IncompleteCapture, SandboxConfig } from "../types.js";
 import { dirSize } from "../backup/strategies.js";
+import { actionDirs, backupRoot, readActionArtifacts, storeRoot } from "../store/layout.js";
+import { readJson } from "../util/jsonfile.js";
 
 /** Tier that produces each artifact strategy. */
 export const STRATEGY_TIER: Record<string, number> = {
@@ -65,18 +67,11 @@ export interface ActionDetail extends ActionSummary {
   subagentResult?: Record<string, unknown>;
 }
 
-export function backupRoot(config: SandboxConfig): string {
-  return path.resolve(config.backupDir);
-}
+export { backupRoot };
 
 /** Action folder names, oldest first, ordered by sequence number. */
 export function actionNames(config: SandboxConfig): string[] {
-  const root = backupRoot(config);
-  if (!fs.existsSync(root)) return [];
-  const seqOf = (d: string): number => parseInt(d.split("_")[1] ?? "", 10) || 0;
-  return fs.readdirSync(root)
-    .filter((d) => /^action_\d+_/.test(d))
-    .sort((a, b) => seqOf(a) - seqOf(b) || a.localeCompare(b));
+  return actionDirs(config);
 }
 
 export function seqOf(name: string): number {
@@ -97,19 +92,13 @@ export function resolveAction(config: SandboxConfig, ref: string | undefined): s
 }
 
 export function readArtifacts(config: SandboxConfig, name: string): BackupArtifact[] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(backupRoot(config), name, "metadata.json"), "utf-8"));
-    if (Array.isArray(parsed)) return parsed as BackupArtifact[];
-    return parsed && typeof parsed === "object" ? [parsed as BackupArtifact] : [];
-  } catch {
-    return [];
-  }
+  return readActionArtifacts(path.join(backupRoot(config), name));
 }
 
 function loadTimings(config: SandboxConfig): Record<string, number> {
   const out: Record<string, number> = {};
   try {
-    const ledger = path.join(path.dirname(backupRoot(config)), "backup-timings.jsonl");
+    const ledger = path.join(storeRoot(config), "backup-timings.jsonl");
     for (const line of fs.readFileSync(ledger, "utf-8").split("\n")) {
       try {
         const e = JSON.parse(line);
@@ -195,8 +184,7 @@ export function summarizeAction(
     };
   }
 
-  let incomplete: IncompleteCapture | undefined;
-  try { incomplete = JSON.parse(fs.readFileSync(path.join(dir, "incomplete.json"), "utf-8")); } catch { /* complete */ }
+  const incomplete = readJson<IncompleteCapture | undefined>(path.join(dir, "incomplete.json"), undefined);
 
   const storage = artifacts
     .filter((a) => a.strategy)

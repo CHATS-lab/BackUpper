@@ -26,7 +26,6 @@ import json
 import os
 import re
 import sys
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 from prompt_md import load_prompt  # noqa: E402
@@ -89,21 +88,11 @@ def extract_verdict(raw: str) -> dict:
 
 def call_judge(model: str, key: str, system: str, user: str,
                backend: str = "openrouter") -> str:
-    if backend != "openrouter":
-        import llm_backend
-        return llm_backend.call(system, user, model=model, backend=backend,
-                                timeout=600, attempts=4)
-    body = json.dumps({
-        "model": model,
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
-        "temperature": 0,
-    }).encode()
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions", data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-    r = json.load(urllib.request.urlopen(req, timeout=180))
-    return r["choices"][0]["message"]["content"]
+    import llm_backend
+    # OpenRouter keeps its 180 s request timeout; the CLI backends get 600 s.
+    return llm_backend.call(system, user, model=model, backend=backend,
+                            timeout=180 if backend == "openrouter" else 600,
+                            attempts=4, key=key)
 
 
 def main() -> int:

@@ -10,6 +10,8 @@ import { buildCheckerInput, collectArgumentPaths, parseCheckerVerdict } from "./
 import { targetActionLog } from "./provenance.js";
 
 import { PERSONALIZATION_ALIASES, PERSONALIZATION_MODES } from "../config/schema.js";
+import { storeRoot } from "../store/layout.js";
+import { appendJsonl } from "../util/jsonfile.js";
 
 export const MODES = PERSONALIZATION_MODES;
 /** The paper name for a mode, accepting the older names too. */
@@ -168,7 +170,7 @@ export function runPersonalizationChecker(ctx: HookContext, config: SandboxConfi
   }
   // Errors are an explicit, conservative decision to protect -- never a silent skip.
   const decision: PersonalizationDecision = answer ?? { readOnly: false, targets: [], why: `Checker unavailable: ${error}` };
-  const log = path.join(path.dirname(path.resolve(config.backupDir)), "personalization-checker.jsonl");
+  const log = path.join(storeRoot(config), "personalization-checker.jsonl");
   try {
     fs.mkdirSync(path.dirname(log), { recursive: true });
     const entry = {
@@ -182,7 +184,7 @@ export function runPersonalizationChecker(ctx: HookContext, config: SandboxConfi
       decision,
       error,
     };
-    fs.appendFileSync(log, JSON.stringify(entry) + "\n");
+    appendJsonl(log, entry);
   } catch { /* best effort */ }
   return decision;
 }

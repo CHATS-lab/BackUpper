@@ -30,6 +30,9 @@
 #                   the task container.
 #   RB_CC_BUNDLE          claude-code bundle tarball (required, not shipped)
 #   RB_RESULTS_DIR        default $RB/results/claude
+#   RB_RUN_DIR            use this run dir instead of minting one (adapter passes it)
+#   RB_BU_STORE           absolute in-container path of the BackUpper store
+#                         (default $CWD/.backupper)
 #   RB_MAX_BUDGET_USD     optional per-run spend cap passed to claude
 #   RB_CLAUDE_ADD_DIR     default "/", matching hermes' unrestricted terminal
 #   RB_SKIP_BUILD=1       skip `docker build`
@@ -61,115 +64,21 @@ if [ ! -f "$CC_BUNDLE" ]; then
   echo "[fail] claude-code bundle not found: $CC_BUNDLE"; exit 1
 fi
 
-eval "$($PY - "$TASKDIR/task.yaml" <<'PY'
-import sys, yaml, shlex, os
-d = yaml.safe_load(open(sys.argv[1]))
-img = d.get("image") or f"regretbench/{os.path.basename(os.path.dirname(sys.argv[1]))}:latest"
-print(f"SLUG={shlex.quote(str(d['slug']))}")
-print(f"IMAGE={shlex.quote(img)}")
-mcp = d.get("mcp") or []
-print(f"MCP_NAMES={shlex.quote(' '.join(str(e['server']) for e in mcp))}")
-PY
-)"
-
-if [ "${RB_SKIP_BUILD:-0}" != 1 ] && docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "[build] $IMAGE exists, skipping"
-elif [ "${RB_SKIP_BUILD:-0}" != 1 ]; then
-  echo "[build] $IMAGE"
-  docker build -q -t "$IMAGE" "$TASKDIR" >/dev/null || { echo "[fail] docker build"; exit 1; }
-fi
-
-RUN="${RB_RESULTS_DIR:-$RB/results/claude}/${SLUG}-$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$RUN"
-
-# Record the image id so that a verdict can be tied to a task build.
-docker image inspect -f '{{.Id}}' "$IMAGE" > "$RUN/image-id.txt" 2>/dev/null || true
-
-# --- the agent's cwd inside the container -----------------------------------
-# The image's WorkingDir (possibly inherited from its base) is the agent's
-# workspace; it falls back to /root.
-CWD="$(docker image inspect -f '{{.Config.WorkingDir}}' "$IMAGE" 2>/dev/null)"
-case "$CWD" in ""|"/") CWD=/root ;; esac
-
-# --- RB_BU_STORE: the backupper store's location INSIDE the container --------
-# Default $CWD/.backupper; an absolute RB_BU_STORE moves the store out of the
-# agent's workspace. The plugin reads it as BACKUPPER_STORE_DIR.
-BU_STORE_IN="${RB_BU_STORE:-$CWD/.backupper}"
-# Exported only when RB_BU_STORE is set: the plugin treats any explicit value as
-# an override and then records an absolute backupDir in config.json.
-BU_STORE_ENV=()
-[ -n "${RB_BU_STORE:-}" ] && BU_STORE_ENV=(-e "BACKUPPER_STORE_DIR=$BU_STORE_IN")
-
-# --- container bookkeeping (same contract as run_task.sh) -------------------
-# Ids of every container this invocation created (task container and gateway
-# sidecar); the reaper removes exactly these.
-IDFILE="$RUN/containers.ids"; : > "$IDFILE"
-# Copy the BackUpper store out before the container is removed; it is the only
-# record of what tier 4 captured.
-harvest_sandbox() {
-  [ -n "${CID:-}" ] || return 0
-  [ -n "${CWD:-}" ] || return 0
-  docker exec "$CID" test -d "${BU_STORE_IN:-$CWD/.backupper}" >/dev/null 2>&1 || return 0
-  docker cp "$CID:${BU_STORE_IN:-$CWD/.backupper}" "$RUN/backupper" >/dev/null 2>&1 || return 0
-  local acts subs
-  acts=$(wc -l < "$RUN/backupper/effects.jsonl" 2>/dev/null | tr -d ' ')
-  subs=$(grep -c 'subagent verdict' "$RUN/backupper/subagent.log" 2>/dev/null)
-  echo "[backupper] store harvested: ${acts:-0} effect line(s), ${subs:-0} tier-4 verdict(s)"
-}
-
-reap() {
-  local c
-  harvest_sandbox
-  [ -s "$IDFILE" ] || return 0
-  while read -r c; do
-    [ -n "$c" ] || continue
-    docker rm -f "$c" >/dev/null 2>&1
-  done < <(sort -u "$IDFILE")
-}
-trap reap EXIT INT TERM
-
-# --- pre-create the task container (hermes' own flags) ----------------------
-COMMON_ENV=(
-  HOME="$RUN/home" HERMES_HOME="$RUN/home/.hermes"
-  TERMINAL_ENV=docker TERMINAL_DOCKER_IMAGE="$IMAGE" TERMINAL_CWD="$CWD"
-  HERMES_TERMINAL_RELAX_FS=1 TERMINAL_CONTAINER_PERSISTENT=false
-  HERMES_TERMINAL_CONTAINER_IDFILE="$IDFILE"
-)
-mkdir -p "$RUN/home/.hermes"
-CID="$(env "${COMMON_ENV[@]}" "$PY" "$HERE/precreate_container.py" 2>"$RUN/precreate.log" | tail -1)"
-if [ -z "$CID" ]; then
-  echo "[fail] could not pre-create the task container (see $RUN/precreate.log)"; exit 1
-fi
-grep -qx "$CID" "$IDFILE" || echo "$CID" >> "$IDFILE"
-docker inspect -f '{{.Id}} {{.Name}}' "$CID" > "$RUN/container.id" 2>/dev/null
-echo "[task] container=${CID:0:12} image=$IMAGE cwd=$CWD"
-
-# Join the task's service network and expand the GitLab token placeholder
-# before anything resolves a service name (see task_env.sh).
-# shellcheck source=task_env.sh
-. "$HERE/task_env.sh"
-attach_task_network "$CID"
-inject_gitlab_pat "$CID"
+# shellcheck source=setup_lib.sh
+. "$HERE/setup_lib.sh"
+rb_task_meta || exit 1
+rb_ensure_image || exit 1
+rb_mint_run claude
+rb_install_reaper
+rb_resolve_cwd || exit 1
+rb_precreate || exit 1
 
 # --- MCP wiring (only tasks with a non-empty `mcp:` block) ------------------
 # The servers run inside the task container and must be healthy before the
 # agent starts; a run with zero MCP tools would measure nothing.
 MCP_ARGS=()
 if [ -n "${MCP_NAMES:-}" ]; then
-  # Health wait in seconds: 180 for a postgres base image, 90 otherwise.
-  MCP_WAIT="${RB_MCP_WAIT:-90}"
-  case "$(grep -hE '^FROM ' "$TASKDIR/Dockerfile" 2>/dev/null | tr '\n' ' ')" in
-    *postgres*) MCP_WAIT="${RB_MCP_WAIT:-180}" ;;
-  esac
-  if ! bash "$RB/gen_mcp_config.sh" "$TASKDIR" "$CID" --out "$RUN/mcp_client_host.json" --wait "$MCP_WAIT" \
-        > "$RUN/mcp_gen.log" 2> "$RUN/mcp_health.log"; then
-    echo "[fail] gen_mcp_config.sh (see $RUN/mcp_gen.log $RUN/mcp_health.log)"; exit 1
-  fi
-  if grep -q '^\[warn\] endpoint not answering' "$RUN/mcp_health.log"; then
-    echo "[fail] MCP endpoint never became healthy:"
-    grep '^\[warn\]' "$RUN/mcp_health.log"
-    exit 1
-  fi
+  rb_mcp_gen_config || exit 1
   # The client runs inside the container: rewrite the bridge IP to 127.0.0.1.
   $PY - "$TASKDIR/task.yaml" "$RUN/mcp_client_host.json" "$RUN/mcp.container.json" \
         "$RUN/mcp_servers.json" "$CID" "$IMAGE" <<'PY' || { echo "[fail] mcp config"; exit 1; }
@@ -198,145 +107,12 @@ json.dump({
 }, open(recpath, "w"), indent=2)
 open(recpath, "a").write("\n")
 PY
-  # server_url <client-config.json> <name>: the server's URL in that config.
-  server_url() {
-    $PY -c '
-import json, sys
-servers = json.load(open(sys.argv[1]))["mcpServers"]
-print(servers[sys.argv[2]]["url"])' "$1" "$2"
-  }
-  # health_url <name>: the in-container health endpoint declared in task.yaml.
-  health_url() {
-    $PY -c '
-import sys, yaml
-entries = (yaml.safe_load(open(sys.argv[1])) or {}).get("mcp") or []
-e = [x for x in entries if x["server"] == sys.argv[2]][0]
-print("http://127.0.0.1:%d%s" % (int(e["port"]), e.get("health", "/healthz")))' \
-      "$TASKDIR/task.yaml" "$1"
-  }
-
-  # Second health check, from inside the container, where the client dials.
-  : > "$RUN/mcp_health_incontainer.log"
-  for n in $MCP_NAMES; do
-    u="$(server_url "$RUN/mcp.container.json" "$n")"
-    h="$(health_url "$n")"
-    # Most task images have no curl, so probe with bash's /dev/tcp.
-    hp="${h#http://}"
-    hh="${hp%%/*}"
-    hpath="/${hp#*/}"
-    code="$(docker exec "$CID" bash -c '
-      IFS=: read -r host port <<<"$1"
-      exec 3<>/dev/tcp/"$host"/"${port:-80}" 2>/dev/null || { echo 000; exit 0; }
-      printf "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n" "$2" "$1" >&3
-      read -r -t 5 status <&3 || { echo 000; exit 0; }
-      set -- $status; echo "${2:-000}"' _ "$hh" "$hpath" 2>/dev/null)"
-    echo "$n health=$h code=$code url=$u" >> "$RUN/mcp_health_incontainer.log"
-    [ "$code" = 200 ] || { echo "[fail] in-container MCP health check failed: $n $h -> $code"; exit 1; }
-
-    # /healthz answers before the server can serve requests, so also require an
-    # initialize + tools/list handshake with at least one usable tool. This runs
-    # on the host, so it probes the host-side URL.
-    uhost="$(server_url "$RUN/mcp_client_host.json" "$n" 2>/dev/null)"
-    ntools=0
-    for attempt in $(seq 1 40); do
-      ntools="$($PY - "${uhost:-$u}" <<'PY' 2>/dev/null || echo 0
-import json, sys, urllib.request
-url = sys.argv[1]
-H = {"Content-Type": "application/json",
-     "Accept": "application/json, text/event-stream",
-     "MCP-Protocol-Version": "2025-06-18"}
-
-
-def post(body, sid=None):
-    h = dict(H)
-    if sid:
-        h["Mcp-Session-Id"] = sid
-    # A long timeout: abandoning an in-flight request crashes supergateway.
-    r = urllib.request.urlopen(
-        urllib.request.Request(url, json.dumps(body).encode(), h), timeout=90)
-    return r, r.read().decode("utf-8", "replace")
-
-
-def parse(raw):
-    """First JSON object in a reply; streamable HTTP may frame it as SSE."""
-    for line in raw.splitlines():
-        line = line.strip()
-        if line.startswith("data:"):
-            line = line[5:].strip()
-        if line.startswith("{"):
-            try:
-                return json.loads(line)
-            except Exception:
-                pass
-    return {}
-
-
-r, raw = post({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-               "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                          "clientInfo": {"name": "rb-probe", "version": "1"}}})
-sid = r.headers.get("Mcp-Session-Id")
-try:
-    post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, sid)
-    _, raw = post({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}, sid)
-    tools = ((parse(raw).get("result") or {}).get("tools")) or []
-finally:
-    # Close the session, best-effort.
-    try:
-        if sid:
-            dh = dict(H)
-            dh["Mcp-Session-Id"] = sid
-            urllib.request.urlopen(
-                urllib.request.Request(url, headers=dh, method="DELETE"),
-                timeout=5)
-    except Exception:
-        pass
-
-
-# A tool without a usable inputSchema makes the client drop the whole server,
-# so count only usable tools.
-def usable(t):
-    s = t.get("inputSchema")
-    if not isinstance(s, dict):
-        return False
-    return s.get("type") == "object" or bool(s.get("properties"))
-
-
-bad = [t.get("name", "?") for t in tools if not usable(t)]
-print("%d %d %s" % (len(tools) - len(bad), len(tools), ",".join(bad[:6])))
-PY
-)"
-      read -r nusable ntotal nbad <<<"${ntools:-0 0 }"
-      [ "${nusable:-0}" -ge 1 ] 2>/dev/null && break
-      sleep 3
-    done
-    read -r nusable ntotal nbad <<<"${ntools:-0 0 }"
-    echo "$n tools=${nusable:-0}/${ntotal:-0} usable (after $attempt probe attempt(s))" \
-      >> "$RUN/mcp_health_incontainer.log"
-    if [ -n "${nbad:-}" ]; then
-      echo "$n UNUSABLE SCHEMAS: $nbad" >> "$RUN/mcp_health_incontainer.log"
-    fi
-    ntools="${nusable:-0}"
-    if ! [ "${ntools:-0}" -ge 1 ] 2>/dev/null; then
-      echo "[fail] MCP server '$n' answered /healthz and listed ${ntotal:-0} tools," \
-           "but NONE had a usable inputSchema (${nbad:-?}) -- the client will drop" \
-           "this server. Check zod/zod-to-json-schema version skew."
-      exit 1
-    fi
-  done
-  sed 's/^/[mcp] /' "$RUN/mcp_health_incontainer.log"
+  rb_mcp_check_incontainer || exit 1
   MCP_ARGS=(--mcp-config "$CCDIR/mcp.json" --strict-mcp-config)
 fi
 
 # --- install Claude Code into /opt (audited) --------------------------------
-# Service-noise baseline: two `docker diff` samples 3 s apart record the paths
-# the task's own services touch, which are then excluded from the audit.
-docker diff "$CID" | sort > "$RUN/diff_noise_a.txt"
-sleep 3
-docker diff "$CID" | sort > "$RUN/diff_noise_b.txt"
-comm -13 "$RUN/diff_noise_a.txt" "$RUN/diff_noise_b.txt" \
-  | sed -E 's/^[ACD] //' > "$RUN/install_noise_paths.txt" || true
-
-docker diff "$CID" | sort > "$RUN/diff_pre_install.txt"
+rb_audit_install_begin
 # $CCDIR/cfg (mode 700) must be owned by the image's own user, which the agent
 # runs as; an unwritable config dir makes every --resume fail.
 AGENT_UID="$(docker exec "$CID" id -u 2>/dev/null || echo 0)"
@@ -355,57 +131,7 @@ if [ -f "$RUN/mcp.container.json" ]; then
 fi
 
 # Pollution audit: every path the install changed must lie under $CCDIR.
-docker diff "$CID" | sort > "$RUN/diff_post_install.txt"
-comm -13 "$RUN/diff_pre_install.txt" "$RUN/diff_post_install.txt" > "$RUN/install_delta.txt"
-# /run and /var/run hold the services' runtime files, which the install never writes.
-grep -vE "^[ACD] (/opt$|/opt/rbcc|/run($|/)|/var/run($|/))" "$RUN/install_delta.txt" \
-  > "$RUN/install_delta_filtered.txt" || true
-# Drop entries whose path is, contains, or lies under a service-noise path.
-"$PY" - "$RUN/install_delta_filtered.txt" "$RUN/install_noise_paths.txt" \
-       "$RUN/install_pollution.txt" <<'PY'
-import sys, pathlib
-
-delta, noise, out = (pathlib.Path(p) for p in sys.argv[1:4])
-noisy = []
-if noise.exists():
-    noisy = [line.strip() for line in noise.read_text().splitlines() if line.strip()]
-
-
-def is_noise(path):
-    for n in noisy:
-        if (path == n or path.startswith(n.rstrip("/") + "/")
-                or n.startswith(path.rstrip("/") + "/")):
-            return True
-    return False
-
-
-kept = []
-for line in delta.read_text().splitlines():
-    if not line.strip():
-        continue
-    path = line.split(" ", 1)[1] if " " in line else line
-    if not is_noise(path):
-        kept.append(line)
-out.write_text("".join(line + "\n" for line in kept))
-PY
-# A/D entries are reported as possible install pollution; C entries are the
-# task's services rewriting existing files. Both are fatal only under
-# RB_STRICT_POLLUTION=1.
-grep -E '^[AD] ' "$RUN/install_pollution.txt" > "$RUN/install_pollution_ad.txt" || true
-grep -E '^C '   "$RUN/install_pollution.txt" > "$RUN/install_pollution_c.txt"  || true
-if [ -s "$RUN/install_pollution_c.txt" ]; then
-  echo "[note] pre-existing paths modified during the install window (task's own"
-  echo "       services; not created by the install):"
-  sed 's/^/  /' "$RUN/install_pollution_c.txt"
-  [ "${RB_STRICT_POLLUTION:-0}" = 1 ] && { echo "[fail] strict pollution check"; exit 1; }
-fi
-if [ -s "$RUN/install_pollution_ad.txt" ]; then
-  # Not fatal by default: `docker diff` cannot attribute a write to a process.
-  echo "[note] paths added/deleted outside $CCDIR during the install window"
-  echo "       ($(wc -l < "$RUN/install_pollution_ad.txt") entries, task services included; see install_pollution_ad.txt)"
-  sed -n '1,5s/^/  /p' "$RUN/install_pollution_ad.txt"
-  [ "${RB_STRICT_POLLUTION:-0}" = 1 ] && { echo "[fail] strict pollution check"; exit 1; }
-fi
+rb_audit_install_end "$CCDIR" || exit 1
 
 # --- plugin-absent assertion (baseline arm) ---------------------------------
 # On the baseline arm, assert that no BackUpper artifact is present in the image
@@ -564,20 +290,9 @@ case "$AUTH" in
     rm -rf "$STAGE"
     docker start "$GW_CID" >/dev/null || { echo "[fail] gateway sidecar did not start"; exit 1; }
     GW_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$GW_CID")"
-    # Health-probe the sidecar from inside the task container via /dev/tcp.
+    # Health-probe the sidecar from inside the task container.
     ok=""
-    for _ in $(seq 1 30); do
-      gwcode="$(docker exec "$CID" bash -c '
-        exec 3<>/dev/tcp/"$1"/"$2" 2>/dev/null || { echo 000; exit 0; }
-        printf "GET /healthz HTTP/1.0\r\nHost: %s:%s\r\nConnection: close\r\n\r\n" "$1" "$2" >&3
-        read -r -t 5 status <&3 || { echo 000; exit 0; }
-        set -- $status; echo "${2:-000}"' _ "$GW_IP" "$GW_PORT" 2>/dev/null)"
-      if [ "$gwcode" = 200 ]; then
-        ok=1
-        break
-      fi
-      sleep 1
-    done
+    [ "$(rb_wait_http "$CID" "http://$GW_IP:$GW_PORT/healthz" 30)" = 200 ] && ok=1
     if [ -z "$ok" ]; then
       echo "[fail] gateway not reachable from the task container"
       docker logs "$GW_CID" 2>&1 | tail -20
@@ -591,21 +306,9 @@ esac
 
 # --- hand-off --------------------------------------------------------------
 # Write the per-run state to session.env; run.sh owns the turn loop from here.
-{
-  echo "CID=$(printf %q "$CID")"
-  echo "CWD=$(printf %q "$CWD")"
-  # The store's location inside the container; adapters/claude.sh reads it.
-  echo "BU_STORE=$(printf %q "$BU_STORE_IN")"
-  echo "CCDIR=$(printf %q "$CCDIR")"
-  echo "IMAGE=$(printf %q "$IMAGE")"
-  echo "MODEL=$(printf %q "$MODEL")"
-  echo "ADD_DIR=$(printf %q "${ADD_DIR:-}")"
-  echo "GW_CID=$(printf %q "${GW_CID:-}")"
-  echo "IDFILE=$(printf %q "$IDFILE")"
-  echo "SID=$($PY -c 'import uuid;print(uuid.uuid4())')"
-  declare -p AGENT_ENV 2>/dev/null || echo "declare -a AGENT_ENV=()"
-  declare -p MCP_ARGS  2>/dev/null || echo "declare -a MCP_ARGS=()"
-} > "$RUN/session.env"
+# BU_STORE is the store's location inside the container (adapters/_common.sh).
+rb_write_session_env CID CWD "BU_STORE=$BU_STORE_IN" CCDIR IMAGE MODEL ADD_DIR GW_CID IDFILE \
+  "SID=$($PY -c 'import uuid;print(uuid.uuid4())')" @AGENT_ENV @MCP_ARGS
 # From here on adapter_teardown, not the EXIT trap, removes the container.
 trap - EXIT
 echo "[setup] container ${CID:0:12} ready; session.env -> $RUN/session.env"

@@ -16,6 +16,8 @@ import { serverFromToolName } from "../explore/experiences.js";
 import { mcpAvailableFor, mcpConfigSource, resolveRunner, subagentModelFor } from "./runner_caps.js";
 import { learnReadOnlyPatterns } from "./learned_readonly.js";
 import { captureTranscript, TRANSCRIPT_FILE_RE, type TranscriptCapture } from "./subagent_transcript.js";
+import { storeRoot } from "../store/layout.js";
+import { quote } from "../util/shell.js";
 
 /** js-yaml, loaded lazily so a missing module never breaks the common backup path. */
 function loadYaml(): { load: (s: string) => unknown; dump: (o: unknown) => string } | null {
@@ -48,7 +50,7 @@ interface SubagentResponse {
 
 export function isCommandAvailable(cmd: string): boolean {
   try {
-    execSync(`command -v ${cmd}`, { stdio: "pipe", timeout: 5_000 });
+    execSync(`command -v ${quote(cmd)}`, { stdio: "pipe", timeout: 5_000 });
     return true;
   } catch {
     return false;
@@ -113,6 +115,62 @@ export interface SubagentInvocation {
   env?: Record<string, string>;
   /** Temp paths this invocation needs while it runs; removed by cleanupSubagentInvocation. */
   tempPaths?: string[];
+}
+
+/** Outcome of runInvocation: stdout/stderr are kept even when the process failed. */
+export interface SpawnOutcome {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+}
+
+/**
+ * Run a subagent invocation synchronously with the shared subagent environment.
+ * `viaWatcher` runs it under subagent_watch.js, which stops the process once the result
+ * file is valid and enforces `timeoutMs` (the outer timeout gets a 10 s margin).
+ * The caller still owns cleanupSubagentInvocation.
+ */
+export function runInvocation(
+  inv: Pick<SubagentInvocation, "bin" | "args" | "env">,
+  opts: { timeoutMs: number; maxBuffer: number; input?: string; viaWatcher?: { resultFile: string } },
+): SpawnOutcome {
+  const { execFileSync } = require("node:child_process");
+  const [bin, args, timeout] = opts.viaWatcher
+    ? [process.execPath, [path.join(__dirname, "subagent_watch.js"), opts.viaWatcher.resultFile,
+        String(opts.timeoutMs), inv.bin, ...inv.args], opts.timeoutMs + 10_000]
+    : [inv.bin, inv.args, opts.timeoutMs];
+  try {
+    const stdout: string = execFileSync(bin, args, {
+      encoding: "utf-8",
+      timeout,
+      env: { ...subagentEnv(), ...(inv.env ?? {}) },
+      // Some runners block on an open stdin pipe, so stdin is always given (empty by default).
+      input: opts.input ?? "",
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: opts.maxBuffer,
+    });
+    return { ok: true, stdout, stderr: "" };
+  } catch (e: unknown) {
+    const err = e as Error & { stdout?: unknown; stderr?: unknown };
+    return {
+      ok: false,
+      stdout: err.stdout ? String(err.stdout) : "",
+      stderr: err.stderr ? String(err.stderr) : "",
+      error: err instanceof Error ? err : new Error(String(e)),
+    };
+  }
+}
+
+/** The `result` text of a runner's JSON wrapper (`{"result": "..."}`), or null. */
+export function unwrapResultText(stdout: string): string | null {
+  try {
+    const wrapper = JSON.parse(stdout);
+    const r = wrapper && typeof wrapper === "object" ? (wrapper as Record<string, unknown>).result : undefined;
+    return typeof r === "string" ? r : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -337,7 +395,7 @@ export function isolatedMcpConfig(mcpPath: string): string {
           if (fs.existsSync(orig)) {
             const { execSync } = require("node:child_process");
             fs.mkdirSync(copy, { recursive: true });
-            execSync(`cp -a -- '${orig.replace(/'/g, "'\\''")}/.' '${copy.replace(/'/g, "'\\''")}/' 2>/dev/null || true`,
+            execSync(`cp -a -- ${quote(orig + "/.", { always: true })} ${quote(copy + "/", { always: true })} 2>/dev/null || true`,
               { timeout: 60_000 });
           }
         } catch { /* a partial copy is acceptable */ }
@@ -998,7 +1056,7 @@ export function runSubagentBackup(
   if (!config.subagentEnabled) return null;
 
   // Diagnostic trace written to subagent.log.
-  const debugLogPath = path.join(path.dirname(path.resolve(config.backupDir)), "subagent.log");
+  const debugLogPath = path.join(storeRoot(config), "subagent.log");
   const logDebug = (msg: string): void => {
     try {
       fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
@@ -1233,23 +1291,14 @@ export function runSubagentBackup(
   spawnStartedAt = startTime;   // from here on, the transcript describes a real spawn
   try {
     // Run through the watcher, which stops the subagent once a valid result file
-    // exists and enforces the timeout; execFileSync gets a small margin.
-    const { execFileSync } = require("node:child_process");
-    const watcher = path.join(__dirname, "subagent_watch.js");
-    const resultFile = path.join(actionDir, "subagent_result.json");
-    stdout = execFileSync(
-      process.execPath,
-      [watcher, resultFile, String(timeoutMs), bin, ...args],
-      {
-        encoding: "utf-8",
-        timeout: timeoutMs + 10_000,
-        env: { ...subagentEnv(), ...(invocation.env ?? {}) },
-        // Close stdin; some runners block on an open stdin pipe.
-        input: "",
-        stdio: ["pipe", "pipe", "pipe"],
-        maxBuffer: 4 * 1024 * 1024, // 4 MB cap
-      },
-    );
+    // exists and enforces the timeout.
+    const run = runInvocation({ bin, args, env: invocation.env }, {
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      viaWatcher: { resultFile: path.join(actionDir, "subagent_result.json") },
+    });
+    if (!run.ok) throw Object.assign(run.error ?? new Error("subagent failed"), { stdout: run.stdout, stderr: run.stderr });
+    stdout = run.stdout;
     noteSessionId(stdout);
     logDebug(`stdout (${stdout.length} chars): ${stdout.slice(0, 500)}`);
   } catch (e: unknown) {
@@ -1374,7 +1423,7 @@ export function runSubagentBackup(
     if (config.learnedReadOnlyEnabled !== false && readOnlyPatterns.length && ctx.session_id) {
       try {
         const added = learnReadOnlyPatterns(
-          path.dirname(path.resolve(config.backupDir)),
+          storeRoot(config),
           ctx.session_id,
           {
             patterns: readOnlyPatterns,
@@ -1518,32 +1567,10 @@ export function invokeRestoreSubagent(
   );
 
   try {
-    const { execFileSync } = require("node:child_process");
-    const stdout: string = execFileSync(bin, args, {
-      encoding: "utf-8",
-      timeout: timeoutMs,
-      env: { ...subagentEnv(), ...(invocation.env ?? {}) },
-      // Close stdin; some runners block on an open stdin pipe.
-      input: "",
-      stdio: ["pipe", "pipe", "pipe"],
-      maxBuffer: 4 * 1024 * 1024,
-    });
-
-    // Extract the result text from the JSON wrapper for display.
-    let detail = stdout.slice(0, 500);
-    try {
-      const wrapper = JSON.parse(stdout);
-      if (wrapper && typeof wrapper === "object") {
-        const result = (wrapper as Record<string, unknown>).result;
-        if (typeof result === "string") detail = result.slice(0, 500);
-      }
-    } catch {
-      // raw stdout is fine
-    }
-    return { success: true, detail };
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { success: false, detail: msg.slice(0, 500) };
+    const run = runInvocation({ bin, args, env: invocation.env }, { timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+    if (!run.ok) return { success: false, detail: (run.error?.message ?? "").slice(0, 500) };
+    // Show the wrapper's result text when present, else the raw stdout.
+    return { success: true, detail: (unwrapResultText(run.stdout) ?? run.stdout).slice(0, 500) };
   } finally {
     cleanupSubagentInvocation(invocation);
   }
@@ -1582,25 +1609,13 @@ export function runRunnerForText(
   if (!invocation) return null;
   const { bin, args } = invocation;
   try {
-    const { execFileSync } = require("node:child_process");
-    const stdout: string = execFileSync(bin, args, {
-      encoding: "utf-8",
-      timeout: Math.max(10_000, timeoutSeconds * 1000),
-      env: { ...subagentEnv(), ...(invocation.env ?? {}) },
-      // Close stdin; some runners block on an open stdin pipe.
-      input: "",
-      stdio: ["pipe", "pipe", "pipe"],
+    const run = runInvocation({ bin, args, env: invocation.env }, {
+      timeoutMs: Math.max(10_000, timeoutSeconds * 1000),
       maxBuffer: 8 * 1024 * 1024,
     });
-    // Unwrap the JSON {result} wrapper if present, else return raw stdout.
-    try {
-      const wrapper = JSON.parse(stdout);
-      const r = (wrapper as Record<string, unknown>).result;
-      if (typeof r === "string") return r;
-    } catch { /* not json-wrapped */ }
-    return stdout;
-  } catch {
-    return null;
+    if (!run.ok) return null;
+    // The wrapper's result text when present, else raw stdout.
+    return unwrapResultText(run.stdout) ?? run.stdout;
   } finally {
     cleanupSubagentInvocation(invocation);
   }

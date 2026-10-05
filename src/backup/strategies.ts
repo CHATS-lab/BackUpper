@@ -36,13 +36,10 @@ import { flushDeferredGeneralizations, generalizeAfterNativeRule, reflectAfterBa
 import { recordExternalShadowMeta, recordTreeMeta, shortHash, writeTreeMeta, type TreeMeta } from "./fsmeta.js";
 import { planCommand, wordsAndRedirects, type CmdSegment } from "./compound.js";
 import type { IncompleteCapture } from "../types.js";
+import { actionDirsIn, storeRoot } from "../store/layout.js";
+import { expandHome, isNullDevice, quote } from "../util/shell.js";
+import { readJson } from "../util/jsonfile.js";
 
-/** Expand a leading `~` or `~/` to the home directory. */
-function expandHome(p: string): string {
-  if (p === "~") return os.homedir();
-  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
 
 // ── Action folder management (LAZY) ─────────────────────────────
 
@@ -115,16 +112,7 @@ export function getCurrentActionId(): string | null {
 }
 
 function listActionDirs(backupRoot: string): string[] {
-  if (!fs.existsSync(backupRoot)) return [];
-  // Sort numerically by sequence number, tie-breaking on the timestamp suffix.
-  const seqOf = (d: string): number => {
-    const n = parseInt(d.split("_")[1] ?? "", 10);
-    return Number.isNaN(n) ? -1 : n;
-  };
-  return fs
-    .readdirSync(backupRoot)
-    .filter((d: string) => d.startsWith("action_"))
-    .sort((a, b) => seqOf(a) - seqOf(b) || a.localeCompare(b));
+  return actionDirsIn(backupRoot);
 }
 
 /**
@@ -1065,10 +1053,6 @@ const READ_ONLY_BASH_PATTERN = new RegExp(
 // Positive allowlists: an invocation is read-only only if every flag is known to produce
 // no file, upload or state change; any unrecognised flag means "not read-only".
 
-/** True only for the literal null device, the one destination that keeps no state. */
-function isNullDevice(target: string): boolean {
-  return target === "/dev/null";
-}
 
 /** Split a command segment into shell words, honouring quotes and backslash escapes.
  *  Returns null on an unbalanced quote. */
@@ -2061,7 +2045,7 @@ export function bashIsEffectBounded(command: string, workspace: string): boolean
 }
 
 function recentInputPath(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), "recent-input.json");
+  return path.join(storeRoot(config), "recent-input.json");
 }
 
 /** Persist the most recent values typed into the browser, for use in the backup subagent prompt. */
@@ -2110,7 +2094,7 @@ export function loadRecentBrowserInput(config: SandboxConfig): string[] {
 }
 
 function recentSnapshotPath(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), "recent-snapshot.json");
+  return path.join(storeRoot(config), "recent-snapshot.json");
 }
 
 /**
@@ -2368,8 +2352,7 @@ export function presnapshotCodeUrls(ctx: HookContext, config: SandboxConfig): vo
 
     // Merge into the recent-snapshot cache that feeds PAGE_STATE, keeping the existing view.
     const p = recentSnapshotPath(config);
-    let prev: { url?: string; text?: string } = {};
-    try { prev = JSON.parse(fs.readFileSync(p, "utf-8")); } catch { /* fresh */ }
+    const prev = readJson<{ url?: string; text?: string }>(p, {});
     const merged = (prev.text ? prev.text + "\n" : "") + parts.join("\n");
     const urlField = prev.url || abs[0];
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -2565,7 +2548,7 @@ function recordDeclaration(
   declaration: BackupDeclaration,
 ): void {
   try {
-    const sandboxRoot = path.dirname(path.resolve(config.backupDir));
+    const sandboxRoot = storeRoot(config);
     fs.mkdirSync(sandboxRoot, { recursive: true });
     fs.appendFileSync(
       path.join(sandboxRoot, "declarations.jsonl"),
@@ -2650,7 +2633,7 @@ const EXTERNAL_COPY_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Path of the ledger mapping each absolute path to the artifact holding its pre-agent state. */
 function externalLedgerPath(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), "external-copies.json");
+  return path.join(storeRoot(config), "external-copies.json");
 }
 
 function readExternalLedger(config: SandboxConfig): Record<string, string> {
@@ -3017,7 +3000,7 @@ function runBackupTiers(
   const pendingDir = path.join(path.resolve(config.backupDir), _pendingActionName ?? "");
   const trashDir = path.join(pendingDir, "trash");
   // The sandbox store root, excluded from the victim sets of rules that move or delete paths.
-  const sandboxStoreRoot = path.dirname(path.resolve(config.backupDir));
+  const sandboxStoreRoot = storeRoot(config);
 
   // ── Compound commands: capture each segment, copy-only; the command runs unchanged ──
   let compoundUncovered: IncompleteCapture | null = null;
@@ -3061,8 +3044,7 @@ function runBackupTiers(
     // if a copy fails. The original is passed verbatim so the host's permission rules still
     // match it.
     const { captureCommandPrefix } = require("../agents/capabilities.js");
-    const q = (x: string) => /^[\w\/.@+:=,-]+$/.test(x) ? x : `'${x.replace(/'/g, "'\\''")}'`;
-    const copy = `${captureCommandPrefix()} ${deferred.map((c) => `${q(c.src)} ${q(c.dest)}`).join(" ")}`;
+    const copy = `${captureCommandPrefix()} ${deferred.map((c) => `${quote(c.src)} ${quote(c.dest)}`).join(" ")}`;
     policyResult.updatedInput = { ...ctx.tool_input, command: `${copy} && ${originalCommand}` };
     policyResult.preCommands = [copy];
   }
@@ -3201,7 +3183,7 @@ function runBackupTiers(
       try {
         const argv = singleSimpleArgv(String(ctx.tool_input.command ?? ""));
         if (argv) {
-          const sandboxDir = path.dirname(path.resolve(config.backupDir));
+          const sandboxDir = storeRoot(config);
           const store = loadLearnedStore(sandboxDir, ctx.session_id);
           const hit = matchLearnedReadOnly(store, argv, process.cwd());
           if (hit) {
@@ -3349,14 +3331,14 @@ function runBackupTiers(
             }
           } else {
             // Nothing captured: move the transcripts out, then remove the folder.
-            const storeRoot = path.dirname(path.resolve(config.backupDir));
+            const rootDir = storeRoot(config);
             const receipt = path.join(dir, "reflection.json");
             if (fs.existsSync(receipt)) {
-              const receiptsDir = path.join(storeRoot, "reflection-receipts");
+              const receiptsDir = path.join(rootDir, "reflection-receipts");
               fs.mkdirSync(receiptsDir, { recursive: true });
               fs.copyFileSync(receipt, path.join(receiptsDir, `${path.basename(dir)}.json`));
             }
-            const kept = preserveTranscripts(dir, storeRoot);
+            const kept = preserveTranscripts(dir, rootDir);
             if (kept && config.verbose) {
               process.stderr.write(
                 `[BackUpper] kept ${kept} subagent transcript file(s) from ${path.basename(dir)}\n`,

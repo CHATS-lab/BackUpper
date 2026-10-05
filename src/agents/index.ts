@@ -79,17 +79,7 @@ export function scriptOf(cmd: string): string {
 }
 
 /** Read a JSON object file; empty object when absent. Throws on a file that does not parse. */
-export function readJsonObject(file: string): Record<string, unknown> {
-  if (!fs.existsSync(file)) return {};
-  const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${file} is not a JSON object`);
-  return parsed as Record<string, unknown>;
-}
-
-export function writeJson(file: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf-8");
-}
+export { readJsonObject, writeJson } from "../util/jsonfile.js";
 
 /** Remove `dir` and then its parents up to (not including) `stopAt`, while each is empty. */
 export function removeEmptyDirs(dir: string, stopAt: string): void {

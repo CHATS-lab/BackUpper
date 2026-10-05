@@ -16,14 +16,15 @@ import type { PreToolHookOutput } from "../types.js";
 import { type HookContext, normalizeHookContext } from "../types.js";
 import { adoptHostAgent } from "./host.js";
 import { settleDeferredCopies } from "./deferred.js";
+import { storeRoot } from "../store/layout.js";
 
 /** Append one line to .backupper/hook-errors.log (next to the backups directory). Best-effort. */
 function logHookError(config: { backupDir: string }, ctx: HookContext, message: string): void {
   try {
-    const storeRoot = path.dirname(path.resolve(config.backupDir));
-    fs.mkdirSync(storeRoot, { recursive: true });
+    const rootDir = storeRoot(config);
+    fs.mkdirSync(rootDir, { recursive: true });
     fs.appendFileSync(
-      path.join(storeRoot, "hook-errors.log"),
+      path.join(rootDir, "hook-errors.log"),
       JSON.stringify({ at: new Date().toISOString(), hook: "PreToolUse", tool: ctx.tool_name, message }) + "\n",
     );
   } catch { /* logging must never block the call */ }
@@ -45,7 +46,7 @@ function warnConfigOnce(config: { backupDir: string }, ctx: HookContext): void {
     return;
   }
   let logged = "";
-  const logFile = path.join(path.dirname(path.resolve(config.backupDir)), "hook-errors.log");
+  const logFile = path.join(storeRoot(config), "hook-errors.log");
   try {
     const st = fs.statSync(logFile);
     const fd = fs.openSync(logFile, "r");
@@ -232,7 +233,7 @@ async function main(): Promise<void> {
     // located from config.backupDir so it is not counted as backup storage.
     if (backupResult.actionDir) {
       try {
-        const sandboxRoot = path.dirname(path.resolve(config.backupDir));
+        const sandboxRoot = storeRoot(config);
         fs.appendFileSync(
           path.join(sandboxRoot, "backup-timings.jsonl"),
           JSON.stringify({

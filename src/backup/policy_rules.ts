@@ -23,10 +23,12 @@ import {
   excludeSandboxStore,
   logTier1Note,
   storeDenyReason,
+  writeTier1Log,
   stripShellComment,
 } from "./policy_rules_extra.js";
 import { foreignExecTarget, type ForeignExecTarget } from "./exec_target.js";
 import { uniqueCaptureName } from "./fsmeta.js";
+import { quote } from "../util/shell.js";
 
 export interface PolicyRuleResult {
   /**
@@ -101,9 +103,9 @@ export interface PolicyApplyOptions {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/** Escape a path for shell — wraps in single quotes, escapes embedded '. */
+/** Escape a path for shell — always wraps in single quotes (recorded recovery commands keep this form). */
 function shq(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
+  return quote(s, { always: true });
 }
 
 /** Paths we never rewrite. `rm -rf /`, `rm -rf ~`, `rm -rf .`, etc. */
@@ -341,24 +343,15 @@ function logTier1Refusal(
   foreign: ForeignExecTarget,
   commandOrJson: string,
 ): void {
-  const line =
+  writeTier1Log(
+    trashDir,
     `[BackUpper] TIER-1 DISABLED: the agent executes through a ` +
     `'${foreign.backend}' backend (${foreign.source}), not this filesystem. ` +
     `Rule '${ruleId}' matched but was NOT applied — a tier-1 rewrite runs its ` +
     `own mv/cp/rm HERE, which would mutate the wrong machine and still leave ` +
     `the real target unprotected. Command passed through unmodified; tiers 2-4 ` +
-    `still apply. Action: ${commandOrJson.slice(0, 300)}`;
-  try {
-    process.stderr.write(line + "\n");
-  } catch { /* best-effort */ }
-  try {
-    const root = path.dirname(path.dirname(path.dirname(path.resolve(trashDir))));
-    fs.mkdirSync(root, { recursive: true });
-    fs.appendFileSync(
-      path.join(root, "tier1-skipped.log"),
-      `[${new Date().toISOString()}] ${line}\n`,
-    );
-  } catch { /* best-effort */ }
+    `still apply. Action: ${commandOrJson.slice(0, 300)}`,
+  );
 }
 
 /**

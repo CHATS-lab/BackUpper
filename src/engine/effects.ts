@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EffectEntry, HookContext, SandboxConfig } from "../types.js";
+import { appendJsonl } from "../util/jsonfile.js";
 
 /**
  * Build an effect entry from a PostToolUse context.
@@ -72,10 +73,5 @@ export function captureEffect(
 export function logEffect(entry: EffectEntry, config: SandboxConfig): void {
   if (!config.effectManifest) return;
 
-  const logPath = path.resolve(config.effectLogPath);
-  const dir = path.dirname(logPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  fs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf-8");
+  appendJsonl(path.resolve(config.effectLogPath), entry);
 }

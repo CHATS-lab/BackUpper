@@ -6,6 +6,7 @@ import * as path from "node:path";
 import type { HookContext } from "../types.js";
 import type { PolicyApplyOptions, PolicyRule, PolicyRuleResult } from "./policy_rules.js";
 import { uniqueCaptureName } from "./fsmeta.js";
+import { quote } from "../util/shell.js";
 
 /*
  * EXTRA_RULES: tier-1 command-rewriting rules beyond the core `rm` rule in policy_rules.ts.
@@ -45,10 +46,32 @@ import { uniqueCaptureName } from "./fsmeta.js";
 
 // ---------- helpers --------------------------------------------------------
 
-function shq(s: string): string {
-  if (s === "") return "''";
-  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(s)) return s;
-  return "'" + s.replace(/'/g, "'\\''") + "'";
+const shq = (s: string): string => quote(s);
+
+/**
+ * Common start of a single-command Bash rule: the raw command and its tokens, or null when
+ * the command is compound (unless `allowCompound`), cannot be tokenized, or is a --help call.
+ */
+function bashRuleInput(
+  ctx: HookContext,
+  opts: { allowCompound?: boolean } = {},
+): { command: string; tokens: string[] } | null {
+  const command = rawCommand(ctx);
+  if (!opts.allowCompound && hasCompound(command)) return null;
+  const tokens = tokenize(command);
+  if (tokens === null) return null;
+  if (isHelpInvocation(tokens)) return null;
+  return { command, tokens };
+}
+
+/** Create the trash directory; false when it cannot be created. */
+function ensureTrash(trashDir: string): boolean {
+  try {
+    fs.mkdirSync(trashDir, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function trashName(raw: string): string {
@@ -266,11 +289,7 @@ function snapshotAndRun(
   opts?: PolicyApplyOptions,
 ): PolicyRuleResult | null {
   if (!deferredCopies) {
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
   }
   const preCommands: string[] = [];
   const recoveryCommands: string[] = [];
@@ -389,7 +408,11 @@ export function logTier1Note(
   detail: string,
   storeRoot?: string,
 ): void {
-  const line = `[BackUpper] TIER-1 '${ruleId}': ${detail}`;
+  writeTier1Log(trashDir, `[BackUpper] TIER-1 '${ruleId}': ${detail}`, storeRoot);
+}
+
+/** Print a tier-1 message to stderr and append it to the store's tier1-skipped.log (best-effort). */
+export function writeTier1Log(trashDir: string, line: string, storeRoot?: string): void {
   try {
     process.stderr.write(line + "\n");
   } catch { /* best-effort */ }
@@ -551,11 +574,7 @@ export function copyVictimsToTrash(
     }
   }
   if (!deferredCopies) {
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
   }
   const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const preCommands: string[] = [];
@@ -629,12 +648,9 @@ const gitResetHard: PolicyRule = {
   description:
     "Record HEAD sha before `git reset --hard` so the branch can be moved back on restore.",
   apply(_match, ctx, _trashDir) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
 
     const head = runCaptured("git rev-parse --verify HEAD");
     if (head === null || !/^[0-9a-f]{7,64}$/.test(head)) return null;
@@ -672,12 +688,9 @@ const gitBranchDeleteForce: PolicyRule = {
   description:
     "Capture branch sha before `git branch -D` so the ref can be recreated on restore.",
   apply(_match, ctx, _trashDir, _storeRoot, opts) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
 
     const positional = tokens.slice(2).filter((t) => !t.startsWith("-"));
     if (positional.length !== 1) return null;
@@ -709,12 +722,9 @@ const gitStashDrop: PolicyRule = {
   description:
     "Preserve the stash commit under a backup ref before `git stash drop`; restore recreates stash@{0}.",
   apply(_match, ctx, _trashDir, _storeRoot, opts) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
 
     const args = tokens
       .slice(3)
@@ -756,12 +766,9 @@ const gitPushForce: PolicyRule = {
   description:
     "Record remote ref sha before `git push --force`. Remote may diverge before restore runs.",
   apply(_match, ctx, _trashDir, _storeRoot, opts) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
 
     const positional: string[] = [];
     for (let i = 2; i < tokens.length; i++) {
@@ -819,12 +826,9 @@ const dockerRm: PolicyRule = {
     "Commit container filesystem before `docker rm`. Restore via `docker create` from the recovery image; runtime state (ports, volumes, env) is NOT preserved — see inspect.json.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("docker")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
 
     let i = 1;
     if (tokens[i] === "container") i++;
@@ -844,11 +848,7 @@ const dockerRm: PolicyRule = {
     const id = runCaptured(`docker inspect --format={{.Id}} ${shq(container)}`);
     if (id === null || !/^[0-9a-f]{12,}$/.test(id)) return null;
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
 
     const safeLabel = trashName(container).toLowerCase();
     const recoveryImage = `backupper/recovery-${safeLabel}:${Date.now()}`;
@@ -883,12 +883,9 @@ const dockerVolumeRm: PolicyRule = {
     "Tar the volume contents into the action trash before `docker volume rm`; restore creates a fresh volume and untars back.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("docker")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "docker" || tokens[1] !== "volume" || tokens[2] !== "rm")
       return null;
 
@@ -904,11 +901,7 @@ const dockerVolumeRm: PolicyRule = {
 
     if (!runSilent(`docker volume inspect ${shq(volume)}`)) return null;
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
 
     const safeLabel = trashName(volume);
     const tarName = `docker-volume-${safeLabel}.tar`;
@@ -948,12 +941,9 @@ const dockerImageRm: PolicyRule = {
     "`docker save` the image tarball before `rmi`; restore via `docker load`.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("docker")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
 
     let i = 1;
     if (tokens[i] === "image") {
@@ -981,11 +971,7 @@ const dockerImageRm: PolicyRule = {
     );
     if (resolved === null) return null;
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
 
     const safeLabel = trashName(image);
     const tarFile = join(trashDir, `docker-image-${safeLabel}.tar`);
@@ -1016,12 +1002,9 @@ const kubectlDelete: PolicyRule = {
     "Snapshot a single namespaced resource via `kubectl get -o yaml` before `kubectl delete`; restore via `kubectl apply -f`.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("kubectl")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "kubectl" || tokens[1] !== "delete") return null;
 
     const positional: string[] = [];
@@ -1059,11 +1042,7 @@ const kubectlDelete: PolicyRule = {
     if (namespace !== null && !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(namespace))
       return null;
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
 
     const selector = `${kind}/${name}`;
     const nsFlag = namespace === null ? "" : ` -n ${shq(namespace)}`;
@@ -1129,11 +1108,7 @@ function recordSubtreeAttrs(
     );
   }
 
-  try {
-    fs.mkdirSync(trashDir, { recursive: true });
-  } catch {
-    return null;
-  }
+  if (!ensureTrash(trashDir)) return null;
   const scriptFile = join(
     trashDir,
     `${uniqueCaptureName(`${ruleId}-recursive`, absPaths.join("\0"))}.sh`,
@@ -1319,11 +1294,9 @@ const mvRule: PolicyRule = {
   description:
     "Run `mv src dst`, record the inverse `mv dst src`; if dst already existed, snapshot it first so the clobbered file can be restored too.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "mv") return null;
 
     const positional: string[] = [];
@@ -1367,11 +1340,7 @@ const mvRule: PolicyRule = {
     if (landed === absSrc) return null; // no-op / self move
 
     if (!deferredCopies) {
-      try {
-        fs.mkdirSync(trashDir, { recursive: true });
-      } catch {
-        return null;
-      }
+      if (!ensureTrash(trashDir)) return null;
     }
 
     const preCommands: string[] = [];
@@ -1418,11 +1387,9 @@ const sedInPlace: PolicyRule = {
   description:
     "Snapshot file bytes before a `sed -i` in-place edit; restore via cp back.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "sed") return null;
 
     let inPlace = false;
@@ -1489,11 +1456,9 @@ const truncateRule: PolicyRule = {
   description:
     "Snapshot file bytes before `truncate` shrinks/wipes them in place; restore via cp back.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "truncate") return null;
 
     const positional: string[] = [];
@@ -1540,11 +1505,9 @@ const gitDiscardWorktree: PolicyRule = {
     "Snapshot working-tree bytes before `git restore <path>` / `git checkout -- <path>` discards uncommitted edits; restore via cp back.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("git")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "git") return null;
     const sub = tokens[1];
     if (sub !== "checkout" && sub !== "restore") return null;
@@ -1611,11 +1574,9 @@ const gitClean: PolicyRule = {
     "Enumerate what `git clean` would delete (`git clean -n…`), move those paths into the per-action trash, and record the exact `mv` back.",
   apply(_match, ctx, trashDir, storeRoot, opts) {
     if (!which("git")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "git" || tokens[1] !== "clean") return null;
 
     let force = false;
@@ -1828,11 +1789,9 @@ const gitWorktreeRemove: PolicyRule = {
     "Snapshot a linked worktree's full content (untracked files included) and its git admin dir before `git worktree remove --force`; restore copies both back.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("git")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (
       tokens[0] !== "git" ||
       tokens[1] !== "worktree" ||
@@ -1929,11 +1888,9 @@ const rsyncDelete: PolicyRule = {
     "Snapshot the destination tree before an `rsync --delete` prunes it; restore syncs the snapshot back.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("rsync")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "rsync") return null;
     if (tokens.length < 3) return null;
 
@@ -1967,11 +1924,7 @@ const rsyncDelete: PolicyRule = {
     if (entries === null || entries > MAX_TREE_ENTRIES) return null;
 
     if (!deferredCopies) {
-      try {
-        fs.mkdirSync(trashDir, { recursive: true });
-      } catch {
-        return null;
-      }
+      if (!ensureTrash(trashDir)) return null;
     }
     const snap = join(
       trashDir,
@@ -2214,11 +2167,9 @@ const helmUninstall: PolicyRule = {
     "Dump `helm get all <release>` into the action trash and uninstall with --keep-history so the release can be rolled back exactly.",
   apply(_match, ctx, trashDir, _storeRoot, opts) {
     if (!which("helm")) return null;
-    const command = rawCommand(ctx);
-    if (hasCompound(command)) return null;
-    const tokens = tokenize(command);
-    if (tokens === null) return null;
-    if (isHelpInvocation(tokens)) return null;
+    const input = bashRuleInput(ctx);
+    if (!input) return null;
+    const { command, tokens } = input;
     if (tokens[0] !== "helm") return null;
     const sub = tokens[1];
     if (sub !== "uninstall" && sub !== "delete" && sub !== "del") return null;
@@ -2274,11 +2225,7 @@ const helmUninstall: PolicyRule = {
     }
     if (revision === null) return null;
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
-    }
+    if (!ensureTrash(trashDir)) return null;
     const label = trashName(
       `${release}${namespace === null ? "" : `-${namespace}`}`,
     );

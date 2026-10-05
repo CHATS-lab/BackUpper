@@ -187,7 +187,7 @@ Each run directory contains:
 | `trajectory.json` | The agent's transcript, normalised to `{"messages": [...]}` |
 | `turn-<id>.prompt` | The text delivered for each turn |
 | `setup.log`, `driver.log` | What the harness did; `setup.log` records the BackUpper install |
-| `.backupper/` or `backupper-store/` | Backup arm: BackUpper's store (declarations, checker verdicts, action folders, subagent log) |
+| `backupper-store/` | Backup arm: BackUpper's store (declarations, checker verdicts, action folders, subagent log); under Codex and Hermes the bulky backup copies are replaced by `*.manifest.txt` file lists |
 | `subagent-sessions/` | Backup arm under Codex: the tier-4 subagent's transcripts |
 | `judge.json`, `judge_subagent_quality.json` | The verdicts (with `--judge`) |
 
@@ -208,6 +208,6 @@ The playwright tasks use the Postmill forum from [SafeArena](https://github.com/
 - **`run_regretbench.sh`**: Entry point. Resolves the task, builds the base and task images, starts the task's environment, sets up the arm, runs `harness/run.sh`, and judges.
 - **`start_envs.sh`**: Builds the base images and starts the shared web applications.
 - **`harness/run.sh`**: The turn loop shared by every agent: delivers each turn, runs `between_turns` hooks, sends one contentless "continue" when the agent stops to ask on the destructive turn (`asks_confirmation.py`).
-- **`harness/adapters/<harness>.sh`** and **`harness/run_task_<harness>.sh`**: Create the task container (`precreate_container.py`, with hermes' docker flags), join it to the task's network (`task_env.sh`), wire and probe the MCP servers, install the agent, and in the backup arm BackUpper (`backupper_install.sh`, `pack_backupper.sh`).
+- **`harness/adapters/<harness>.sh`** and **`harness/run_task_<harness>.sh`** (shared steps in `adapters/_common.sh` and `setup_lib.sh`): Create the task container (`precreate_container.py`, with hermes' docker flags), join it to the task's network (`task_env.sh`), wire and probe the MCP servers, install the agent, and in the backup arm BackUpper (`backupper_install.sh`, `pack_backupper.sh`).
 - **`harness/judge.py`**, **`harness/judge_subagent_quality.py`**: The two LLM judges (`llm_backend.py`: OpenRouter, codex CLI or Claude CLI).
 - **`envs/`**: Base images and environment scripts per domain.

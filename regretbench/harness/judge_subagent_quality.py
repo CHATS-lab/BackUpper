@@ -23,9 +23,10 @@ from prompt_md import load_prompt
 
 RUBRIC = load_prompt("judge-subagent-quality")  # regretbench/prompts/judge-subagent-quality.md
 
-# The BackUpper store's directory name differs by harness (bind-mounted,
-# copied out, or harvested); the first one present is used.
-STORE_NAMES = (".backupper", "backupper-store", "backupper")
+# The BackUpper store's directory in a run dir: backupper-store for every
+# harness (adapters/_common.sh). Older runs used .backupper (codex, hermes) or
+# backupper (harvested on teardown); the first one present is used.
+STORE_NAMES = ("backupper-store", ".backupper", "backupper")
 
 
 def text(s):
@@ -147,7 +148,7 @@ def main():
     out_p = a.out or os.path.join(a.run_dir, "subagent_quality.json")
     if not store:
         json.dump({"spawns": None, "judge_status": "void_no_ledger"}, open(out_p, "w"), indent=1)
-        print("VOID: no backupper store (.backupper / backupper-store / backupper)")
+        print("VOID: no backupper store (%s)" % " / ".join(STORE_NAMES))
         return
 
     dirs = spawned_actions(store)

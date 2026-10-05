@@ -8,11 +8,10 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import type { BackupArtifact, HookContext, SandboxConfig } from "../types.js";
 import { extractJsonObject } from "../util/extract_json.js";
 import { GENERALIZE, REFLECTION, render } from "../prompts.generated.js";
-import { buildSubagentInvocation, cleanupSubagentInvocation } from "../backup/subagent.js";
+import { buildSubagentInvocation, cleanupSubagentInvocation, runInvocation } from "../backup/subagent.js";
 import {
   actionView,
   applyReflectionUpdate,
@@ -119,18 +118,17 @@ function callModel(prompt: string, config: SandboxConfig): string {
   const transport = reflectionTransport(invocation, prompt);
   let run;
   try {
-    run = spawnSync(invocation.bin, transport.args, {
-      encoding: "utf8",
-      timeout: config.subagentTimeoutSeconds * 1000,
+    // Shared subagent environment (IS_SANDBOX as root, MCP_TIMEOUT, BACKUPPER_NO_HOOK).
+    run = runInvocation({ bin: invocation.bin, args: transport.args, env: invocation.env }, {
+      timeoutMs: config.subagentTimeoutSeconds * 1000,
       maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, ...invocation.env, BACKUPPER_NO_HOOK: "1" },
       input: transport.input,
     });
   } finally {
     cleanupSubagentInvocation(invocation);
   }
-  if (run.error || run.status !== 0) throw new Error(`reflection exit ${run.status}`);
-  return String(run.stdout || "");
+  if (!run.ok) throw new Error(`reflection exit: ${run.error?.message ?? "failed"}`);
+  return run.stdout;
 }
 
 interface Sibling {

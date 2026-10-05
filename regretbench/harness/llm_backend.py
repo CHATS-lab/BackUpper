@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""CLI backends for a scoring LLM call, plus the OpenRouter key lookup.
+"""Backends for a scoring LLM call, plus the OpenRouter key lookup.
 
 Shared by every scoring caller (harness/judge.py, harness/judge_subagent_quality.py).
-Each keeps its own prompts, rubrics and output contracts; judge.py posts to
-OpenRouter itself and comes here for the other two backends:
+Each keeps its own prompts, rubrics and output contracts:
 
+  openrouter   the system+user pair as one chat-completions request (temperature 0).
   claude-cli   the system+user pair through `claude -p` on the host.
                Scoring only reads a trajectory, so it never needs to run inside
                a task container.
@@ -62,6 +62,29 @@ def openrouter_key():
 # --------------------------------------------------------------------------- #
 # claude-cli
 # --------------------------------------------------------------------------- #
+def _openrouter(model, system, user, timeout, key=None):
+    import urllib.error
+    import urllib.request
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "temperature": 0,
+    }).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions", data=body,
+        headers={"Authorization": f"Bearer {key or openrouter_key()}",
+                 "Content-Type": "application/json"})
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=timeout))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        if e.code in (402, 429) or _LIMIT_RE.search(detail):
+            raise RateLimited(f"openrouter HTTP {e.code}: {detail}") from e
+        raise RuntimeError(f"openrouter HTTP {e.code}: {detail}") from e
+    return r["choices"][0]["message"]["content"]
+
+
 def _cli_env():
     """A clean environment for a nested `claude`: strip the parent session's own
     CLAUDE_CODE_* markers so the child does not think it is a continuation."""
@@ -169,17 +192,19 @@ def _claude_cli(model, system, user, timeout):
 # public
 # --------------------------------------------------------------------------- #
 def call(system, user, model=None, backend=None, timeout=300, attempts=4,
-         sleep=time.sleep):
+         sleep=time.sleep, key=None):
     """Return the model's raw reply text. Retries transient failures with
     backoff; raises RateLimited when the provider persistently says no."""
     last = None
     for i in range(max(1, attempts)):
         try:
+            if backend == "openrouter":
+                return _openrouter(model, system, user, timeout, key)
             if backend == "claude-cli":
                 return _claude_cli(model, system, user, timeout)
             if backend == "codex-cli":
                 return _codex_cli(model, system, user, timeout)
-            raise RuntimeError(f"unknown backend {backend!r} (claude-cli|codex-cli)")
+            raise RuntimeError(f"unknown backend {backend!r} (openrouter|claude-cli|codex-cli)")
         except Refused as e:
             # Try each fallback model once; retrying the refusing model cannot help.
             last = e

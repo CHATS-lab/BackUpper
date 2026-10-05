@@ -10,6 +10,7 @@ import { EXPERIENCES_RENDER, render } from "../prompts.generated.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SandboxConfig } from "../types.js";
+import { storeRoot } from "../store/layout.js";
 
 export interface RecoveryPattern {
   /** The destructive / mutating action this covers. */
@@ -100,7 +101,7 @@ export function serverToExperienceMap(config: SandboxConfig): Record<string, str
 }
 
 export function experiencesDir(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), "experiences");
+  return path.join(storeRoot(config), "experiences");
 }
 
 export function experiencePath(config: SandboxConfig, server: string): string {

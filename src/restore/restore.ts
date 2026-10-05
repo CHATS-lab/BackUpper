@@ -11,11 +11,14 @@ import * as os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
 import type { BackupArtifact, IncompleteCapture, SandboxConfig } from "../types.js";
 import { listActions } from "../backup/manifest.js";
+import { readActionArtifacts, storeRoot } from "../store/layout.js";
 import { invokeRestoreSubagent } from "../backup/subagent.js";
 import { serverFromToolName } from "../explore/experiences.js";
 import { callMcpTool, callMcpToolHttp } from "../explore/list_mcp_tools.js";
 import { applyTreeMeta, currentExternalShadowMeta, externalShadowFiles, externalShadowSpecs, readTreeMeta, type TreeMeta } from "../backup/fsmeta.js";
 import { wordsAndRedirects } from "../backup/compound.js";
+import { quote } from "../util/shell.js";
+import { appendJsonl } from "../util/jsonfile.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -153,7 +156,7 @@ function restorePipFreeze(artifact: BackupArtifact): RestoreResult {
     return { success: false, description: `Backup file not found: ${freezePath}` };
   }
 
-  const result = exec(`pip install -r "${freezePath}"`);
+  const result = exec(`pip install -r ${quote(freezePath)}`);
   if (result.ok) {
     return { success: true, description: `Restored packages from ${freezePath}` };
   }
@@ -210,12 +213,12 @@ function restoreEnvSnapshot(artifact: BackupArtifact): RestoreResult {
 
 function restoreGitTag(artifact: BackupArtifact): RestoreResult {
   const tagName = artifact.artifactPath;
-  const result = exec(`git rev-parse "${tagName}"`);
+  const result = exec(`git rev-parse ${quote(tagName)}`);
   if (!result.ok) {
     return { success: false, description: `Git tag not found: ${tagName}` };
   }
 
-  const resetResult = exec(`git reset --hard "${tagName}"`);
+  const resetResult = exec(`git reset --hard ${quote(tagName)}`);
   if (resetResult.ok) {
     return { success: true, description: `Restored to git tag ${tagName} (${result.stdout.slice(0, 8)})` };
   }
@@ -1238,7 +1241,7 @@ export interface RestoreLogEntry {
 }
 
 function restoreHistoryPath(config: SandboxConfig): string {
-  return path.join(path.dirname(path.resolve(config.backupDir)), "restore-history.jsonl");
+  return path.join(storeRoot(config), "restore-history.jsonl");
 }
 
 function logRestoreOp(
@@ -1260,9 +1263,7 @@ function logRestoreOp(
       ok: results.filter((r) => r.success).length,
       failed: results.filter((r) => !r.success).length,
     };
-    const file = restoreHistoryPath(config);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, JSON.stringify(entry) + "\n", "utf-8");
+    appendJsonl(restoreHistoryPath(config), entry);
   } catch {
     // ledger is best-effort
   }
@@ -1310,27 +1311,6 @@ export function listRestorableActions(config: SandboxConfig): Array<{
   name: string;
   artifacts: BackupArtifact[];
 }> {
-  const backupRoot = path.resolve(config.backupDir);
-  const dirs = listActions(config);
-
-  return dirs.map((name) => {
-    const metaPath = path.join(backupRoot, name, "metadata.json");
-    let artifacts: BackupArtifact[] = [];
-    if (fs.existsSync(metaPath)) {
-      try {
-        const parsed = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
-        // Guard against metadata.json that is not an array.
-        if (Array.isArray(parsed)) {
-          artifacts = parsed as BackupArtifact[];
-        } else if (parsed && typeof parsed === "object") {
-          // Wrap a single-object metadata as a one-element array.
-          artifacts = [parsed as BackupArtifact];
-        }
-        // Anything else (primitive, null) → leave as [].
-      } catch {
-        // corrupt JSON — leave as []
-      }
-    }
-    return { name, artifacts };
-  });
+  const root = path.resolve(config.backupDir);
+  return listActions(config).map((name) => ({ name, artifacts: readActionArtifacts(path.join(root, name)) }));
 }

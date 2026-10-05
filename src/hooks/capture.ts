@@ -14,6 +14,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { readJson } from "../util/jsonfile.js";
 
 function fail(msg: string): never {
   process.stderr.write(`[BackUpper] capture: ${msg}\n`);
@@ -29,10 +30,8 @@ for (let i = 0; i < args.length; i += 2) {
   const trash = path.dirname(dest);
   if (path.basename(trash) !== "trash") fail(`not a trash folder: ${trash}`);
   let listed = false;
-  try {
-    const meta = JSON.parse(fs.readFileSync(path.join(path.dirname(trash), "metadata.json"), "utf-8"));
-    listed = Array.isArray(meta) && meta.some((a) => Array.isArray(a?.deferredCopies) && a.deferredCopies.includes(dest));
-  } catch { /* not listed */ }
+  const meta = readJson<unknown>(path.join(path.dirname(trash), "metadata.json"), null);
+  listed = Array.isArray(meta) && meta.some((a) => Array.isArray(a?.deferredCopies) && a.deferredCopies.includes(dest));
   if (!listed) fail(`${dest} is not a copy the hook recorded`);
   if (fs.existsSync(dest)) fail(`${dest} already exists`);
   try {

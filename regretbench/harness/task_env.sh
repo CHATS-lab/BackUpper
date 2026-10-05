@@ -1,5 +1,5 @@
 # task_env.sh -- connect a freshly created task container to the task's external
-# environment. Sourced by run_task_claude.sh, run_task_codex.sh and run_task.sh,
+# environment. Sourced (through setup_lib.sh) by run_task_claude.sh, run_task_codex.sh and run_task.sh,
 # right after the container is created and before the agent or any MCP probe runs.
 #
 # attach_task_network CID

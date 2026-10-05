@@ -2,45 +2,23 @@
  * Backup manifest: lists backup artifacts from each action folder's metadata.json.
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { BackupArtifact, SandboxConfig } from "../types.js";
+import { actionDirs, backupRoot, readActionArtifacts } from "../store/layout.js";
 
 /**
  * List all action folders (sorted oldest → newest).
  */
 export function listActions(config: SandboxConfig): string[] {
-  const backupRoot = path.resolve(config.backupDir);
-  if (!fs.existsSync(backupRoot)) return [];
-  return fs
-    .readdirSync(backupRoot)
-    .filter((d) => d.startsWith("action_"))
-    .sort();
+  return actionDirs(config);
 }
 
 /**
  * Load all backup artifacts across all action folders.
  */
 export function loadManifest(config: SandboxConfig): BackupArtifact[] {
-  const backupRoot = path.resolve(config.backupDir);
-  const dirs = listActions(config);
-  const all: BackupArtifact[] = [];
-
-  for (const dir of dirs) {
-    const metaPath = path.join(backupRoot, dir, "metadata.json");
-    if (fs.existsSync(metaPath)) {
-      try {
-        const entries = JSON.parse(
-          fs.readFileSync(metaPath, "utf-8")
-        ) as BackupArtifact[];
-        all.push(...entries);
-      } catch {
-        // skip corrupt metadata
-      }
-    }
-  }
-
-  return all;
+  const root = backupRoot(config);
+  return actionDirs(config).flatMap((dir) => readActionArtifacts(path.join(root, dir)));
 }
 
 /** No-op: strategies.ts writes artifacts into each folder's metadata.json. */

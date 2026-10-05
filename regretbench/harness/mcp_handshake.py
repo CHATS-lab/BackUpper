@@ -2,6 +2,11 @@
 """Real MCP handshake against a streamable-HTTP endpoint: initialize + tools/list.
 
 usage: mcp_handshake.py <url> [--attempts N] [--sleep S] [--timeout T] [--json]
+                        [--names-out FILE]
+       docker exec -i CID python3 - <url> [...] < mcp_handshake.py   (in a container)
+
+Standard library only, so it also runs from stdin inside a task container; the
+setup scripts call it through rb_mcp_gate (setup_lib.sh).
 
 Exits 0 iff at least one tool with a usable inputSchema was listed; prints
 "<usable> <total> <bad names>" on stdout. Any other exit means the agent would
@@ -58,7 +63,7 @@ def handshake(url, timeout):
     r, _raw = post({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "rb-hermes-probe", "version": "1"}},
+                   "clientInfo": {"name": "rb-probe", "version": "1"}},
     })
     sid = r.headers.get("Mcp-Session-Id")
     try:
