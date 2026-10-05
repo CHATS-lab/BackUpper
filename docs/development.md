@@ -18,4 +18,4 @@ npm run docs                    # regenerate the configuration table in src/conf
 
 `npm run e2e` builds an image from `test/e2e/Dockerfile` with the packed tarball installed globally, and runs the demo, hook-level checks, backup and restore, and the smoke suite inside it, with networking disabled and no host mounts. It makes no model calls. `BACKUPPER_E2E_REAL=1 npm run e2e` additionally drives one real `claude -p` session; it passes `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from your environment, and mounts a credentials file read-only only when you name it in `BACKUPPER_E2E_CLAUDE_CREDENTIALS`.
 
-The prompts sent to models are markdown files in `prompts/`; `npm run build` compiles them into `src/prompts.generated.ts`.
+The prompts sent to models are sections of `prompts.md`; `npm run build` compiles them into `src/prompts.generated.ts`.

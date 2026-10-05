@@ -1,7 +1,7 @@
 # Defaults for run.sh: which agent harness it drives and with what settings.
 # Benchmark semantics (turns, hooks) live in run.sh, not here.
 
-# Which adapter run.sh drives. One of the stems in harness/adapters/.
+# Which adapter run.sh drives: claude, codex or hermes (see harness/adapters.sh).
 #   claude  -- Claude Code inside the task container
 #   hermes  -- hermes on the host, via OpenRouter
 #   codex   -- codex-cli inside the task container, via OpenRouter
@@ -28,6 +28,6 @@ harnesses:
     results_dir: results/hermes
   codex:
     model: openai/gpt-5.6-terra
-    # Not read by adapters/codex.sh; kept for schema parity.
+    # Not read by the codex adapter (adapters.sh); kept for schema parity.
     auth: direct
     results_dir: results/codex

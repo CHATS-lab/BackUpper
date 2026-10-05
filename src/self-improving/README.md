@@ -1,8 +1,9 @@
 # Self-improving BackUpper (reflection + learned rules)
 
-`reflection.ts` runs the two model turns; `learned_backup.ts` holds the rule table and
-matches, executes and writes it. The prompts are `prompts/reflection.md` and
-`generalize.md`; the wiring is in `src/backup/strategies.ts` (tier 4).
+`learned.ts` holds the rule table and matches, executes and writes it (its first half),
+and runs the two model turns (its second half). The prompts are the `reflection` and
+`generalize` sections of the top-level `prompts.md`; the wiring is in
+`src/backup/strategies.ts` (tier 4).
 
 Everything the model can do is write rules. Runtime matching and execution never call a model.
 
@@ -25,7 +26,7 @@ PreToolUse hook (one process per tool call)
 Switches: `selfImproving`, `selfImprovingGeneralize`, `learnedBackupRulesPath`, `reflectionSubagentRunner` /
 `reflectionSubagentModel` (see the top-level README).
 
-## Rule matching and execution (learned_backup.ts)
+## Rule matching and execution (learned.ts)
 
 - A rule names `toolName`, `matchField`, `actionRegex`. The regex (JavaScript, no flags) runs on the
   raw text of that one tool-input field; the backup-declaration marker is removed from the text.
@@ -38,7 +39,7 @@ Switches: `selfImproving`, `selfImprovingGeneralize`, `learnedBackupRulesPath`, 
 - Parse-time format checks only: id, regex compiles, captures typed, args well formed, artifacts
   under `actionDir`, steps reference `actionDir` at least once. No judge, no execution test.
 
-## Reflection (reflection.ts, `REFLECTION_INSTRUCTIONS`)
+## Reflection (learned.ts, `REFLECTION_INSTRUCTIONS`)
 
 - Trigger: after every subagent attempt (artifact, read-only verdict, failure).
 - Input: the action (raw fields + workdir), the subagent's trail (its result, artifact inventory,
@@ -47,7 +48,7 @@ Switches: `selfImproving`, `selfImprovingGeneralize`, `learnedBackupRulesPath`, 
 - Output: `inputPattern`, `outputPattern`, `UPDATE_EXISTING | ADD_NEW | DO_NOTHING`, optional rule.
 - Written rules get `provenance:"observed"` and keep their `matchedExamples`.
 
-## Generalize (reflection.ts, `GENERALIZE_INSTRUCTIONS`)
+## Generalize (learned.ts, `GENERALIZE_INSTRUCTIONS`)
 
 - One body, two forms; the only difference is the trail block. It is told nothing about how the
   backup system runs.

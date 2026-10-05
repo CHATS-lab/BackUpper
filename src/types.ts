@@ -33,7 +33,7 @@ export interface HookContext {
   /**
    * The host's permission mode for this call (`bypassPermissions`, `default`, `acceptEdits`,
    * ...), when the host reports one. Selects how tier 1 hands its rewrite back (see
-   * agents/capabilities.ts tier1Mode).
+   * agents.ts tier1Mode).
    */
   permission_mode?: string;
 }

@@ -36,7 +36,7 @@ export function resolveRunner(config: Pick<SandboxConfig, "subagentRunner">, hos
   if (h && HOST_RUNNER[h]) return HOST_RUNNER[h];
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { installedAdapters } = require("../agents/index.js");
+    const { installedAdapters } = require("../agents.js");
     const names: string[] = installedAdapters(process.cwd()).map((a: { name: string }) => a.name);
     if (names.length === 1 && HOST_RUNNER[names[0]]) return HOST_RUNNER[names[0]];
   } catch { /* detection is optional */ }

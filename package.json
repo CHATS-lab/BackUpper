@@ -20,12 +20,12 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "node scripts/gen_prompts.mjs && tsc -p tsconfig.json && node scripts/postbuild.mjs",
-    "typecheck": "node scripts/gen_prompts.mjs && tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/build.mjs prompts && tsc -p tsconfig.json && node scripts/build.mjs postbuild",
+    "typecheck": "node scripts/build.mjs prompts && tsc -p tsconfig.json --noEmit",
     "prepare": "npm run build",
-    "test": "npm run build && node test/run-unit.mjs && node test/smoke.mjs && node scripts/gen_config_doc.mjs --check",
+    "test": "npm run build && node test/run-unit.mjs && node test/smoke.mjs && node scripts/build.mjs config-doc --check",
     "e2e": "bash test/e2e/run.sh",
-    "docs": "npm run build && node scripts/gen_config_doc.mjs"
+    "docs": "npm run build && node scripts/build.mjs config-doc"
   },
   "repository": {
     "type": "git",

@@ -11,14 +11,11 @@ import * as os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
 import type { BackupArtifact, IncompleteCapture, SandboxConfig } from "../types.js";
 import { listActions } from "../backup/manifest.js";
-import { readActionArtifacts, storeRoot } from "../store/layout.js";
+import { readActionArtifacts, storeRoot, quote, appendJsonl } from "../util.js";
 import { invokeRestoreSubagent } from "../backup/subagent.js";
-import { serverFromToolName } from "../explore/experiences.js";
-import { callMcpTool, callMcpToolHttp } from "../explore/list_mcp_tools.js";
+import { serverFromToolName, callMcpTool, callMcpToolHttp } from "../explore.js";
 import { applyTreeMeta, currentExternalShadowMeta, externalShadowFiles, externalShadowSpecs, readTreeMeta, type TreeMeta } from "../backup/fsmeta.js";
 import { wordsAndRedirects } from "../backup/compound.js";
-import { quote } from "../util/shell.js";
-import { appendJsonl } from "../util/jsonfile.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 

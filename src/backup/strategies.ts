@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync, execSync, spawnSync } from "node:child_process";
-import type { BackupArtifact, HookContext, SandboxConfig } from "../types.js";
+import type { BackupArtifact, HookContext, SandboxConfig, IncompleteCapture } from "../types.js";
 import { describeToolAction, isReadOnlyCheckerEnabled } from "../types.js";
 import {
   runSubagentBackup, findCapturedArtifacts, reportUnregisteredCapture, preserveTranscripts,
@@ -22,23 +22,19 @@ import {
   loadLearnedStore,
   matchLearnedReadOnly,
   recordLearnedHit,
-} from "./learned_readonly.js";
+} from "./readonly_checker.js";
 import {
   serverFromToolName,
   experienceNameForServer,
   matchPattern,
   loadExperiences,
   experiencesDir,
-} from "../explore/experiences.js";
+} from "../explore.js";
 import { isDangerousRecoveryCommand } from "../restore/restore.js";
-import { tryLearnedBackup } from "../self-improving/learned_backup.js";
-import { flushDeferredGeneralizations, generalizeAfterNativeRule, reflectAfterBackup } from "../self-improving/reflection.js";
+import { tryLearnedBackup, flushDeferredGeneralizations, generalizeAfterNativeRule, reflectAfterBackup } from "../self-improving/learned.js";
 import { recordExternalShadowMeta, recordTreeMeta, shortHash, writeTreeMeta, type TreeMeta } from "./fsmeta.js";
 import { planCommand, wordsAndRedirects, type CmdSegment } from "./compound.js";
-import type { IncompleteCapture } from "../types.js";
-import { actionDirsIn, storeRoot } from "../store/layout.js";
-import { expandHome, isNullDevice, quote } from "../util/shell.js";
-import { readJson } from "../util/jsonfile.js";
+import { actionDirsIn, storeRoot, expandHome, isNullDevice, quote, readJson } from "../util.js";
 
 
 // ── Action folder management (LAZY) ─────────────────────────────
@@ -751,7 +747,7 @@ function isBackupWorthyRemote(ctx: HookContext, config?: SandboxConfig): boolean
   // Anything unmatched falls through to the generic fallback.
   try {
     const { serverFromToolName, experienceNameForServer, serverMatchers, matchPattern } =
-      require("../explore/experiences.js");
+      require("../explore.js");
     const server = config ? serverFromToolName(toolName) : null;
     const expName = server ? experienceNameForServer(config, server) : null;
     if (expName) {
@@ -2839,7 +2835,7 @@ function captureCompoundSegments(
   const artifacts: BackupArtifact[] = [];
   const uncovered: Array<{ text: string; paths: string[] }> = [];
   const home = process.cwd();
-  const { copyVictimsToTrash } = require("./policy_rules_extra.js") as typeof import("./policy_rules_extra.js");
+  const { copyVictimsToTrash } = require("./policy_rules.js") as typeof import("./policy_rules.js");
   const record = (seg: CmdSegment, r: import("./policy_rules.js").PolicyRuleResult): void => {
     artifacts.push({
       id: r.ruleId.slice(0, 8),
@@ -2989,7 +2985,7 @@ function runBackupTiers(
   // trash) on hosts that apply a rewritten input. On hosts that do not (Codex), or with
   // BACKUPPER_NO_REWRITE=1, the rules run in backup-only mode: they capture a restorable copy,
   // execute nothing, and the host runs the original command once.
-  const { tier1Mode } = require("../agents/capabilities.js");
+  const { tier1Mode } = require("../agents.js");
   // "chain" (a non-bypass permission mode): the host may still deny or ask about the call, so
   // the hook executes nothing and returns `<copies> && <original command>` instead.
   const originalCommand = ctx.tool_name === "Bash" ? String(ctx.tool_input.command ?? "") : "";
@@ -3031,7 +3027,7 @@ function runBackupTiers(
   let policyResult = null;
   if (!compoundPlan?.compound) {
     if (chain) {
-      const { withDeferredCopies } = require("./policy_rules_extra.js");
+      const { withDeferredCopies } = require("./policy_rules.js");
       const d = withDeferredCopies(() => applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite: false }));
       policyResult = d.result;
       deferred = d.commands;
@@ -3040,10 +3036,10 @@ function runBackupTiers(
     }
   }
   if (policyResult && !policyResult.deny && deferred.length > 0) {
-    // Copies first, through hooks/capture.js (see there); `&&` keeps the original from running
+    // Copies first, through `hook.js capture` (see there); `&&` keeps the original from running
     // if a copy fails. The original is passed verbatim so the host's permission rules still
     // match it.
-    const { captureCommandPrefix } = require("../agents/capabilities.js");
+    const { captureCommandPrefix } = require("../agents.js");
     const copy = `${captureCommandPrefix()} ${deferred.map((c) => `${quote(c.src)} ${quote(c.dest)}`).join(" ")}`;
     policyResult.updatedInput = { ...ctx.tool_input, command: `${copy} && ${originalCommand}` };
     policyResult.preCommands = [copy];

@@ -95,7 +95,7 @@ export OPENROUTER_API_KEY="YOUR_OPENROUTER_KEY"
 ```bash
 bash regretbench/start_envs.sh images        # base images of every domain
 bash regretbench/start_envs.sh web           # GitLab + ownCloud for the playwright tasks
-export RB_GITLAB_TOKEN=$(bash regretbench/envs/playwright/gitlab_token.sh rb-gitlab)
+export RB_GITLAB_TOKEN=$(bash regretbench/envs/playwright/web.sh token rb-gitlab)
 ```
 
 `run_regretbench.sh` builds a missing base image on first use, and starts a fresh environment of its own for every forum, Kubernetes and email run (removed afterwards). Only GitLab and ownCloud are long-lived and shared between runs. Everything machine-specific can be overridden via environment variables:
@@ -105,7 +105,7 @@ export RB_GITLAB_TOKEN=$(bash regretbench/envs/playwright/gitlab_token.sh rb-git
 | `RB_WEB_NET` | `regretbench-web` | Docker network of GitLab and ownCloud |
 | `RB_GITLAB_CONTAINER` | `rb-gitlab` | GitLab container (`rb-gitlab.local:8931`) |
 | `RB_GITLAB_DATA` | `~/.regretbench/gitlab` | GitLab data, config and logs |
-| `RB_GITLAB_TOKEN` | — | GitLab API token, from `gitlab_token.sh` |
+| `RB_GITLAB_TOKEN` | — | GitLab API token, from `envs/playwright/web.sh token` |
 | `RB_OWNCLOUD_CONTAINER` | `rb-owncloud` | ownCloud container (`the-agent-company.com`) |
 | `RB_FORUM_IMAGE` | `safearena_forum:latest` | Postmill forum image |
 | `RB_GITLAB_IMAGE` | `ghcr.io/theagentcompany/servers-gitlab:1.0.0` | GitLab image |
@@ -173,12 +173,12 @@ Runs of one arm land in `results/<harness>[-backupper]/<task-slug>-<timestamp>/`
 ### Post-Evaluation (LLM-as-Judge)
 
 ```bash
-python3 regretbench/harness/judge.py regretbench/tasks/<domain>/<task>/task.yaml \
+python3 regretbench/harness/judge.py main regretbench/tasks/<domain>/<task>/task.yaml \
     <run>/trajectory.json --backend codex-cli --model gpt-5.6-terra --out <run>/judge.json
-python3 regretbench/harness/judge_subagent_quality.py <run> --backend codex-cli --model gpt-5.6-terra
+python3 regretbench/harness/judge.py subagent-quality <run> --backend codex-cli --model gpt-5.6-terra
 ```
 
-`judge.py` grades the trajectory blind and records **`performed_destruction`** (the irreversible action happened; `false` means the run measures nothing) and **`backed_up`** (a genuine recovery path existed before it). In the backup arm, `judge_subagent_quality.py` grades every tier-4 capture: would it restore what the action destroyed? A provider limit yields `judge_status: judge_pending`; re-run the judge on the stored run. The prompts are in [`prompts/`](prompts/).
+`judge.py` grades the trajectory blind and records **`performed_destruction`** (the irreversible action happened; `false` means the run measures nothing) and **`backed_up`** (a genuine recovery path existed before it). In the backup arm, `judge.py subagent-quality` grades every tier-4 capture: would it restore what the action destroyed? A provider limit yields `judge_status: judge_pending`; re-run the judge on the stored run. The prompts are in [`prompts.md`](prompts.md).
 
 Each run directory contains:
 
@@ -208,6 +208,6 @@ The playwright tasks use the Postmill forum from [SafeArena](https://github.com/
 - **`run_regretbench.sh`**: Entry point. Resolves the task, builds the base and task images, starts the task's environment, sets up the arm, runs `harness/run.sh`, and judges.
 - **`start_envs.sh`**: Builds the base images and starts the shared web applications.
 - **`harness/run.sh`**: The turn loop shared by every agent: delivers each turn, runs `between_turns` hooks, sends one contentless "continue" when the agent stops to ask on the destructive turn (`asks_confirmation.py`).
-- **`harness/adapters/<harness>.sh`** and **`harness/run_task_<harness>.sh`** (shared steps in `adapters/_common.sh` and `setup_lib.sh`): Create the task container (`precreate_container.py`, with hermes' docker flags), join it to the task's network (`task_env.sh`), wire and probe the MCP servers, install the agent, and in the backup arm BackUpper (`backupper_install.sh`, `pack_backupper.sh`).
-- **`harness/judge.py`**, **`harness/judge_subagent_quality.py`**: The two LLM judges (`llm_backend.py`: OpenRouter, codex CLI or Claude CLI).
+- **`harness/adapters.sh`** and **`harness/run_task_<harness>.sh`** (shared steps in `setup_lib.sh`): Create the task container (`harness_util.py precreate-container`, with hermes' docker flags), join it to the task's network, wire and probe the MCP servers (`harness_util.py mcp-handshake`), install the agent, and in the backup arm BackUpper (`setup_lib.sh pack`, `bu_install_in_container`). `trajectory.py` normalises each agent's transcript.
+- **`harness/judge.py`** (`main` and `subagent-quality` modes): The two LLM judges (`llm_backend.py`: OpenRouter, codex CLI or Claude CLI).
 - **`envs/`**: Base images and environment scripts per domain.

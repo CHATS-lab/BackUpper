@@ -61,7 +61,7 @@ export const CONFIG_SCHEMA: Record<string, Kind> = {
 
 /**
  * One-line description of each settable key. README's configuration table is generated from
- * this, CONFIG_SCHEMA and DEFAULT_CONFIG by scripts/gen_config_doc.mjs (`npm run docs`).
+ * this, CONFIG_SCHEMA and DEFAULT_CONFIG by `scripts/build.mjs config-doc` (`npm run docs`).
  */
 export const CONFIG_DOCS: Record<keyof typeof CONFIG_SCHEMA, string> = {
   enabled: "Master switch.",

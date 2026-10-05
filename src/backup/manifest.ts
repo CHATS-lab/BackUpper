@@ -4,7 +4,7 @@
 
 import * as path from "node:path";
 import type { BackupArtifact, SandboxConfig } from "../types.js";
-import { actionDirs, backupRoot, readActionArtifacts } from "../store/layout.js";
+import { actionDirs, backupRoot, readActionArtifacts } from "../util.js";
 
 /**
  * List all action folders (sorted oldest → newest).

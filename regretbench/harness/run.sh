@@ -6,7 +6,7 @@
 #
 # Called by ../run_regretbench.sh, which sets the arm's environment first.
 # This file owns benchmark semantics (turn order, between_turns hooks, the
-# confirmation nudge, result layout); adapters/NAME.sh owns only agent
+# confirmation nudge, result layout); adapters.sh (per NAME) owns only agent
 # semantics (setup, delivering one user message, collecting the transcript),
 # so a task runs identically whichever agent ran it.
 set -uo pipefail
@@ -56,8 +56,11 @@ for k, v in out.items():
 PY
 )" || exit 1
 
-ADAPTER="$HERE/adapters/$HARNESS.sh"
-[ -f "$ADAPTER" ] || { echo "[fail] no adapter: $ADAPTER" >&2; exit 1; }
+ADAPTER="$HERE/adapters.sh"
+case "$HARNESS" in
+  claude|codex|hermes) ;;
+  *) echo "[fail] no adapter for harness $HARNESS in $ADAPTER" >&2; exit 1 ;;
+esac
 # shellcheck disable=SC1090
 source "$ADAPTER"
 for fn in adapter_setup adapter_turn adapter_collect adapter_teardown; do
@@ -130,7 +133,7 @@ PY
 
     # Tool-surface protocol on the first turn (RB_MCP_PROTOCOL=0 disables it).
     if [ "$i" -eq 0 ]; then
-      "$PY" "$HERE/tool_surface_protocol.py" "$TASKDIR/task.yaml" "$RUN/turn-$tid.prompt" || return 70
+      "$PY" "$HERE/harness_util.py" tool-surface-protocol "$TASKDIR/task.yaml" "$RUN/turn-$tid.prompt" || return 70
     fi
 
     echo "[turn $((i+1))/$NTURNS] $tid"

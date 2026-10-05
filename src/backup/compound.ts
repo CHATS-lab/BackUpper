@@ -9,7 +9,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { expandHome, isNullDevice } from "../util/shell.js";
+import { expandHome, isNullDevice } from "../util.js";
 
 export interface CmdSegment {
   /** The simple command as written (keyword and `NAME=value` prefixes removed, heredoc body dropped). */

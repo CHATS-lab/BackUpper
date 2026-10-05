@@ -49,16 +49,16 @@ start_web() {
   if docker inspect "$gl" >/dev/null 2>&1; then
     echo "✓ $gl already running"
   else
-    bash "$ENVS/playwright/start_gitlab.sh" "$gl" "$net" "${RB_GITLAB_DATA:-$HOME/.regretbench/gitlab}" || exit 1
+    bash "$ENVS/playwright/web.sh" gitlab "$gl" "$net" "${RB_GITLAB_DATA:-$HOME/.regretbench/gitlab}" || exit 1
   fi
   if docker inspect "$oc" >/dev/null 2>&1; then
     echo "✓ $oc already running"
   else
-    bash "$ENVS/playwright/start_owncloud.sh" "$oc" "$net" || exit 1
+    bash "$ENVS/playwright/web.sh" owncloud "$oc" "$net" || exit 1
   fi
   echo
   echo "GitLab needs several minutes for its first boot. Then:"
-  echo "  export RB_GITLAB_TOKEN=\$(bash $ENVS/playwright/gitlab_token.sh $gl)"
+  echo "  export RB_GITLAB_TOKEN=\$(bash $ENVS/playwright/web.sh token $gl)"
 }
 
 case "${1:-all}" in

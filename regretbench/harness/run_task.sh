@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_task.sh <task-dir> <agent-model> -- setup step of the hermes harness.
 #
-# Called once per run by adapters/hermes.sh: build the image if missing,
+# Called once per run by adapters.sh (hermes): build the image if missing,
 # pre-create the container, wire MCP and gate on a real MCP handshake, then
 # write $RUN/session.env; run.sh owns the turn loop.
 #
@@ -23,8 +23,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; RB="$(cd "$HERE/.." && pwd)"
 TASKDIR="${1:?usage: run_task.sh <task-dir> <model>}"; TASKDIR="$(cd "$TASKDIR" && pwd)"
 MODEL="${2:?usage: run_task.sh <task-dir> <model>}"
 
+# shellcheck source=setup_lib.sh
+. "$HERE/setup_lib.sh"
 # Sets HERMES_UPSTREAM_MODEL and HERMES_CONTEXT_LENGTH.
-. "$HERE/hermes_model_route.sh"
 rb_hermes_route "$MODEL"
 
 PY="${RB_PY:-python3}"
@@ -43,8 +44,6 @@ fi
 "$HERMES" --version >/dev/null 2>&1 \
   || { echo "[fail] $HERMES does not run"; exit 1; }
 
-# shellcheck source=setup_lib.sh
-. "$HERE/setup_lib.sh"
 rb_task_meta || exit 1
 rb_ensure_image || exit 1
 rb_mint_run hermes
@@ -262,7 +261,7 @@ if [ "${RB_BACKUPPER:-0}" = 1 ]; then
 fi
 
 # --- hand-off ----------------------------------------------------------------
-# Per-run state for run.sh and adapters/hermes.sh (no credentials).
+# Per-run state for run.sh and adapters.sh (no credentials).
 rb_write_session_env CID CWD IMAGE IDFILE TOOLSETS MCP_NAMES "HERMES_BIN=$HERMES" \
   "AGENT_HOME=$RUN/home" "AGENT_HERMES_HOME=$RUN/home/.hermes" "BU_STORE=$BU_STORE_IN" @COMMON_ENV
 # From here on adapter_teardown, not the EXIT trap, removes the container.

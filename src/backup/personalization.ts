@@ -10,8 +10,7 @@ import { buildCheckerInput, collectArgumentPaths, parseCheckerVerdict } from "./
 import { targetActionLog } from "./provenance.js";
 
 import { PERSONALIZATION_ALIASES, PERSONALIZATION_MODES } from "../config/schema.js";
-import { storeRoot } from "../store/layout.js";
-import { appendJsonl } from "../util/jsonfile.js";
+import { storeRoot, appendJsonl } from "../util.js";
 
 export const MODES = PERSONALIZATION_MODES;
 /** The paper name for a mode, accepting the older names too. */

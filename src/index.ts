@@ -4,10 +4,10 @@
  */
 
 export { loadConfig, saveConfig } from "./config/load.js";
-export { evaluate } from "./engine/rules.js";
+export { evaluate } from "./engine.js";
 export { runBackup } from "./backup/strategies.js";
 export { runSubagentBackup } from "./backup/subagent.js";
-export { captureEffect, logEffect } from "./engine/effects.js";
+export { captureEffect, logEffect } from "./engine.js";
 export { loadManifest, appendToManifest } from "./backup/manifest.js";
 export { restoreArtifact, restoreActionDirect, restoreActionLoop, listRestorableActions } from "./restore/restore.js";
 export type {

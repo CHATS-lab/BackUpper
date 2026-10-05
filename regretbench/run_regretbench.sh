@@ -43,7 +43,7 @@ run_regretbench.sh -- run one RegretBench task, with or without the BackUpper.
                   Default: gpt-5.6-luna under a codex subscription, haiku under a
                   Claude subscription without OPENROUTER_API_KEY, else openai/gpt-5.6-luna.
   --judge         after the run, score it with harness/judge.py; with --backupper on,
-                  also grade the tier-4 captures with judge_subagent_quality.py.
+                  also grade the tier-4 captures with judge.py subagent-quality.
   --out DIR       where runs land. Default results/<harness>[-backupper].
   --dry-run       print the resolved plan and check prerequisites; start nothing.
   -h, --help      this text.
@@ -193,7 +193,7 @@ command -v docker >/dev/null 2>&1 || need "docker is not on PATH"
 docker info >/dev/null 2>&1 || need "cannot talk to the docker daemon (is it running? is DOCKER_HOST right?)"
 
 # hermes-agent supplies the container-creation flags for every harness, via
-# harness/precreate_container.py. It is not shipped.
+# `harness/harness_util.py precreate-container`. It is not shipped.
 [ -f "${HERMES_SRC:-}/tools/terminal_tool.py" ] \
   || need "HERMES_SRC='${HERMES_SRC:-}' has no tools/terminal_tool.py -- point HERMES_SRC at a hermes-agent checkout"
 export HERMES_SRC="${HERMES_SRC:-}"
@@ -324,7 +324,7 @@ case "$DOMAIN" in
         ENV_PLAN="fresh forum $TAG-forum from ${RB_FORUM_IMAGE:-safearena_forum:latest} on network $TAG (alias rb-forum.local)" ;;
       gitlab)
         docker inspect "$GITLAB_CTR" >/dev/null 2>&1 || need "GitLab container $GITLAB_CTR is not running -- bash regretbench/start_envs.sh web"
-        [ -n "${RB_GITLAB_TOKEN:-}" ] || need "GitLab tasks need RB_GITLAB_TOKEN (bash regretbench/envs/playwright/gitlab_token.sh $GITLAB_CTR)"
+        [ -n "${RB_GITLAB_TOKEN:-}" ] || need "GitLab tasks need RB_GITLAB_TOKEN (bash regretbench/envs/playwright/web.sh token $GITLAB_CTR)"
         ENV_PLAN="shared GitLab $GITLAB_CTR on network $WEB_NET (alias rb-gitlab.local)" ;;
       owncloud)
         docker inspect "$OWNCLOUD_CTR" >/dev/null 2>&1 || need "ownCloud container $OWNCLOUD_CTR is not running -- bash regretbench/start_envs.sh web"
@@ -358,7 +358,7 @@ start_env() {
         forum)
           new_network "$TAG"
           CREATED_CTRS+=("$TAG-forum")
-          line="$(bash "$ENVS/playwright/start_forum.sh" "$TAG-forum" "$TAG")" || die "the forum did not come up"
+          line="$(bash "$ENVS/playwright/web.sh" forum "$TAG-forum" "$TAG")" || die "the forum did not come up"
           # shellcheck disable=SC2086
           run_seed $line
           export RB_TASK_NETWORK="$TAG" ;;
@@ -432,7 +432,7 @@ trap cleanup_env EXIT INT TERM
 
 # The BackUpper as published from this repository, with its dependencies.
 if [ "$BACKUPPER" = on ]; then
-  RB_BU_PKG="$(bash "$H/pack_backupper.sh" "$ROOT" "$OUT/.backupper-pkg-$$")" || die "packing the BackUpper failed"
+  RB_BU_PKG="$(bash "$H/setup_lib.sh" pack "$ROOT" "$OUT/.backupper-pkg-$$")" || die "packing the BackUpper failed"
   export RB_BU_PKG
   CREATED_DIRS+=("$OUT/.backupper-pkg-$$")
 fi
@@ -468,7 +468,7 @@ if [ "$JUDGE" = 1 ]; then
   JB="${RB_JUDGE_BACKEND:-openrouter}"
   JM="${RB_JUDGE_MODEL:-anthropic/claude-sonnet-4.5}"
   note "judging with $JM via $JB"
-  "$PY" "$H/judge.py" "$TASKDIR/task.yaml" "$RUN/trajectory.json" \
+  "$PY" "$H/judge.py" main "$TASKDIR/task.yaml" "$RUN/trajectory.json" \
         --backend "$JB" --model "$JM" --out "$RUN/judge.json" >/dev/null \
     || echo "[warn] judge.py exited non-zero -- see $RUN/judge.json" >&2
   "$PY" - "$RUN/judge.json" <<'PY'
@@ -489,9 +489,9 @@ print("  says a genuine recovery path existed before it.")
 PY
   if [ "$BACKUPPER" = on ]; then
     note "grading the BackUpper subagent's captures"
-    "$PY" "$H/judge_subagent_quality.py" "$RUN" --backend "$JB" --model "$JM" \
+    "$PY" "$H/judge.py" subagent-quality "$RUN" --backend "$JB" --model "$JM" \
           --out "$RUN/judge_subagent_quality.json" \
-      || echo "[warn] judge_subagent_quality.py exited non-zero" >&2
+      || echo "[warn] judge.py subagent-quality exited non-zero" >&2
   fi
 fi
 

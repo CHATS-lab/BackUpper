@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_task_codex.sh <task-dir> [model]
 #
-# Setup step of the codex harness. adapters/codex.sh calls it once per run to
+# Setup step of the codex harness. adapters.sh (codex) calls it once per run to
 # create the task container, install the agent and write $RUN/session.env;
 # run.sh then drives the turns. It follows run_task_claude.sh; the differences:
 #   * codex-cli is a single static binary (RB_CODEX_BUNDLE, not shipped),
@@ -11,9 +11,9 @@
 #   * Model, provider, approval/sandbox policy and MCP servers are written to
 #     $CODEX_HOME/config.toml. approval_policy="never" and
 #     sandbox_mode="danger-full-access" only stop codex from refusing or asking;
-#     the container keeps the docker flags applied by precreate_container.py.
+#     the container keeps the docker flags applied by `harness_util.py precreate-container`.
 #   * Continuation is `codex exec resume --last` in a per-run CODEX_HOME.
-#   * adapter_turn translates codex's --json events with codex_normalize.py
+#   * adapter_turn translates codex's --json events with `trajectory.py codex`
 #     into $RUN/claude_stream.jsonl, so the downstream scripts are shared.
 #   * There is no plugin-absence probe (it is specific to Claude Code).
 #
@@ -208,12 +208,10 @@ echo "[cfg] model=$MODEL auth=$CODEX_AUTH provider=$PROVIDER reasoning_effort=$R
 
 # --- RB_BACKUPPER: install the BackUpper in the task container --------------
 #   * `codex exec` runs hooks only with --dangerously-bypass-hook-trust, which
-#     adapters/codex.sh passes.
+#     adapters.sh (codex) passes.
 #   * Codex ignores a rewritten tool input, so the package itself runs tier 1 in
 #     backup-only mode under codex (it copies what a call would destroy).
 if [ "${RB_BACKUPPER:-0}" = 1 ]; then
-  # shellcheck source=backupper_install.sh
-  . "$HERE/backupper_install.sh"
   BU_EXTRA_PATH="$CCDIR/pkg/codex/codex-path"
   bu_install_in_container codex codex "${RB_BU_SUBAGENT_MODEL:-gpt-5.6-luna}" || exit 1
 
@@ -309,7 +307,7 @@ fi
 
 # --- hand-off ----------------------------------------------------------------
 # Write the per-run state to session.env; run.sh owns the turn loop from here.
-# BU_STORE is the store's location inside the container (adapters/_common.sh).
+# BU_STORE is the store's location inside the container (setup_lib.sh).
 rb_write_session_env CID CWD "BU_STORE=$BU_STORE_IN" CCDIR IMAGE MODEL PROVIDER CODEX_AUTH \
   REASONING_EFFORT ADD_DIR IDFILE CODEX_VERSION AUTH_DESC @AGENT_ENV
 trap - EXIT

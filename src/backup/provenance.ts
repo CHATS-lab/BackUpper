@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import {createHash} from 'node:crypto';
 import type {HookContext, SandboxConfig} from '../types.js';
 import {collectArgumentPaths} from './readonly_checker.js';
-import { storeRoot } from "../store/layout.js";
+import { storeRoot } from "../util.js";
 
 type Ctx = HookContext & {provenance_action_id?: string};
 

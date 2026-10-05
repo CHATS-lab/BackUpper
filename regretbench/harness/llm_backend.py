@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Backends for a scoring LLM call, plus the OpenRouter key lookup.
 
-Shared by every scoring caller (harness/judge.py, harness/judge_subagent_quality.py).
+Shared by every scoring caller (harness/judge.py, both modes).
 Each keeps its own prompts, rubrics and output contracts:
 
   openrouter   the system+user pair as one chat-completions request (temperature 0).

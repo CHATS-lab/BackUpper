@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # run_task_claude.sh <task-dir> [model]
 #
-# Setup step of the Claude Code harness. adapters/claude.sh calls it once per run
+# Setup step of the Claude Code harness. adapters.sh (claude) calls it once per run
 # to create the task container, install the agent and write $RUN/session.env;
 # run.sh then drives the turns.
 #
 # Differences from the hermes harness (run_task.sh):
 #   * The agent binary runs inside the task container, since Claude Code's file
 #     and shell tools act on the host process's filesystem. The container itself
-#     is still created by precreate_container.py with hermes' docker flags.
+#     is still created by `harness_util.py precreate-container` with hermes'
+#     docker flags.
 #   * Claude Code is installed from a pinned prebuilt bundle (RB_CC_BUNDLE) under
 #     /opt/rbcc; no node or npm runs in the task container. The install is
 #     audited with `docker diff`.
 #   * MCP servers are passed with --mcp-config, from a file kept under /opt/rbcc
 #     so that nothing is added to the agent's workspace.
-#   * The session JSONL is copied out and normalised by cc_trajectory.py.
+#   * The session JSONL is copied out and normalised by `trajectory.py build`.
 #
 # The agent sees only the task's turn text. The BackUpper plugin is asserted
 # absent unless RB_BACKUPPER=1.
@@ -163,8 +164,6 @@ fi
 # --- RB_BACKUPPER: install the BackUpper in the task container --------------
 # Tier 4 spawns `claude`, so a shim for the bundled CLI goes on the agent's PATH.
 if [ "${RB_BACKUPPER:-0}" = 1 ]; then
-  # shellcheck source=backupper_install.sh
-  . "$HERE/backupper_install.sh"
   # A vendor-prefixed RB_BU_SUBAGENT_MODEL (openai/gpt-5.6-luna) is routed through
   # an Anthropic-compatible endpoint below, which maps every Claude tier to it;
   # a bare one (haiku, sonnet, a claude-* id) runs on the main agent's login.
@@ -306,7 +305,7 @@ esac
 
 # --- hand-off --------------------------------------------------------------
 # Write the per-run state to session.env; run.sh owns the turn loop from here.
-# BU_STORE is the store's location inside the container (adapters/_common.sh).
+# BU_STORE is the store's location inside the container (setup_lib.sh).
 rb_write_session_env CID CWD "BU_STORE=$BU_STORE_IN" CCDIR IMAGE MODEL ADD_DIR GW_CID IDFILE \
   "SID=$($PY -c 'import uuid;print(uuid.uuid4())')" @AGENT_ENV @MCP_ARGS
 # From here on adapter_teardown, not the EXIT trap, removes the container.
