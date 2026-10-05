@@ -219,6 +219,9 @@ const INSTALLED_FILE_EXCLUDES = [
   "/.claude/commands/backupper-*.md",
   "/.codex/hooks.json",
   "/.hermes/plugins/backupper/",
+  "/.openhands/plugins/backupper/",
+  "/.dsh/backupper/",
+  "/.openclaw/extensions/backupper/",
 ];
 
 /** Add any missing install excludes to a shadow repo created by an older version. */
@@ -954,11 +957,6 @@ export interface BackupResult {
   updatedInput?: Record<string, unknown>;
   /** Folder of the action recorded for this backup, when one was created. */
   actionDir?: string;
-  /**
-   * Set when the call must be blocked: a backup-only tier-1 rule found the backup store in
-   * the victim set of a command it cannot rewrite. The text is the reason shown to the agent.
-   */
-  deny?: string;
   /** Effects outside what tiers 1-3 capture, which tier 4 (or tier 2) had to take. */
   uncovered?: IncompleteCapture;
   /** True once a lower tier captured `uncovered` or judged it read-only. */
@@ -2757,7 +2755,7 @@ export function runBackup(
   // Deferred generalizations run after all tiers have finished, on every return path.
   try {
     const r = runBackupTiers(ctx, config);
-    if (r.uncovered && !r.uncoveredHandled && !r.deny) {
+    if (r.uncovered && !r.uncoveredHandled) {
       // Nothing captured these effects: say so in the action, so `list`/`show` flag it and
       // `restore` names what it cannot bring back instead of reporting a silent [OK].
       try {
@@ -2830,7 +2828,7 @@ function captureCompoundSegments(
   trashDir: string,
   storeRoot: string,
   applyPolicyRules: (c: HookContext, t: string, s?: string, o?: { rewrite?: boolean }) => import("./policy_rules.js").PolicyRuleResult | null,
-): { artifacts: BackupArtifact[]; uncovered: Array<{ text: string; paths: string[] }>; deny?: string } {
+): { artifacts: BackupArtifact[]; uncovered: Array<{ text: string; paths: string[] }> } {
   const workspace = path.resolve(process.cwd());
   const artifacts: BackupArtifact[] = [];
   const uncovered: Array<{ text: string; paths: string[] }> = [];
@@ -2895,7 +2893,6 @@ function captureCompoundSegments(
       }
       const segCtx: HookContext = { ...ctx, tool_input: { ...ctx.tool_input, command: seg.text } };
       const r = applyPolicyRules(segCtx, trashDir, storeRoot, { rewrite: false });
-      if (r?.deny) return { artifacts: [], uncovered: [], deny: r.deny };
       if (r) {
         record(seg, r);
         covered = true;
@@ -3005,7 +3002,6 @@ function runBackupTiers(
     : null;
   if (compoundPlan && compoundPlan.compound) {
     const cap = captureCompoundSegments(ctx, compoundPlan.segments, trashDir, sandboxStoreRoot, applyPolicyRules);
-    if (cap.deny) return { artifacts: [], needsSubagent: false, deny: cap.deny };
     if (cap.artifacts.length) {
       const dir = materializeActionDir(config);
       result.actionDir = dir;
@@ -3035,7 +3031,7 @@ function runBackupTiers(
       policyResult = applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite });
     }
   }
-  if (policyResult && !policyResult.deny && deferred.length > 0) {
+  if (policyResult && deferred.length > 0) {
     // Copies first, through `hook.js capture` (see there); `&&` keeps the original from running
     // if a copy fails. The original is passed verbatim so the host's permission rules still
     // match it.
@@ -3043,9 +3039,6 @@ function runBackupTiers(
     const copy = `${captureCommandPrefix()} ${deferred.map((c) => `${quote(c.src)} ${quote(c.dest)}`).join(" ")}`;
     policyResult.updatedInput = { ...ctx.tool_input, command: `${copy} && ${originalCommand}` };
     policyResult.preCommands = [copy];
-  }
-  if (policyResult && policyResult.deny) {
-    return { artifacts: [], needsSubagent: false, deny: policyResult.deny };
   }
   if (policyResult) {
     const dir = materializeActionDir(config);

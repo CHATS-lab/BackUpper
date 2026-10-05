@@ -35,7 +35,7 @@ Tier 4 runs only when all of these hold:
 
 ## The backup subagent
 
-**It follows your agent.** Under Claude Code it runs `claude -p`, under Codex `codex exec`, and under Hermes `hermes chat`, each with that CLI's existing login, so no extra key is needed. By default it uses a cheap model (`haiku` for Claude Code, `gpt-6-luna` for Codex, the provider default for Hermes). Pick another with `backupper config set subagentModel <model>`, or another CLI with `subagentRunner`.
+**It follows your agent.** Under Claude Code it runs `claude -p`, under Codex `codex exec`, under Hermes `hermes chat`, each with that CLI's existing login (OpenHands, DeepSeek Harness and OpenClaw have no headless CLI of their own, so under them it runs `claude -p`), so no extra key is needed. By default it uses a cheap model (`haiku` for Claude Code, `gpt-6-luna` for Codex, the provider default for Hermes). Pick another with `backupper config set subagentModel <model>`, or another CLI with `subagentRunner`.
 
 **It has full permissions.** A backup may need to run arbitrary commands (a database dump, a `kubectl get`, a copy outside the project), so the subagent runs without approval prompts and with your user's access: Claude Code with `--dangerously-skip-permissions` (set `subagentPermissionMode` to `acceptEdits` to limit it to file edits), Codex with `--sandbox danger-full-access`, and Hermes with `--yolo`. It is told to only read and copy, never to change the target, but nothing enforces that beyond its instructions. The checker runs with no tools (Claude) or a read-only sandbox (Codex). Turn Tier 4 off with `backupper config set subagentEnabled false`.
 

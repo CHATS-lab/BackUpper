@@ -59,6 +59,16 @@ const CODEX_TOOL_MAP: Record<string, string> = {
   apply_patch: "Edit",
 };
 
+/** Tool-name map for DeepSeek Harness payloads (its bridge passes dsh's own tool names). */
+const DSH_TOOL_MAP: Record<string, string> = {
+  bash: "Bash",
+  write: "Write",
+  edit: "Edit",
+  read: "Read",
+  glob: "Glob",
+  grep: "Grep",
+};
+
 /** Maps dialect-specific event names onto the canonical PascalCase set. */
 function canonicalEvent(raw: unknown): string | undefined {
   if (typeof raw !== "string" || !raw) return undefined;
@@ -70,15 +80,39 @@ function canonicalEvent(raw: unknown): string | undefined {
   return raw;
 }
 
+/**
+ * OpenHands payloads carry `event_type` and `working_dir`, and its file tools take a `command`
+ * that names the operation; map them onto the Claude Code tools and fields.
+ */
+function openHandsTool(name: string, input: Record<string, unknown>): [string, Record<string, unknown>] {
+  if (name === "terminal") return ["Bash", input];
+  if (name === "apply_patch") return ["Edit", { ...input, command: input.patch }];
+  if (name === "write_file") return ["Write", input];
+  if (name === "read_file") return ["Read", input];
+  if (name === "edit") return ["Edit", input];
+  if (name !== "file_editor" && name !== "planning_file_editor") return [name, input];
+  const { command, file_text, old_str, new_str, ...rest } = input;
+  if (command === "view") return ["Read", rest];
+  if (command === "create") return ["Write", { ...rest, content: file_text }];
+  return ["Edit", { ...rest, old_string: old_str, new_string: new_str }];
+}
+
 export function normalizeHookContext(parsed: unknown): HookContext {
   const p = (parsed && typeof parsed === "object"
     ? parsed : {}) as Record<string, unknown>;
-  const hookEvent = canonicalEvent(p.hook_event ?? p.hook_event_name);
+  const openHands = typeof p.event_type === "string";
+  const hookEvent = canonicalEvent(p.hook_event ?? p.hook_event_name ?? p.event_type);
   let toolName = typeof p.tool_name === "string" ? p.tool_name : "";
   let toolInput = (p.tool_input && typeof p.tool_input === "object")
     ? p.tool_input as Record<string, unknown> : {};
 
+  if (openHands) [toolName, toolInput] = openHandsTool(toolName, toolInput);
   toolName = CODEX_TOOL_MAP[toolName] ?? toolName;
+  if (process.env.BACKUPPER_HOST_AGENT === "deepseek-harness") {
+    // str_replace_editor views, creates and edits under one name; only `view` is a read.
+    if (toolName === "str_replace_editor") toolName = toolInput.command === "view" ? "Read" : "Edit";
+    toolName = DSH_TOOL_MAP[toolName] ?? toolName;
+  }
   // Mirror `path` to `file_path` so path-keyed logic sees the usual key.
   if (typeof toolInput.path === "string" && toolInput.file_path === undefined) {
     toolInput = { ...toolInput, file_path: toolInput.path };
@@ -90,7 +124,7 @@ export function normalizeHookContext(parsed: unknown): HookContext {
     tool_input: toolInput,
     tool_output: p.tool_output ?? p.tool_response,
     session_id: typeof p.session_id === "string" ? p.session_id : undefined,
-    cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+    cwd: typeof p.cwd === "string" ? p.cwd : typeof p.working_dir === "string" ? p.working_dir : undefined,
     ...(typeof p.permission_mode === "string" ? { permission_mode: p.permission_mode } : {}),
   };
 }
@@ -157,8 +191,6 @@ export interface SandboxConfig {
   effectManifest: boolean;
   /** Path to effect log */
   effectLogPath: string;
-  /** Deny rules: regexes matched case-insensitively against a call's command or path. */
-  denyPatterns: string[];
   /** Patterns that always require a backup unless the mode is "off". */
   alwaysBackupPatterns: string[];
   /** Verbose logging */
@@ -211,7 +243,7 @@ export interface SandboxConfig {
   subagentPermissionMode: "bypassPermissions" | "acceptEdits";
   /**
    * CLI that runs the tier-4 subagent. "auto" follows the agent whose hook fired
-   * (Claude Code runs claude, Codex runs codex, Hermes runs hermes).
+   * (Claude Code runs claude, Codex runs codex, Hermes runs hermes, OpenClaw runs claude).
    */
   subagentRunner: "auto" | SubagentRunnerName;
   /** Provider for the hermes runner (`hermes chat --provider`); empty uses hermes's configured one. */
@@ -239,118 +271,6 @@ export interface SandboxConfig {
   panel: boolean;
 }
 
-// ── Default deny rules ───────────────────────────────────────────────
-//
-// Operations with no possible inverse (raw device writes, volume teardown, deleting the
-// filesystem root, home or backup store) are blocked instead of backed up. Each pattern
-// only fires when the destructive word is the command actually run.
-
-/** Command-boundary prefix: start of input or after a shell separator, optionally via sudo/doas. */
-const CMD_BOUNDARY =
-  "(?:^|[;&|(]\\s*|\\n\\s*)(?:(?:sudo|doas)\\s+(?:-\\S+\\s+)*)?";
-
-/** Default backup-store directory name; a relocated store is guarded by tier 1 instead. */
-const STORE_DIR = "\\.backupper";
-
-/**
- * Matches `rm` of `.backupper[/...]` anywhere in a command segment, but not similarly
- * named neighbours such as `.backupper-old`.
- */
-const STORE_RM_PATTERN =
-  CMD_BOUNDARY +
-  "rm\\s+(?:[^\\s;&|]+\\s+)*?[\"']?(?:[^\\s;&|]*/)?" +
-  STORE_DIR +
-  "(?:/[^\\s;&|]*)?/?[\"']?(?=\\s|;|&|\\||$)";
-
-/** A default deny rule: regex plus the explanation shown when it blocks. */
-export interface DenyRule {
-  pattern: string;
-  /** What was blocked and why it cannot be made reversible. */
-  why: string;
-}
-
-export const DEFAULT_DENY_RULES: readonly DenyRule[] = [
-  {
-    // mkfs with at least one argument.
-    pattern: CMD_BOUNDARY + "mkfs(?:\\.[a-z0-9]+)?\\s+\\S",
-    why:
-      "mkfs was blocked: it writes a new filesystem over the target device, " +
-      "so the previous contents are gone the moment it runs and no snapshot taken beforehand could be replayed onto it.",
-  },
-  {
-    // wipefs erasing with -a/-o; listing and --no-act dry runs stay allowed.
-    pattern:
-      CMD_BOUNDARY +
-      "wipefs\\s+(?![^;&|]*(?:-n\\b|--no-act\\b))[^;&|]*(?:-a\\b|--all\\b|-o\\b|--offset\\b)",
-    why:
-      "wipefs --all was blocked: it erases the partition table and filesystem signatures on the device, " +
-      "and those superblocks are the only record of where the data begins — there is nothing left to restore from.",
-  },
-  {
-    // dd writing to a block device; null/zero/std streams, ttys and ordinary files are excluded.
-    pattern:
-      CMD_BOUNDARY +
-      "dd\\s+(?:[^;&|]*\\s)?of=[\"']?/dev/(?!null\\b|zero\\b|stdout\\b|stderr\\b|stdin\\b|tty\\b|full\\b|random\\b|urandom\\b|fd/|pts/)",
-    why:
-      "dd writing to a block device was blocked: it overwrites raw sectors underneath the filesystem, " +
-      "which no file-level backup can capture and no recorded inverse can undo.",
-  },
-  {
-    // shred overwrites then unlinks.
-    pattern: CMD_BOUNDARY + "shred\\s+(?!-{1,2}(?:h|help|version)\\b)\\S",
-    why:
-      "shred was blocked: it overwrites the file's blocks in place with random data before unlinking it, " +
-      "so the original bytes are destroyed at write time and cannot be recovered from the disk afterwards.",
-  },
-  {
-    // LVM teardown; `--test` dry runs stay allowed.
-    pattern:
-      CMD_BOUNDARY +
-      "(?:lv|vg|pv)remove\\s+(?![^;&|]*--test\\b)(?:-\\S+\\s+)*\\S",
-    why:
-      "an LVM remove (lvremove/vgremove/pvremove) was blocked: it destroys the volume metadata that maps logical extents to physical ones, " +
-      "and without that mapping the extents on disk cannot be reassembled into the original volume.",
-  },
-  {
-    // rm with flags whose target is exactly the filesystem root.
-    pattern:
-      CMD_BOUNDARY +
-      "rm\\s+(?:-\\S+\\s+)+[\"']?/\\*?[\"']?(?:\\s|;|&|\\||$)",
-    why:
-      "a recursive delete of the filesystem root was blocked: it would destroy the per-action trash, the shadow repo and the restore tooling along with the system, " +
-      "so there would be no surviving copy of anything to restore from.",
-  },
-  {
-    // rm with flags whose target is the home directory itself.
-    pattern:
-      CMD_BOUNDARY +
-      "rm\\s+(?:-\\S+\\s+)+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})/?\\*?[\"']?(?:\\s|;|&|\\||$)",
-    why:
-      "a recursive delete of the entire home directory was blocked: it takes every project, credential and agent state directory at once, " +
-      "including the sandbox's own backups, so nothing outside it holds a copy of what was deleted.",
-  },
-  {
-    // Deleting the backup store, which every other restore depends on.
-    pattern: STORE_RM_PATTERN,
-    why:
-      "a delete of the sandbox's own backup store (.backupper) was blocked: it holds the per-action trash, the shadow repo and the recovery commands " +
-      "for everything already soft-deleted, so removing it is the one deletion that makes every earlier one permanent. " +
-      "To drop backups deliberately use `backupper clear`, or `backupper uninstall` to remove the plugin.",
-  },
-];
-
-
-/** Just the regexes, in the order they are evaluated. */
-export const DEFAULT_DENY_PATTERNS: string[] = DEFAULT_DENY_RULES.map(
-  (r) => r.pattern,
-);
-
-/** Pattern to explanation; user-added patterns fall back to showing the regex. */
-export const DEFAULT_DENY_REASONS: Readonly<Record<string, string>> =
-  Object.freeze(
-    Object.fromEntries(DEFAULT_DENY_RULES.map((r) => [r.pattern, r.why])),
-  );
-
 /** Default tier-4/checker model per runner: the CLI's cheapest current tier. */
 export const DEFAULT_SUBAGENT_MODELS: Readonly<Partial<Record<SubagentRunnerName, string>>> =
   Object.freeze({ claude: "haiku", codex: "gpt-6-luna" });
@@ -366,8 +286,6 @@ export const DEFAULT_CONFIG: SandboxConfig = {
   maxAgeHours: 0,
   effectManifest: true,
   effectLogPath: STORE_OVERRIDE ? path.join(STORE_OVERRIDE, "effects.jsonl") : ".backupper/effects.jsonl",
-  // Default deny list: only operations with no possible inverse.
-  denyPatterns: [...DEFAULT_DENY_PATTERNS],
   alwaysBackupPatterns: [
     "rm\\s",
     "git\\s+push",

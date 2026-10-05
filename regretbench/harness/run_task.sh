@@ -217,7 +217,8 @@ if [ "${RB_BACKUPPER:-0}" = 1 ]; then
   [ -s "$BU_DIR/dist/cli.js" ] || { echo "[fail] BackUpper is not built at $BU_DIR (npm ci)"; exit 1; }
   [ -x "$BU_NODE" ] || { echo "[fail] node 18+ not at $BU_NODE"; exit 1; }
   bu() { ( cd "$RUN" && "$BU_NODE" "$BU_DIR/dist/cli.js" "$@" ); }
-  bu install hermes >"$RUN/backupper_install.log" 2>&1 \
+  # install lists the plugin in plugins.enabled of the run's own Hermes home.
+  HERMES_HOME="$RUN/home/.hermes" bu install hermes >"$RUN/backupper_install.log" 2>&1 \
     || { echo "[fail] backupper install hermes (see $RUN/backupper_install.log)"; exit 1; }
   for kv in "mode=${RB_BU_MODE:-checker}" \
             "subagentEnabled=true" \

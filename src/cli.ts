@@ -14,7 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { getConfigDir, getConfigPath, loadConfig, saveConfig, configWarnings, ensureConfig } from "./config/load.js";
 import { quote } from "./util.js";
 import * as os from "node:os";
-import { ALL_ADAPTERS, findAdapter, ignoreStore, installedAdapters, type AgentAdapter } from "./agents.js";
+import { ALL_ADAPTERS, findAdapter, ignoreStore, installedAdapters, ocLaunch, type AgentAdapter } from "./agents.js";
 import { validateConfig, CONFIG_SCHEMA, parseConfigValue } from "./config/schema.js";
 import { resolveRunner, subagentModelFor } from "./backup/runner_caps.js";
 import { buildSubagentInvocation, cleanupSubagentInvocation, isCommandAvailable, subagentEnv } from "./backup/subagent.js";
@@ -320,11 +320,15 @@ function checkNode(): Check {
 function checkAgentCli(adapter: AgentAdapter): Check {
   const id = "agent.cli";
   if (!isCommandAvailable(adapter.bin)) {
-    const fix = {
-      claude: "install Claude Code: npm install -g @anthropic-ai/claude-code",
+    const fix = ({
+      "claude-code": "install Claude Code: npm install -g @anthropic-ai/claude-code",
       codex: "install Codex: npm install -g @openai/codex",
       hermes: "install Hermes and make sure `hermes` is on PATH",
-    }[adapter.runner];
+      openhands: "install the OpenHands CLI (uv tool install openhands); SDK scripts need none",
+      "deepseek-harness": "install DeepSeek Harness: npm install -g @deepseek-ai/dsh",
+      openclaw: "install OpenClaw: npm install -g openclaw",
+    } as Record<string, string>)[adapter.name];
+    if (adapter.name === "openhands") return { id, status: "warn", summary: `${adapter.bin} not found on PATH`, fix };
     return { id, status: "fail", summary: `${adapter.bin} not found on PATH`, fix };
   }
   const v = firstLine(runCheck(adapter.bin, ["--version"]).out) || "(version unknown)";
@@ -368,15 +372,47 @@ function checkHooks(adapter: AgentAdapter, projectRoot: string, pkgRoot: string)
       fix: "open `codex` in this project once and approve the hooks, or pass --dangerously-bypass-hook-trust",
     });
   }
+  if (adapter.name === "openhands" && !isCommandAvailable("backupper")) {
+    checks.push({
+      id: "hooks.cli", status: "fail",
+      summary: "the OpenHands plugin runs `backupper hook`, but `backupper` is not on PATH",
+      fix: "npm install -g agents-backupper   # in the environment OpenHands runs in",
+    });
+  }
   if (adapter.name === "hermes") {
     const on = /^(1|true|yes|on)$/i.test(String(process.env.HERMES_ENABLE_PROJECT_PLUGINS ?? ""));
     checks.push(on
       ? { id: "hooks.enabled", status: "ok", summary: "HERMES_ENABLE_PROJECT_PLUGINS is set" }
       : {
-        id: "hooks.enabled", status: "fail",
-        summary: "Hermes ignores project plugins unless HERMES_ENABLE_PROJECT_PLUGINS=1",
-        fix: "export HERMES_ENABLE_PROJECT_PLUGINS=1   # in the shell that runs hermes",
+        id: "hooks.enabled", status: "warn",
+        summary: "Hermes reads project plugins only with HERMES_ENABLE_PROJECT_PLUGINS=1",
+        fix: "HERMES_ENABLE_PROJECT_PLUGINS=1 hermes   # start Hermes from this project like this",
       });
+  }
+  if (adapter.name === "deepseek-harness") {
+    checks.push({
+      id: "hooks.launch", status: "warn",
+      summary: "dsh loads the hooks only when launched with the BackUpper patch layer",
+      fix: "dsh --patch .dsh/backupper/cordis.patch.yml   # from this project",
+    });
+  }
+  if (adapter.name === "openclaw" && isCommandAvailable("openclaw")) {
+    const on = /^true$/.test(firstLine(runCheck("openclaw", ["config", "get", "plugins.entries.backupper.enabled"]).out));
+    checks.push(on
+      ? { id: "hooks.enabled", status: "ok", summary: "the backupper plugin is enabled in the OpenClaw config" }
+      : {
+        id: "hooks.enabled", status: "fail",
+        summary: "OpenClaw loads workspace plugins only once enabled",
+        fix: "openclaw config set plugins.entries.backupper.enabled true",
+      });
+    const pinned = firstLine(runCheck("openclaw", ["config", "get", "agents.defaults.workspace"]).out).replace(/^"|"$/g, "");
+    checks.push(pinned && !/not set|undefined|null/i.test(pinned)
+      ? {
+        id: "hooks.workspace", status: "warn",
+        summary: `agents.defaults.workspace is set (${pinned}), so OPENCLAW_WORKSPACE_DIR is ignored`,
+        fix: `openclaw config set agents.defaults.workspace ${JSON.stringify(projectRoot)}   # or unset it`,
+      }
+      : { id: "hooks.workspace", status: "ok", summary: `start OpenClaw with ${ocLaunch(projectRoot)}` });
   }
   return checks;
 }
@@ -991,7 +1027,7 @@ function initProject(projectRoot: string, quiet = false): void {
   }
   if (seeded) console.log(`Copied ${seeded} starter experience file(s) to .backupper/experiences/`);
   if (ignored) console.log(ignored);
-  console.log("\nNext: backupper install <claude-code|codex|hermes>, then backupper doctor");
+  console.log("\nNext: backupper install <claude-code|codex|hermes|openhands|deepseek-harness|openclaw>, then backupper doctor");
 }
 
 function install(projectRoot: string, args: string[]): void {
@@ -1209,10 +1245,10 @@ function configCommand(projectRoot: string, args: string[]): void {
   const effective = config as unknown as Record<string, unknown>;
   const inFile = rawConfigKeys(projectRoot);
   // Every documented key, in the README table's order; unset keys are shown as null.
-  const documented = Object.keys(CONFIG_SCHEMA).filter((k) => !UNDOCUMENTED_KEYS.has(k));
+  const documented = Object.keys(CONFIG_SCHEMA);
   const settings: Record<string, unknown> = {};
   for (const k of documented) settings[k] = effective[k] ?? null;
-  // Internal keys (store layout, deny list) are kept apart from the documented settings.
+  // Internal keys (store layout) are kept apart from the documented settings.
   const internal: Record<string, unknown> = {};
   for (const k of Object.keys(effective)) if (!documented.includes(k)) internal[k] = effective[k];
   if (JSON_OUT) {
@@ -1230,9 +1266,6 @@ function configCommand(projectRoot: string, args: string[]): void {
   }
   console.log("\nChange a key: backupper config set <key> <value>    Read one: backupper config get <key>");
 }
-
-/** Keys in CONFIG_SCHEMA that the README table leaves out (kept in sync with `scripts/build.mjs config-doc`). */
-const UNDOCUMENTED_KEYS = new Set(["denyPatterns"]);
 
 /** Keys written in config.json (empty when absent or unparseable). */
 function rawConfigKeys(projectRoot: string): Set<string> {
@@ -1357,10 +1390,13 @@ Usage: backupper <command> [options]
 
 Setup
   init                          Create .backupper/ with the default config in this project
-  install <agent>               Register the hooks for claude-code | codex | hermes
+  install <agent>               Register the hooks for claude-code | codex | hermes | openhands |
+                                deepseek-harness | openclaw
   uninstall [agent]             Remove the hooks (every installed agent when none is named)
   doctor [agent] [--probe]      Check the agent, hooks, config, git and the tier-4 runner
   demo [--keep]                 Offline demo in a temporary directory (no agent, no key)
+  hook <pre|post|prompt> [--agent <name>]
+                                Run one hook on the JSON on stdin (what installed agents call)
 
 Inspect
   list [--limit N]              Recorded actions, oldest first
@@ -1396,6 +1432,12 @@ function commandHelp(command: string): string {
 
 async function main(): Promise<void> {
   const [command, ...rest] = argv;
+  if (command === "hook") {
+    // The hook reads its subcommand from argv and runs in the agent's working directory.
+    process.argv = [process.argv[0], path.join(PKG_DIST, "hook.js"), ...rest];
+    require("./hook.js");
+    return;
+  }
   const cwd = process.cwd();
   const setup = ["init", "install", "demo", "help", "--help", "-h", "--version", "-v", undefined];
   // `<command> --help` prints usage and never acts.

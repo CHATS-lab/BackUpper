@@ -1,8 +1,8 @@
 /**
- * The rule engine (deny / backup / pass for one tool call) and the effect log.
+ * The rule engine (backup / pass for one tool call) and the effect log.
  */
 
-import { DEFAULT_DENY_PATTERNS, DEFAULT_DENY_REASONS, type HookContext, type SandboxConfig, type EffectEntry } from "./types.js";
+import { type HookContext, type SandboxConfig, type EffectEntry } from "./types.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { appendJsonl } from "./util.js";
@@ -12,18 +12,17 @@ import { appendJsonl } from "./util.js";
 // =============================================================================
 
 /**
- * Rule engine — decides whether a tool call needs backup, denial, or pass-through.
+ * Rule engine — decides whether a tool call needs backup or passes through.
  *
- * Order: deny rules, precaution flag, read-only skip, destructive-pattern list,
- * then default backup. Unrecognized actions are backed up unless mode="off".
+ * Order: precaution flag, read-only skip, destructive-pattern list, then default backup. Unrecognized actions are backed up unless mode="off".
  */
 
-export type Decision = "deny" | "backup" | "pass";
+export type Decision = "backup" | "pass";
 
 export interface RuleResult {
   decision: Decision;
   reason: string;
-  trigger: "deny_rule" | "backup_rule" | "precaution_field" | "default_backup" | "none";
+  trigger: "backup_rule" | "precaution_field" | "default_backup" | "none";
 }
 
 /** Tools that are read-only — never need backup */
@@ -60,18 +59,14 @@ export function evaluate(ctx: HookContext, config: SandboxConfig): RuleResult {
   const toolName = ctx.tool_name;
   const toolInput = ctx.tool_input;
 
-  // mode="off" passes every call, before deny patterns are consulted.
+  // mode="off" passes every call.
   if (config.mode === "off") {
     return { decision: "pass", reason: "mode=off", trigger: "none" };
   }
 
   const commandStr = extractCommandString(toolName, toolInput);
 
-  // ── 1. Deny rules ──────────────────────────────────────────────
-  const denied = matchDeny(commandStr, config.denyPatterns);
-  if (denied) return denied;
-
-  // ── 2. Precaution field (LLM self-declared) ────────────────────
+  // ── 1. Precaution field (LLM self-declared) ────────────────────
   if (toolInput.precaution === true || toolInput.precaution === "true") {
     return {
       decision: "backup",
@@ -80,7 +75,7 @@ export function evaluate(ctx: HookContext, config: SandboxConfig): RuleResult {
     };
   }
 
-  // ── 3. Skip read-only tools ────────────────────────────────────
+  // ── 2. Skip read-only tools ────────────────────────────────────
   if (READ_ONLY_TOOLS.has(toolName)) {
     return {
       decision: "pass",
@@ -89,7 +84,7 @@ export function evaluate(ctx: HookContext, config: SandboxConfig): RuleResult {
     };
   }
 
-  // ── 3b. Skip our own CLI commands (they manage backups, not create risk) ──
+  // ── 2b. Skip our own CLI commands (they manage backups, not create risk) ──
   if (toolName === "Bash" && invokesBackUpper(commandStr)) {
     return {
       decision: "pass",
@@ -98,7 +93,7 @@ export function evaluate(ctx: HookContext, config: SandboxConfig): RuleResult {
     };
   }
 
-  // ── 4. Rule-based checklist ────────────────────────────────────
+  // ── 3. Rule-based checklist ────────────────────────────────────
   if (isFileMutatingTool(toolName)) {
     return {
       decision: "backup",
@@ -121,7 +116,7 @@ export function evaluate(ctx: HookContext, config: SandboxConfig): RuleResult {
     }
   }
 
-  // ── 5. Default: backup everything not explicitly read-only ─────
+  // ── 4. Default: backup everything not explicitly read-only ─────
   // Unknown actions are backed up; strategies choose the cheapest approach.
   return {
     decision: "backup",
@@ -130,32 +125,7 @@ export function evaluate(ctx: HookContext, config: SandboxConfig): RuleResult {
   };
 }
 
-/** The deny verdict for `commandStr`, or null when no pattern matches. Invalid regexes are skipped. */
-function matchDeny(commandStr: string, patterns: readonly string[]): RuleResult | null {
-  for (const pattern of patterns) {
-    try {
-      if (new RegExp(pattern, "i").test(commandStr)) {
-        // Use the shipped explanation if any, else name the matching regex.
-        const why = DEFAULT_DENY_REASONS[pattern];
-        return {
-          decision: "deny",
-          reason: why ?? `Blocked by deny rule: /${pattern}/`,
-          trigger: "deny_rule",
-        };
-      }
-    } catch {
-      // Invalid regex — skip
-    }
-  }
-  return null;
-}
-
-/**
- * `evaluate`, but an internal error fails open: the call is allowed and the error is
- * returned for logging. The deny list is still checked on that path (the configured
- * patterns when they are a list of strings, else the shipped ones), so an operation
- * with no inverse stays blocked even when the rest of the engine breaks.
- */
+/** `evaluate`, but an internal error fails open: the call is allowed and the error is returned for logging. */
 export function evaluateFailOpen(
   ctx: HookContext,
   config: SandboxConfig,
@@ -165,16 +135,6 @@ export function evaluateFailOpen(
     return evaluator(ctx, config);
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    if (config?.mode !== "off") {
-      try {
-        const patterns = Array.isArray(config?.denyPatterns) &&
-          config.denyPatterns.every((p) => typeof p === "string")
-          ? config.denyPatterns : DEFAULT_DENY_PATTERNS;
-        const input = ctx?.tool_input && typeof ctx.tool_input === "object" ? ctx.tool_input : {};
-        const denied = matchDeny(extractCommandString(String(ctx?.tool_name ?? ""), input), patterns);
-        if (denied) return { ...denied, error };
-      } catch { /* fall through to allow */ }
-    }
     return { decision: "pass", reason: `rule evaluation failed, allowed: ${error}`, trigger: "none", error };
   }
 }

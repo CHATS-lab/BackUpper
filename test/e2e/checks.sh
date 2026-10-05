@@ -42,52 +42,7 @@ out="$(cd /tmp && backupper demo --json)"
 check "demo --json reports ok" node -e 'process.exit(JSON.parse(process.argv[1]).ok === true ? 0 : 1)' "$out"
 check "demo (human output) exits 0" sh -c 'cd /tmp && backupper demo >/dev/null'
 
-# ── 2. Deny rules, through the installed hooks ──────────────────────
-DENY=(
-  "mkfs.ext4 /dev/sdz1"
-  "wipefs -a /dev/sdz"
-  "dd if=/dev/zero of=/dev/sdz bs=1M"
-  "shred -u notes.txt"
-  "lvremove -f vg0/data"
-  "rm -rf /"
-  "sudo rm -rf ~"
-  "rm -rf .backupper"
-)
-for agent in claude-code codex; do
-  new_project "deny-$agent"
-  backupper install "$agent" >/dev/null
-  backupper config set subagentEnabled false >/dev/null
-  echo "keep" > notes.txt
-  pre="$(hook_cmd "$agent" PreToolUse)"
-  for cmd in "${DENY[@]}"; do
-    input="$(node -e 'console.log(JSON.stringify({command: process.argv[1]}))' "$cmd")"
-    res="$(send "$pre" Bash "$input")"; code=$?
-    if [ "$code" = 2 ] && echo "$res" | grep -q '"permissionDecision":"deny"'; then
-      ok "$agent denies: $cmd"
-    else
-      bad "$agent denies: $cmd" "exit $code, output: $res"
-    fi
-  done
-  for cmd in "ls -la" "dd if=in.img of=out.img" "wipefs --no-act -a /dev/sdz" "rm -rf build/"; do
-    input="$(node -e 'console.log(JSON.stringify({command: process.argv[1]}))' "$cmd")"
-    res="$(send "$pre" Bash "$input")"; code=$?
-    if [ "$code" = 0 ]; then ok "$agent allows: $cmd"; else bad "$agent allows: $cmd" "exit $code, output: $res"; fi
-  done
-  check "$agent: nothing was executed (notes.txt intact)" grep -qx keep notes.txt
-done
-
-# User-edited denyPatterns take effect, and an empty list disables the default rules.
-new_project deny-custom
-backupper install claude-code >/dev/null
-backupper config set subagentEnabled false >/dev/null
-backupper config set denyPatterns '["terraform\\s+destroy"]' >/dev/null
-pre="$(hook_cmd claude-code PreToolUse)"
-send "$pre" Bash '{"command":"terraform destroy -auto-approve"}' >/dev/null; code=$?
-check "custom denyPatterns: terraform destroy is denied" test "$code" = 2
-send "$pre" Bash '{"command":"shred -u x"}' >/dev/null; code=$?
-check "custom denyPatterns replace the defaults (shred now allowed)" test "$code" = 0
-
-# ── 3. Fail-open on a rule-engine error ─────────────────────────────
+# ── 2. Fail-open on a rule-engine error ─────────────────────────────
 new_project failopen
 backupper install claude-code >/dev/null
 node -e '
@@ -100,10 +55,8 @@ err="$(send "$pre" Bash '{"command":"ls"}' 2>&1 >/dev/null)"; code=$?
 check "broken config: the call is allowed" test "$code" = 0
 check "broken config: a warning is printed" sh -c "echo \"$err\" | grep -q 'rule evaluation failed'"
 check "broken config: the error is logged" test -s .backupper/hook-errors.log
-send "$pre" Bash '{"command":"mkfs.ext4 /dev/sdz1"}' >/dev/null 2>&1; code=$?
-check "broken config: the deny list still applies" test "$code" = 2
 
-# ── 4. Capture and restore ──────────────────────────────────────────
+# ── 3. Capture and restore ──────────────────────────────────────────
 new_project restore
 backupper install claude-code >/dev/null
 backupper config set subagentEnabled false >/dev/null
@@ -135,11 +88,11 @@ check "restore 1 undoes both actions" sh -c 'backupper restore 1 >/dev/null'
 check "notes.txt restored with its content" grep -qx first notes.txt
 check "app.txt restored with its content" grep -qx original app.txt
 
-# ── 5. Uninstall leaves no hooks behind ─────────────────────────────
+# ── 4. Uninstall leaves no hooks behind ─────────────────────────────
 backupper uninstall >/dev/null
 check "uninstall removes .claude/" test ! -e .claude
 
-# ── 5b. A file outside the workspace: tier-3 copy, restore N and restore N --file /abs ──
+# ── 4b. A file outside the workspace: tier-3 copy, restore N and restore N --file /abs ──
 new_project outside
 backupper install claude-code >/dev/null
 backupper config set subagentEnabled false >/dev/null
@@ -154,7 +107,7 @@ printf 'port=81\n' > /srv/outside/cfg.ini
 check "restore 1 (loop) brings the outside file back" \
   sh -c 'backupper restore 1 >/dev/null && grep -qx port=80 /srv/outside/cfg.ini'
 
-# ── 5c. Codex: tier 1 is backup-only (Codex ignores a rewritten command) ──
+# ── 4c. Codex: tier 1 is backup-only (Codex ignores a rewritten command) ──
 new_project codex-backup-only
 git config user.email e@x && git config user.name e
 printf 'a\nb\n' > notes.txt && printf 'keep\n' > gone.txt && echo v0 > w.txt
@@ -177,14 +130,14 @@ check "codex: notes.txt restored" sh -c 'printf "a\nb\n" | cmp -s - notes.txt'
 check "codex: gone.txt restored" grep -qx keep gone.txt
 check "codex: both stashes back" test "$(git stash list | wc -l)" = 2
 
-# ── 6. The smoke suite, against the installed CLI ───────────────────
+# ── 5. The smoke suite, against the installed CLI ───────────────────
 if BACKUPPER_BIN=backupper node /e2e/smoke.mjs > /tmp/smoke.log 2>&1; then
   ok "smoke suite ($(tail -n 1 /tmp/smoke.log))"
 else
   bad "smoke suite" "$(grep -E 'FAIL|passed' /tmp/smoke.log | head -n 20)"
 fi
 
-# ── 7. No stray temp files ──────────────────────────────────────────
+# ── 6. No stray temp files ──────────────────────────────────────────
 left="$(ls /tmp | grep '^backupper-sub-' || true)"
 check "no backupper-sub-* temp files left in /tmp" test -z "$left"
 

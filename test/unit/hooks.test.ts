@@ -12,7 +12,7 @@ import { evaluate, evaluateFailOpen } from "../../src/engine.js";
 import { buildSubagentInvocation, cleanupSubagentInvocation, runSubagentBackup } from "../../src/backup/subagent.js";
 import { resetAction } from "../../src/backup/strategies.js";
 import { subagentModelFor } from "../../src/backup/runner_caps.js";
-import { DEFAULT_CONFIG, DEFAULT_DENY_RULES, type HookContext, type SandboxConfig } from "../../src/types.js";
+import { DEFAULT_CONFIG, type HookContext, type SandboxConfig } from "../../src/types.js";
 import { applyPolicyRules, type PolicyRuleResult } from "../../src/backup/policy_rules.js";
 import { tier1CanRewrite, CAN_REWRITE, ALL_ADAPTERS, hermesAdapter } from "../../src/agents.js";
 import { closeCommand, detectTerminal, parsePanelPrompt, splitCommand } from "../../src/cli.js";
@@ -47,7 +47,7 @@ function onceIn(suites: string[], fn: () => unknown): (t: unknown) => unknown {
  * exactly how Claude Code calls them. Verifies:
  *   - The binaries exist and are executable
  *   - The JSON I/O contract matches what Claude Code expects
- *   - Exit codes are correct (0 = allow, 2 = deny)
+ *   - Exit codes are correct (0 = allow)
  *   - Never crashes on malformed input
  */
 
@@ -146,42 +146,6 @@ describe("hook contract: pre-tool.js binary", () => {
     }
   });
 
-  it("respects user-configured deny patterns", () => {
-    const { dir, cleanup } = isolatedCwd();
-    try {
-      // Write a config with a deny pattern
-      const configDir = path.join(dir, ".backupper");
-      fs.mkdirSync(configDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(configDir, "config.json"),
-        JSON.stringify({
-          enabled: true,
-          mode: "checker",
-          backupDir: path.join(configDir, "backups"),
-          maxActions: 10,
-          effectManifest: false,
-          effectLogPath: path.join(configDir, "effects.jsonl"),
-          denyPatterns: ["rm\\s+-rf\\s+/"],
-          alwaysBackupPatterns: [],
-          verbose: false,
-        }),
-      );
-
-      const result = runHook(PRE_HOOK, {
-        hook_event: "PreToolUse",
-        tool_name: "Bash",
-        tool_input: { command: "rm -rf /" },
-      }, dir);
-
-      assert.equal(result.exitCode, 2, "deny should exit 2");
-      const parsed = JSON.parse(result.stdout);
-      assert.equal(parsed.hookSpecificOutput.hookEventName, "PreToolUse");
-      assert.equal(parsed.hookSpecificOutput.permissionDecision, "deny");
-    } finally {
-      cleanup();
-    }
-  });
-
   it('respects mode="off" (no hook output)', () => {
     const { dir, cleanup } = isolatedCwd();
     try {
@@ -196,7 +160,6 @@ describe("hook contract: pre-tool.js binary", () => {
           maxActions: 10,
           effectManifest: false,
           effectLogPath: path.join(configDir, "effects.jsonl"),
-          denyPatterns: [],
           alwaysBackupPatterns: [],
           verbose: false,
         }),
@@ -230,7 +193,6 @@ describe("hook contract: pre-tool.js binary", () => {
           maxActions: 10,
           effectManifest: false,
           effectLogPath: path.join(configDir, "effects.jsonl"),
-          denyPatterns: [],
           alwaysBackupPatterns: [],
           verbose: false,
         }),
@@ -256,9 +218,6 @@ describe("hook contract: pre-tool.js binary", () => {
 
 /**
  * Fail-open rule evaluation and subagent temp-file cleanup.
- *
- * Deny rules are exercised by feeding command strings to the rule engine and to the hook
- * binary; the hook only decides, it never runs the command.
  */
 
 {
@@ -269,49 +228,13 @@ function bash(command: string): HookContext {
   return { hook_event: "PreToolUse", tool_name: "Bash", tool_input: { command } };
 }
 
-/** One command string per shipped deny rule, in DEFAULT_DENY_RULES order. */
-const DENY_SAMPLES = [
-  "mkfs.ext4 /dev/sdz1",
-  "wipefs -a /dev/sdz",
-  "dd if=/dev/zero of=/dev/sdz bs=1M",
-  "shred -u secrets.txt",
-  "lvremove -f vg0/data",
-  "rm -rf /",
-  "rm -rf ~",
-  "rm -rf .backupper",
-];
-
 const throwing = (): never => { throw new Error("boom"); };
 
 describe("rule evaluation fails open", () => {
-  it("every shipped deny rule has a sample, and each sample is denied by evaluate", () => {
-    assert.equal(DENY_SAMPLES.length, DEFAULT_DENY_RULES.length);
-    DENY_SAMPLES.forEach((cmd, i) => {
-      const r = evaluate(bash(cmd), { ...DEFAULT_CONFIG });
-      assert.equal(r.decision, "deny", cmd);
-      assert.equal(r.reason, DEFAULT_DENY_RULES[i].why, `${cmd} should hit rule ${i}`);
-    });
-  });
-
   it("an engine error allows the call and reports the error", () => {
     const r = evaluateFailOpen(bash("ls -la"), { ...DEFAULT_CONFIG }, throwing);
     assert.equal(r.decision, "pass");
     assert.equal(r.error, "boom");
-  });
-
-  it("the deny list still applies when the engine errors", () => {
-    for (const cmd of DENY_SAMPLES) {
-      const r = evaluateFailOpen(bash(cmd), { ...DEFAULT_CONFIG }, throwing);
-      assert.equal(r.decision, "deny", cmd);
-      assert.equal(r.error, "boom");
-    }
-  });
-
-  it("falls back to the shipped deny list when denyPatterns is malformed", () => {
-    const config = { ...DEFAULT_CONFIG, denyPatterns: null as unknown as string[] };
-    const r = evaluateFailOpen(bash("mkfs.ext4 /dev/sdz1"), config);
-    assert.equal(r.decision, "deny");
-    assert.ok(r.error, "the engine itself should have thrown");
   });
 
   it("mode=off stays a pass even on the error path", () => {
@@ -357,16 +280,6 @@ describe("rule evaluation fails open", () => {
         assert.equal(entry.hook, "PreToolUse");
         assert.equal(entry.tool, "Bash");
         assert.match(entry.message, /rule evaluation failed/);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    });
-
-    it("still denies a deny-list command under the same broken config", () => {
-      try {
-        const r = runHook("mkfs.ext4 /dev/sdz1");
-        assert.equal(r.status, 2);
-        assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -706,7 +619,6 @@ function capture(command: string): PolicyRuleResult {
   assert.ok(r, `a rule should fire for: ${command}`);
   assert.equal(r!.updatedInput, undefined, "backup-only mode must not rewrite the call");
   assert.equal(r!.backupOnly, true);
-  assert.equal(r!.deny, undefined);
   return r!;
 }
 
@@ -774,17 +686,6 @@ describe("backup-only mode: file rules", () => {
     recover(r);
     assert.equal(read("dir/a.txt"), "A\n");
     assert.equal(read("dir/sub/b.txt"), "B\n");
-  });
-
-  it("rm that reaches the backup store is denied, not rewritten", () => {
-    fs.mkdirSync(path.join(store, "backups"), { recursive: true });
-    fs.writeFileSync(path.join(store, "config.json"), "{}");
-    fs.writeFileSync("other.txt", "x\n");
-    const r = applyPolicyRules(bash("rm -rf .backupper other.txt"), trash, store, { rewrite: false });
-    assert.ok(r && r.deny, "expected a deny");
-    assert.equal(r!.updatedInput, undefined);
-    assert.ok(fs.existsSync(path.join(store, "config.json")));
-    assert.ok(fs.existsSync("other.txt"));
   });
 
   it("sed -i: the file changes exactly once, and restore brings back the pre-image", () => {
@@ -950,16 +851,6 @@ describe("backup-only mode: git rules", () => {
     recover(r);
     assert.equal(read("junk.log"), "scratch\n");
     assert.equal(read("build/out.bin"), "artifact\n");
-  });
-
-  it("git clean -fdx, which would remove the store even when ignored, is denied", () => {
-    initRepo();
-    fs.mkdirSync(path.join(store, "backups"), { recursive: true });
-    fs.writeFileSync(path.join(store, "config.json"), "{}");
-    fs.writeFileSync("junk.log", "scratch\n");
-    const r = applyPolicyRules(bash("git clean -fdx"), trash, store, { rewrite: false });
-    assert.ok(r && r.deny, "expected a deny");
-    assert.ok(fs.existsSync("junk.log"));
   });
 
   it("git restore <path> (discard worktree edits)", () => {
@@ -1144,15 +1035,6 @@ describe("backup-only mode through the installed hook (--agent codex)", () => {
     assert.doesNotMatch(r.stdout, /updatedInput/);
     assert.equal(read("notes.txt"), "a\n");
   });
-
-  it("codex: a command whose victims include the store is denied", () => {
-    setup();
-    fs.mkdirSync("sub");
-    const r = runHook(workspace, "codex", "find . -name config.json -delete", { BACKUPPER_NO_REWRITE: "1" });
-    assert.equal(r.status, 2, r.stdout + r.stderr);
-    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
-    assert.ok(fs.existsSync(".backupper/config.json"));
-  });
 });
 }
 
@@ -1258,8 +1140,12 @@ print(json.dumps({"names": list(c.cmds), "hint": hint, "bad": h("sideways")}))
 describe("Hermes /backupper-panel", { skip: !hasPython() && "python3 not available" }, () => {
   it("registers the command, rejects unknown actions, and tolerates Hermes without register_command", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bu-hermes-"));
+    // install enables the plugin in $HERMES_HOME/config.yaml; keep that inside the temp dir.
+    const home = process.env.HERMES_HOME;
+    process.env.HERMES_HOME = path.join(dir, "hermes-home");
     try {
       hermesAdapter.install(dir, "/opt/bu/dist");
+      assert.match(fs.readFileSync(path.join(dir, "hermes-home", "config.yaml"), "utf-8"), /enabled:\n\s*- backupper/);
       const init = path.join(dir, ".hermes", "plugins", "backupper", "__init__.py");
       assert.match(fs.readFileSync(init, "utf-8"), /^_CLI = "\/opt\/bu\/dist\/cli\.js"$/m);
       const out = JSON.parse(execFileSync("python3", ["-c", PROBE, init], { encoding: "utf-8" }));
@@ -1267,6 +1153,8 @@ describe("Hermes /backupper-panel", { skip: !hasPython() && "python3 not availab
       assert.equal(out.hint, "[on|off|toggle|status]");
       assert.equal(out.bad, "Usage: /backupper-panel [on|off|toggle|status]");
     } finally {
+      if (home === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = home;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

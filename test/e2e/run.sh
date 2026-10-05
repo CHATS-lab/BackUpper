@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the e2e image from a freshly packed tarball and run the checks inside it.
 #
-#   npm run e2e                         offline: demo, deny rules, restore, smoke (no model calls)
+#   npm run e2e                         offline: demo, fail-open, restore, smoke (no model calls)
 #   BACKUPPER_E2E_REAL=1 npm run e2e    also drive a real `claude -p` session through the hooks
 #
 # Real-agent runs pass ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN from the environment when set.

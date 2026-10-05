@@ -242,6 +242,14 @@ function warnConfigOnce(config: { backupDir: string }, ctx: HookContext): void {
   }
 }
 
+/**
+ * OpenHands reads `decision`, `reason` and `additionalContext` from the top level of a hook's
+ * output, not from hookSpecificOutput; empty for every other host.
+ */
+function openHandsDecision(decision: "deny", reason: string): { decision?: "deny"; reason?: string } {
+  return process.env.BACKUPPER_HOST_AGENT === "openhands" ? { decision, reason } : {};
+}
+
 async function preToolMain(): Promise<void> {
   adoptHostAgent();
   // Recursion guard: skip tool calls made by a subagent this plugin spawned.
@@ -288,32 +296,17 @@ async function preToolMain(): Promise<void> {
     }
   } catch (e) { process.stderr.write("[provenance] " + String(e) + "\n"); }
 
-  // Evaluate rules. An engine error fails open (the call is allowed and the error is
-  // logged); the deny list is still checked on that path.
+  // Evaluate rules. An engine error fails open: the call is allowed and the error is logged.
   const result = evaluateFailOpen(ctx, config);
   if (result.error) {
-    const outcome = result.decision === "deny" ? "deny list still applied" : "allowing the call";
-    process.stderr.write(`[BackUpper] rule evaluation failed, ${outcome}: ${result.error}\n`);
-    logHookError(config, ctx, `rule evaluation failed (${outcome}): ${result.error}`);
+    process.stderr.write(`[BackUpper] rule evaluation failed, allowing the call: ${result.error}\n`);
+    logHookError(config, ctx, `rule evaluation failed (allowing the call): ${result.error}`);
   }
 
   if (config.verbose) {
     process.stderr.write(
       `[BackUpper] ${ctx.tool_name}: ${result.decision} (${result.reason})\n`
     );
-  }
-
-  // ── DENY ─────────────────────────────────────────────────────────
-  if (result.decision === "deny") {
-    const output: PreToolHookOutput = {
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: `[BackUpper] ${result.reason}`,
-      },
-    };
-    process.stdout.write(JSON.stringify(output));
-    process.exit(2);
   }
 
   // ── BACKUP ───────────────────────────────────────────────────────
@@ -326,20 +319,6 @@ async function preToolMain(): Promise<void> {
     } catch { /* no leftover */ }
 
     const backupResult = runBackup(ctx, config);
-
-    // A backup-only tier-1 rule found the backup store in the victim set of a command it
-    // cannot rewrite: block the call.
-    if (backupResult.deny) {
-      const output: PreToolHookOutput = {
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: `[BackUpper] ${backupResult.deny}`,
-        },
-      };
-      process.stdout.write(JSON.stringify(output));
-      process.exit(2);
-    }
 
     const contextParts: string[] = [];
 
@@ -609,8 +588,8 @@ interface TimingData {
   actionDir?: string | null;
 }
 
-/** True if the call failed: PostToolUseFailure, a non-zero exit_code, or an
- *  MCP {"error":…} wrapper. */
+/** True if the call failed: PostToolUseFailure, a non-zero exit_code, an OpenHands
+ *  error observation, or an MCP {"error":…} wrapper. */
 function actionFailed(ctx: HookContext, success: boolean): boolean {
   if (!success) return true;
   // Hermes sends tool_output as a JSON string; parse it before the checks.
@@ -621,6 +600,7 @@ function actionFailed(ctx: HookContext, success: boolean): boolean {
   if (out && typeof out === "object") {
     const o = out as Record<string, unknown>;
     if (typeof o.exit_code === "number" && o.exit_code !== 0) return true;
+    if (o.is_error === true) return true;
     if (o.error != null && o.error !== "" && o.result == null) return true;
   }
   return false;
@@ -788,7 +768,7 @@ async function userPromptMain(): Promise<void> {
     } catch (e) {
       lines = [`BackUpper panel: ${(e as Error).message}`];
     }
-    process.stdout.write(JSON.stringify({ decision: "block", reason: lines.join("\n") }));
+    process.stdout.write(JSON.stringify({ decision: "block", reason: lines.join("\n"), ...openHandsDecision("deny", lines.join("\n")) }));
     process.exit(0);
   }
 
@@ -834,6 +814,7 @@ async function userPromptMain(): Promise<void> {
         hookEventName: "UserPromptSubmit",
         additionalContext: announcement,
       },
+      ...(process.env.BACKUPPER_HOST_AGENT === "openhands" ? { additionalContext: announcement } : {}),
     }));
   }
 

@@ -22,10 +22,10 @@ Download from [HuggingFace](https://huggingface.co/datasets/<org>/RegretBench):
 
 ```bash
 git clone https://huggingface.co/datasets/<org>/RegretBench
-cp -r RegretBench/tasks/* regretbench/tasks/
+cp -r RegretBench/workspaces/* regretbench/tasks/
 ```
 
-Or leave them in place and set `RB_TASKS_DIR=/path/to/RegretBench/tasks`. See [`tasks/README.md`](tasks/README.md).
+Or leave them in place and set `RB_TASKS_DIR=/path/to/RegretBench/workspaces`. See [`tasks/README.md`](tasks/README.md).
 
 Each task directory contains:
 

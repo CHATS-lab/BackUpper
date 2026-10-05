@@ -680,25 +680,6 @@ export function copyVictimsToTrash(
   return { preCommands, recoveryCommands: recoveryPairs.reverse().flat(), captures };
 }
 
-/**
- * Backup-only mode cannot keep the backup store out of a command it does not control, so a
- * victim set that reaches the store blocks the call instead.
- */
-export function storeDenyReason(ruleId: string, storePaths: string[]): PolicyRuleResult {
-  return {
-    deny:
-      `${storePaths.join(", ")} is, or contains, BackUpper's own backup store, which holds ` +
-      `the only copy of everything already captured. Leave it out of the command (for ` +
-      `example \`find ... -not -path '*/.backupper/*'\`, or \`git clean\` without -x), or ` +
-      `remove backups deliberately with \`backupper clear\`.`,
-    backupOnly: true,
-    preCommands: [],
-    recoveryCommands: [],
-    description: `${ruleId} → blocked: the command would delete the backup store (${storePaths.join(", ")}).`,
-    ruleId,
-  };
-}
-
 function isSafePath(p: string): boolean {
   const t = p.trim();
   if (!t) return false;
@@ -1761,7 +1742,6 @@ const gitClean: PolicyRule = {
       if (skipped.length > 0 && !ignoredToo && !onlyIgnored && ignoreStoreInRepo(skipped)) {
         return gitClean.apply(_match, ctx, trashDir, storeRoot, opts);
       }
-      if (skipped.length > 0) return storeDenyReason("git-clean", skipped);
       const copied = copyVictimsToTrash(roots, trashDir, "git-clean", storeRoot);
       if (copied === null) return null;
       return {
@@ -2128,7 +2108,6 @@ const findDelete: PolicyRule = {
     );
     if (!rewriting(opts)) {
       // The host runs the real `find`: copy the victims, never touch them.
-      if (skipped.length > 0) return storeDenyReason("find-delete", skipped);
       const copied = copyVictimsToTrash(roots, trashDir, "find-victim", storeRoot);
       if (copied === null) return null;
       return {
@@ -2373,11 +2352,6 @@ export interface PolicyRuleResult {
   updatedInput?: Record<string, unknown>;
   /** True when the rule only captured pre-state and executed nothing (backup-only mode). */
   backupOnly?: boolean;
-  /**
-   * Backup-only mode: the call must be blocked (the only way left to keep the backup store
-   * out of a victim set when the command cannot be rewritten). The reason is shown to the agent.
-   */
-  deny?: string;
   /** Commands run before returning updatedInput (e.g. the move to trash). */
   preCommands: string[];
   /**
@@ -2566,7 +2540,6 @@ export const POLICY_RULES: PolicyRule[] = [
         excludeSandboxStore(candidates, trashDir, storeRoot);
       if (!rewrite) {
         // The host will run the original rm, so the store cannot be filtered out of it.
-        if (skipped.length > 0) return storeDenyReason("rm-to-trash", skipped);
         const copied = copyVictimsToTrash(resolved, trashDir, "rm-to-trash", storeRoot);
         if (copied === null) return null;
         return {

@@ -119,7 +119,7 @@ export function configWarnings(projectRoot: string = process.cwd()): string[] {
   }
   const raw = parsed as Record<string, unknown>;
   const out = validateConfig(raw).map((p) => `${file}: ${p}`);
-  for (const key of ["denyPatterns", "alwaysBackupPatterns"]) {
+  for (const key of ["alwaysBackupPatterns"]) {
     const list = raw[key];
     if (!Array.isArray(list)) continue;
     for (const pat of list) {

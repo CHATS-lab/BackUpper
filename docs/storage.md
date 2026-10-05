@@ -8,7 +8,10 @@
 |---|---|
 | Claude Code | `.claude/settings.local.json`, `.claude/commands/backupper-*.md` |
 | Codex | `.codex/hooks.json` |
-| Hermes | `.hermes/plugins/backupper/plugin.yaml`, `.hermes/plugins/backupper/__init__.py` |
+| Hermes | `.hermes/plugins/backupper/{plugin.yaml,__init__.py}`, plus `backupper` in `plugins.enabled` of `$HERMES_HOME/config.yaml` |
+| OpenHands | `.openhands/plugins/backupper/` (`.plugin/plugin.json`, `hooks/hooks.json`) |
+| DeepSeek Harness | `.dsh/backupper/{cordis.patch.yml,plugin.mjs,hooks.json}` |
+| OpenClaw | `.openclaw/extensions/backupper/{index.js,package.json,openclaw.plugin.json}`, plus `plugins.entries.backupper` in your OpenClaw config |
 
 If the project has a `.gitignore`, `.backupper/` is added to it. These install files are BackUpper's own: snapshots leave them out, so a restore never rolls them back. Under Codex, when a `git clean` would reach `.backupper/`, the line `/.backupper/` is added to the repository's local `.git/info/exclude` (never committed) so the clean leaves the store alone.
 

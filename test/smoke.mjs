@@ -98,11 +98,11 @@ await test("config and config --json show every documented key, internals apart"
   assert.ok(documented.length >= 28);
   for (const k of documented) assert.ok(k in j, `config --json lacks ${k}`);
   assert.equal(j.subagentMcpConfig, null, "an unset key is shown as null");
-  assert.ok(!("backupDir" in j) && !("denyPatterns" in j), "internals are not mixed into the settings");
-  assert.ok(j.internal && "backupDir" in j.internal && "denyPatterns" in j.internal);
+  assert.ok(!("backupDir" in j), "internals are not mixed into the settings");
+  assert.ok(j.internal && "backupDir" in j.internal);
   const human = cli(p, "config").out;
   for (const k of documented) assert.match(human, new RegExp(`^  ${k}\\b`, "m"), `config lacks ${k}`);
-  assert.doesNotMatch(human, /backupDir|effectLogPath|denyPatterns/);
+  assert.doesNotMatch(human, /backupDir|effectLogPath/);
   assert.equal(cli(p, "config", "get", "maxActions").out.trim(), "50");
 });
 

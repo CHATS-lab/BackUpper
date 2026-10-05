@@ -7,7 +7,7 @@ The tasks are not stored in this repository. They are distributed on HuggingFace
 
 ```bash
 git clone https://huggingface.co/datasets/<org>/RegretBench
-cp -r RegretBench/tasks/* regretbench/tasks/
+cp -r RegretBench/workspaces/* regretbench/tasks/
 ```
 
 After copying, this directory holds one subdirectory per domain and one per task:
@@ -24,7 +24,7 @@ regretbench/tasks/
 To keep the tasks elsewhere, point the launcher at that directory instead of copying:
 
 ```bash
-export RB_TASKS_DIR=/path/to/RegretBench/tasks
+export RB_TASKS_DIR=/path/to/RegretBench/workspaces
 ```
 
 Everything in this directory except this README is ignored by git.

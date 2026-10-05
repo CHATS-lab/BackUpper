@@ -11,6 +11,9 @@
 <a href="docs/agents.md#claude-code"><img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=anthropic&logoColor=white" alt="Claude Code"></a>
 <a href="docs/agents.md#codex"><img src="https://img.shields.io/badge/Codex-000000?style=flat-square&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABm0lEQVR42rVSK6jCYBj9f7FoG75A0KRNWbDKQAQxGuRHYWCRgWYRLBo0DCwqBrUJLojY7C74aGPJMNGyMIQN8QEKv7pbLj7GhcsN97SP7xy+7xwO1HUd/AUm8EeYDfP9fud5fr/fRyIRm832ywWMMU3T6/UaABCNRlOpVCaTEUXxQ6G/odVqTSaTxWKBEOr3+8fjUVXVZDK5Wq2enJeAYRiSJGVZTiQSmqaVy+VYLMYwzGw2q1QqT9q3h+l06vP5XC4XhFBV1VwudzqdstlsIBCoVqt2u91oervdhkIhnufP57PX6+U47vF4hMNht9vNsmy9Xpdl2ePxvExTFMVxHE3TtVpNURSMMcaYIIhSqTQcDuPx+HK5/Ljg9/vNZnOxWGRZdrPZUBTldDoPh4PFYgEACIKAEDLGShBEoVDodrudTiedTrfbbavVquv6aDSCEAaDQWOskiQhhDRNu16vzWYTISRJ0mAwGI/H79HD9y6Jotjr9W63myAI+Xx+t9spitJoNEym1yPwx/JdLpf5fO5wOEiSNKzgv7f1C7WV+mn4U8OsAAAAAElFTkSuQmCC&logoColor=white" alt="Codex"></a>
 <a href="docs/agents.md#hermes"><img src="https://img.shields.io/badge/%E2%9A%95%EF%B8%8F_Hermes-6B4FBB?style=flat-square" alt="Hermes"></a>
+<a href="docs/agents.md#openhands"><img src="https://img.shields.io/badge/OpenHands-E4C74E?style=flat-square" alt="OpenHands"></a>
+<a href="docs/agents.md#deepseek-harness"><img src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?style=flat-square" alt="DeepSeek Harness"></a>
+<a href="docs/agents.md#openclaw"><img src="https://img.shields.io/badge/%F0%9F%A6%9E_OpenClaw-E5533D?style=flat-square" alt="OpenClaw"></a>
 </div>
 
 ---
@@ -39,7 +42,7 @@ npm install -g agents-backupper
 
 ### Install into Your Agent
 
-Run these in the project you want to protect, with plug-and-play support for **3 coding agents**:
+Run these in the project you want to protect, with plug-and-play support for **6 coding agents**:
 
 <a href="docs/agents.md#claude-code">
   <img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=anthropic&logoColor=white" alt="Claude Code" />
@@ -50,19 +53,28 @@ Run these in the project you want to protect, with plug-and-play support for **3
 <a href="docs/agents.md#hermes">
   <img src="https://img.shields.io/badge/%E2%9A%95%EF%B8%8F_Hermes-6B4FBB?style=flat-square" alt="Hermes" />
 </a>
+<a href="docs/agents.md#openhands">
+  <img src="https://img.shields.io/badge/OpenHands-E4C74E?style=flat-square" alt="OpenHands" />
+</a>
+<a href="docs/agents.md#deepseek-harness">
+  <img src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?style=flat-square" alt="DeepSeek Harness" />
+</a>
+<a href="docs/agents.md#openclaw">
+  <img src="https://img.shields.io/badge/%F0%9F%A6%9E_OpenClaw-E5533D?style=flat-square" alt="OpenClaw" />
+</a>
 
 ```bash
 # Create .backupper/ with the default config
 backupper init
 
 # Hook into your agent
-backupper install claude-code   # or: codex | hermes
+backupper install claude-code   # or: codex | hermes | openhands | deepseek-harness | openclaw
 
 # Check the agent, hooks, config, git and the backup subagent
 backupper doctor
 ```
 
-Now use your agent as usual. The backup subagent reuses your agent CLI's existing login, so no extra API key is needed. Agent-specific setup (hook trust in Codex, project plugins in Hermes) is in [`docs/agents.md`](docs/agents.md).
+Now use your agent as usual. Hermes, DeepSeek Harness and OpenClaw take one extra launch setting, which `backupper install` prints (for example `HERMES_ENABLE_PROJECT_PLUGINS=1 hermes`). The backup subagent reuses your agent CLI's existing login, so no extra API key is needed. Agent-specific setup is in [`docs/agents.md`](docs/agents.md).
 
 ### Try It Without an Agent
 
@@ -179,6 +191,9 @@ We thank the authors of the following projects for their contributions:
 - [WebArena](https://github.com/web-arena-x/webarena)
 - [Codex](https://github.com/openai/codex)
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+- [OpenHands](https://github.com/OpenHands/software-agent-sdk)
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+- [OpenClaw](https://github.com/openclaw/openclaw)
 
 ## Citation
 

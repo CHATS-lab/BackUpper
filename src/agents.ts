@@ -1,9 +1,11 @@
 /**
- * Agent adapters: per-host capabilities, the Claude Code, Codex and Hermes install/uninstall
- * recipes, and the adapter registry with the shared hook-command helpers.
+ * Agent adapters: per-host capabilities, the install/uninstall recipes for Claude Code, Codex,
+ * Hermes, OpenHands, DeepSeek Harness and OpenClaw, and the adapter registry with the shared
+ * hook-command helpers.
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { SubagentRunnerName } from "./types.js";
@@ -17,18 +19,22 @@ import { readJsonObject, writeJson } from "./util.js";
  * Per-host capabilities that change how the hook behaves.
  *
  * canRewrite: the host applies a PreToolUse hook's rewritten tool input (`updatedInput`).
- * Claude Code does; the Hermes plugin copies it into the live call arguments before dispatch;
+ * Claude Code does; the Hermes plugin copies it into the live call arguments before dispatch, and
+ * the OpenClaw plugin returns it as the `before_tool_call` params rewrite;
  * Codex does when the same output also carries `permissionDecision: "allow"` (the pre-tool hook
  * adds it for Codex only; Codex still applies its approval policy and sandbox to the rewritten
- * command). On a host that cannot rewrite, tier 1 runs in
- * backup-only mode: it captures a restorable copy and executes nothing itself, so the host's
- * own run of the command is the only one.
+ * command). OpenHands and DeepSeek Harness never apply a rewritten input. On a host that cannot
+ * rewrite, tier 1 runs in backup-only mode: it captures a restorable copy and executes nothing
+ * itself, so the host's own run of the command is the only one.
  */
 
 export const CAN_REWRITE: Readonly<Record<string, boolean>> = {
   "claude-code": true,
   hermes: true,
   codex: true,
+  openhands: false,
+  "deepseek-harness": false,
+  openclaw: true,
 };
 
 /**
@@ -415,17 +421,127 @@ export const codexAdapter: AgentAdapter = {
 };
 
 // =============================================================================
+// ── openhands ──
+// =============================================================================
+
+/**
+ * OpenHands adapter: installs a project plugin at `.openhands/plugins/backupper/`, laid out like
+ * the plugins in OpenHands/extensions. Every Conversation loads the plugins under the project's
+ * `.openhands/plugins/` (CLI, agent server and SDK scripts alike), so nothing is passed at launch.
+ * Its hooks call `backupper hook` from PATH. OpenHands runs a hook with the payload's own field
+ * names and never applies a rewritten input, so tier 1 runs in backup-only mode there.
+ */
+
+/** This package's version, stamped into the plugin manifest. */
+const PKG_VERSION: string = (() => {
+  try { return String(readJsonObject(path.join(__dirname, "..", "package.json")).version ?? "0.0.0"); } catch { return "0.0.0"; }
+})();
+
+const OH_PLUGIN_DIR = path.join(".openhands", "plugins", "backupper");
+const OH_HOOKS = path.join(OH_PLUGIN_DIR, "hooks", "hooks.json");
+
+export const openhandsAdapter: AgentAdapter = {
+  name: "openhands",
+  description: "OpenHands (project plugin in .openhands/plugins/backupper/)",
+  bin: "openhands",
+  runner: "claude",
+  canRewrite: CAN_REWRITE["openhands"],
+
+  hookStatus(projectRoot: string): HookStatus {
+    let installed = false;
+    try {
+      const doc = readJsonObject(path.join(projectRoot, OH_HOOKS));
+      installed = Object.values((doc.hooks ?? {}) as Record<string, MatcherGroup[]>)
+        .some((groups) => Array.isArray(groups) && groups.some((g) => (g.hooks ?? []).some((h) => isOurCommand(h.command))));
+    } catch { /* unparseable: reported as not installed */ }
+    // The hooks run `backupper` from PATH, so there is no script path to report.
+    return { installed, location: OH_PLUGIN_DIR, hookScripts: [] };
+  },
+
+  install(projectRoot: string): AgentInstallResult {
+    const dir = path.join(projectRoot, OH_PLUGIN_DIR);
+    fs.mkdirSync(path.join(dir, ".plugin"), { recursive: true });
+    writeJson(path.join(dir, ".plugin", "plugin.json"), {
+      name: "backupper",
+      version: PKG_VERSION,
+      description: "Backs up what a tool call is about to destroy before it runs, so any step can be undone with `backupper restore`.",
+      author: { name: "CHATS-lab" },
+      homepage: "https://github.com/CHATS-lab/BackUpper",
+      license: "MIT",
+    });
+    for (const link of [".claude-plugin", ".codex-plugin"]) {
+      fs.rmSync(path.join(dir, link), { force: true, recursive: true });
+      fs.symlinkSync(".plugin", path.join(dir, link));
+    }
+    const hooks: Record<string, MatcherGroup[]> = {};
+    for (const [ev, hook] of Object.entries(CODEX_EVENTS)) {
+      hooks[ev] = [{ matcher: "*", hooks: [{ type: "command", command: `backupper hook ${hook} --agent openhands`, timeout: HOOK_TIMEOUT_SEC }] }];
+    }
+    writeJson(path.join(projectRoot, OH_HOOKS), { hooks });
+    return {
+      log: [
+        `Plugin written to ${OH_PLUGIN_DIR}/ (PreToolUse, PostToolUse, UserPromptSubmit)`,
+        "OpenHands loads it in every conversation in this project (CLI, agent server and SDK scripts).",
+        "Its hooks run `backupper hook`, so keep `backupper` on PATH where OpenHands runs.",
+      ],
+    };
+  },
+
+  uninstall(projectRoot: string): AgentInstallResult {
+    if (!this.hookStatus(projectRoot).installed) return { log: [] };
+    const dir = path.join(projectRoot, OH_PLUGIN_DIR);
+    fs.rmSync(dir, { recursive: true, force: true });
+    removeEmptyDirs(path.dirname(dir), projectRoot);
+    return { log: [`Removed ${OH_PLUGIN_DIR}/`] };
+  },
+};
+
+// =============================================================================
 // ── hermes ──
 // =============================================================================
 
 /**
  * Hermes adapter: installs a directory plugin at `.hermes/plugins/backupper/` whose
  * pre_tool_call / post_tool_call / pre_llm_call hooks forward each call to the Node hooks in the
- * Claude Code JSON shape. Hermes loads project plugins only when HERMES_ENABLE_PROJECT_PLUGINS=1.
+ * Claude Code JSON shape. Hermes scans project plugins only when HERMES_ENABLE_PROJECT_PLUGINS=1
+ * and loads one only when its name is in `plugins.enabled` of `$HERMES_HOME/config.yaml`, which
+ * install adds (`hermes plugins enable` does not see project plugins).
  */
 
 const PLUGIN_DIR = path.join(".hermes", "plugins", "backupper");
 const MARKER = "# backupper-plugin";
+const HERMES_LAUNCH = "HERMES_ENABLE_PROJECT_PLUGINS=1 hermes";
+
+function hermesConfigPath(): string {
+  return path.join(process.env.HERMES_HOME || path.join(os.homedir(), ".hermes"), "config.yaml");
+}
+
+/** Add (on) or remove (off) "backupper" in plugins.enabled; also drops it from plugins.disabled. */
+function setHermesPluginEnabled(on: boolean): boolean {
+  const file = hermesConfigPath();
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : "";
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const yaml = require("js-yaml");
+  const cfg = ((text.trim() ? yaml.load(text) : null) ?? {}) as Record<string, unknown>;
+  const plugins = (cfg.plugins && typeof cfg.plugins === "object" ? cfg.plugins : {}) as Record<string, unknown>;
+  const list = (k: string) => (Array.isArray(plugins[k]) ? (plugins[k] as unknown[]) : []);
+  const enabled = list("enabled");
+  if (on && enabled.includes("backupper") && !list("disabled").includes("backupper")) return false;
+  if (!on && !enabled.includes("backupper") && !list("disabled").includes("backupper")) return false;
+  if (on && !("plugins" in cfg)) {
+    // Appending keeps the rest of the file, comments included, as it was.
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}plugins:\n  enabled:\n  - backupper\n`, "utf-8");
+    return true;
+  }
+  plugins.enabled = on ? [...enabled.filter((n) => n !== "backupper"), "backupper"] : enabled.filter((n) => n !== "backupper");
+  plugins.disabled = list("disabled").filter((n) => n !== "backupper");
+  for (const k of ["enabled", "disabled"]) if (!on && (plugins[k] as unknown[]).length === 0) delete plugins[k];
+  if (Object.keys(plugins).length) cfg.plugins = plugins;
+  else delete cfg.plugins;
+  fs.writeFileSync(file, Object.keys(cfg).length ? yaml.dump(cfg, { lineWidth: -1 }) : "", "utf-8");
+  return true;
+}
 
 function manifest(): string {
   return [
@@ -443,7 +559,7 @@ function pluginSource(pkgRoot: string): string {
 """BackUpper plugin for Hermes, written by \`backupper install hermes\` (regenerated on install).
 
 Each tool call is sent to the BackUpper Node hooks as Claude Code hook JSON. A tier-1 rewrite is
-applied to the live args dict; a deny rewrites a terminal command into a failing no-op. Messages
+applied to the live args dict. Messages
 the pre-tool hook addresses to the agent are delivered at the next model call. The
 /backupper-panel slash command toggles the side panel without a model turn.
 """
@@ -453,7 +569,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -581,12 +696,6 @@ def _pre_tool(tool_name: str = "", args: dict | None = None, session_id: str = "
     if isinstance(ctx, str) and ctx.strip():
         _pending_context.append(ctx.strip())
         logger.warning("backupper: %s", ctx.strip())
-    if hso.get("permissionDecision") == "deny":
-        reason = str(hso.get("permissionDecisionReason") or "blocked by BackUpper")
-        if mapped == "Bash" and "command" in args:
-            args["command"] = "echo " + shlex.quote(reason) + " >&2; exit 1"
-        else:
-            logger.warning("backupper: cannot block %s on Hermes: %s", mapped, reason)
 
 
 def _post_tool(tool_name: str = "", args: dict | None = None, result: object = None,
@@ -653,7 +762,7 @@ def register(ctx) -> None:
 
 export const hermesAdapter: AgentAdapter = {
   name: "hermes",
-  description: "Hermes (plugin in .hermes/plugins/backupper/)",
+  description: "Hermes (project plugin in .hermes/plugins/backupper/)",
   bin: "hermes",
   runner: "hermes",
   canRewrite: CAN_REWRITE["hermes"],
@@ -676,12 +785,10 @@ export const hermesAdapter: AgentAdapter = {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "plugin.yaml"), manifest(), "utf-8");
     fs.writeFileSync(path.join(dir, "__init__.py"), pluginSource(pkgRoot), "utf-8");
-    return {
-      log: [
-        `Plugin written to ${PLUGIN_DIR}/`,
-        "Hermes loads project plugins only with HERMES_ENABLE_PROJECT_PLUGINS=1 in its environment.",
-      ],
-    };
+    const log = [`Plugin written to ${PLUGIN_DIR}/`];
+    if (setHermesPluginEnabled(true)) log.push(`Added backupper to plugins.enabled in ${hermesConfigPath()}`);
+    log.push(`Start Hermes from this project with project plugins on: ${HERMES_LAUNCH}`);
+    return { log };
   },
 
   uninstall(projectRoot: string): AgentInstallResult {
@@ -693,7 +800,371 @@ export const hermesAdapter: AgentAdapter = {
     for (const f of ["__init__.py", "plugin.yaml"]) fs.rmSync(path.join(dir, f), { force: true });
     fs.rmSync(path.join(dir, "__pycache__"), { recursive: true, force: true });
     removeEmptyDirs(dir, projectRoot);
-    return { log: [`Removed ${PLUGIN_DIR}/`] };
+    const log = [`Removed ${PLUGIN_DIR}/`];
+    if (setHermesPluginEnabled(false)) log.push(`Removed backupper from plugins.enabled in ${hermesConfigPath()}`);
+    return { log };
+  },
+};
+
+// =============================================================================
+// ── deepseek harness ──
+// =============================================================================
+
+/**
+ * DeepSeek Harness adapter. dsh has no project-level config, so install writes a patch layer to
+ * `.dsh/backupper/cordis.patch.yml` that the user passes at launch with `--patch`. The layer
+ * mounts two things:
+ * - a native plugin (`plugin.mjs`) on `tools/execute`, which runs the pre-tool hook after dsh's
+ *   own approval and right before the tool body, so a call the user rejects is never backed up;
+ * - the bundled Claude Code hook bridge on `hooks.json`, for PostToolUse and UserPromptSubmit.
+ * dsh never applies a rewritten input, so tier 1 runs in backup-only mode.
+ */
+
+const DSH_DIR = path.join(".dsh", "backupper");
+const DSH_HOOKS = path.join(DSH_DIR, "hooks.json");
+const DSH_PLUGIN = path.join(DSH_DIR, "plugin.mjs");
+const DSH_PATCH = path.join(DSH_DIR, "cordis.patch.yml");
+const DSH_LAUNCH = `dsh --patch ${DSH_PATCH}`;
+const DSH_MARKER = "// backupper-plugin";
+const DSH_EVENTS = { PostToolUse: "post", UserPromptSubmit: "prompt" } as const;
+
+function dshPluginSource(pkgRoot: string): string {
+  const hook = JSON.stringify(path.join(pkgRoot, "hook.js"));
+  return `${DSH_MARKER}
+/**
+ * BackUpper plugin for DeepSeek Harness, written by \`backupper install deepseek-harness\`
+ * (regenerated on install). Runs the BackUpper pre-tool hook from tools/execute, after dsh's
+ * approval and right before the tool body.
+ */
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+
+const HOOK = ${hook};
+const NO_HOOK_ENV = "BACKUPPER_NO_HOOK";
+// Above the tier-4 subagent timeout, so a capture in progress is never cut off here.
+const TIMEOUT_MS = 600_000;
+
+export const name = "backupper";
+
+/** Pipe one payload into the pre-tool hook and wait for it to finish. */
+function pre(payload, cwd) {
+  const env = { ...process.env };
+  delete env[NO_HOOK_ENV];
+  return new Promise((resolve) => {
+    const child = spawn("node", [HOOK, "pre", "--agent", "deepseek-harness"], { cwd, env, stdio: ["pipe", "ignore", "ignore"] });
+    const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
+    child.stdin.on("error", () => {});
+    child.on("error", () => { clearTimeout(timer); resolve(); });
+    child.on("close", () => { clearTimeout(timer); resolve(); });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+export function apply(ctx) {
+  ctx.on("tools/execute", async (exec, next) => {
+    if (process.env[NO_HOOK_ENV] !== "1" && existsSync(HOOK)) {
+      const header = exec.agent?.session?.header ?? {};
+      const cwd = header.cwd ?? process.cwd();
+      await pre({
+        session_id: header.id ?? "",
+        cwd,
+        hook_event_name: "PreToolUse",
+        tool_name: exec.name,
+        tool_input: exec.arguments,
+        tool_use_id: exec.callId,
+      }, cwd);
+    }
+    return next();
+  });
+}
+`;
+}
+
+export const deepseekHarnessAdapter: AgentAdapter = {
+  name: "deepseek-harness",
+  description: "DeepSeek Harness (patch layer in .dsh/backupper/, passed with dsh --patch)",
+  bin: "dsh",
+  runner: "claude",
+  canRewrite: CAN_REWRITE["deepseek-harness"],
+
+  hookStatus(projectRoot: string): HookStatus {
+    let scripts: string[] = [];
+    try {
+      const src = fs.readFileSync(path.join(projectRoot, DSH_PLUGIN), "utf-8");
+      if (src.startsWith(DSH_MARKER)) scripts = [...src.matchAll(/^const HOOK = ("[^"]+");$/gm)].map((m) => JSON.parse(m[1]));
+    } catch { /* not installed */ }
+    return { installed: scripts.length > 0, location: DSH_DIR, hookScripts: scripts };
+  },
+
+  install(projectRoot: string, pkgRoot: string): AgentInstallResult {
+    const hooks: Record<string, MatcherGroup[]> = {};
+    for (const [ev, hook] of Object.entries(DSH_EVENTS)) {
+      hooks[ev] = [{ hooks: [{ type: "command", command: hookCommand(pkgRoot, hook, "deepseek-harness"), timeout: HOOK_TIMEOUT_SEC }] }];
+    }
+    writeJson(path.join(projectRoot, DSH_HOOKS), { hooks });
+    fs.writeFileSync(path.join(projectRoot, DSH_PLUGIN), dshPluginSource(pkgRoot), "utf-8");
+    fs.writeFileSync(path.join(projectRoot, DSH_PATCH), [
+      "# Written by `backupper install deepseek-harness`: BackUpper's tools/execute plugin and the",
+      "# Claude Code hook bridge on its hooks. Pass it at launch: dsh --patch <this file>.",
+      "- insert:",
+      "    - id: backupper",
+      `      name: ${JSON.stringify(path.resolve(projectRoot, DSH_PLUGIN))}`,
+      "    - id: backupper-hooks",
+      "      name: '@deepseek-ai/dsh-hooks-claude-code'",
+      "      config:",
+      `        configPath: ${JSON.stringify(path.resolve(projectRoot, DSH_HOOKS))}`,
+      "",
+    ].join("\n"), "utf-8");
+    return {
+      log: [
+        `Patch layer written to ${DSH_PATCH} (tools/execute plugin, PostToolUse, UserPromptSubmit)`,
+        `Start dsh from this project with it: ${DSH_LAUNCH}   (also: dsh web --patch ${DSH_PATCH})`,
+      ],
+    };
+  },
+
+  uninstall(projectRoot: string): AgentInstallResult {
+    if (!this.hookStatus(projectRoot).installed) return { log: [] };
+    for (const f of [DSH_HOOKS, DSH_PLUGIN, DSH_PATCH]) fs.rmSync(path.join(projectRoot, f), { force: true });
+    removeEmptyDirs(path.join(projectRoot, DSH_DIR), projectRoot);
+    return { log: [`Removed ${DSH_DIR}/`] };
+  },
+};
+
+// =============================================================================
+// ── openclaw ──
+// =============================================================================
+
+/**
+ * OpenClaw adapter: installs a workspace plugin at `.openclaw/extensions/backupper/` whose
+ * before_tool_call / after_tool_call / before_prompt_build hooks forward each call to the Node
+ * hooks in the Claude Code JSON shape. OpenClaw works in, and discovers workspace plugins from,
+ * its agent workspace, and loads one only once it is enabled. Install enables the plugin; the
+ * user points the workspace at this project per launch with OPENCLAW_WORKSPACE_DIR, which
+ * applies when `agents.defaults.workspace` is not set. The Gateway and `openclaw agent --local`
+ * run its hooks; `openclaw agent exec` loads workspace plugins for discovery only.
+ */
+
+const OC_PLUGIN_DIR = path.join(".openclaw", "extensions", "backupper");
+const OC_MARKER = "// backupper-plugin";
+const OC_PLUGIN_ID = "backupper";
+/** OpenClaw config written by install: enable the plugin and let it add prompt context. */
+const OC_CONFIG: Array<[string, string]> = [
+  [`plugins.entries.${OC_PLUGIN_ID}.enabled`, "true"],
+  [`plugins.entries.${OC_PLUGIN_ID}.hooks.allowConversationAccess`, "true"],
+];
+
+/** `openclaw <args>`; null when `openclaw` cannot run. */
+function openclaw(projectRoot: string, args: string[]): { ok: boolean; out: string } | null {
+  const r = spawnSync("openclaw", args, { cwd: projectRoot, encoding: "utf-8", timeout: 60_000 });
+  if (r.error) return null;
+  return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
+/** The launch line install prints: OpenClaw with this project as its agent workspace. */
+export function ocLaunch(projectRoot: string): string {
+  const dir = /^[\w\/.@+-]+$/.test(projectRoot) ? projectRoot : JSON.stringify(projectRoot);
+  return `OPENCLAW_WORKSPACE_DIR=${dir} openclaw gateway run   (or: ... openclaw agent --local)`;
+}
+
+function ocPluginSource(pkgRoot: string): string {
+  const hook = JSON.stringify(path.join(pkgRoot, "hook.js"));
+  return `${OC_MARKER}
+/**
+ * BackUpper plugin for OpenClaw, written by \`backupper install openclaw\` (regenerated on install).
+ *
+ * Each tool call is sent to the BackUpper Node hooks as Claude Code hook JSON, run in the
+ * workspace this plugin lives in. A tier-1 rewrite is returned as the params rewrite. Messages the pre-tool hook addresses to the agent are added to the next
+ * prompt.
+ */
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const HOOK = ${hook};
+const NO_HOOK_ENV = "BACKUPPER_NO_HOOK";
+// Above the tier-4 subagent timeout, so a capture in progress is never cut off here.
+const TIMEOUT_MS = 600_000;
+
+// OpenClaw tool names mapped to the names the hooks key their rules on.
+const NAME_MAP = { exec: "Bash", write: "Write", edit: "Edit", apply_patch: "Edit", read: "Read" };
+
+const pendingContext = [];
+
+/** Pipe one payload into a hook (pre, post or prompt) and resolve its JSON output, or null. */
+function run(root, hook, payload, extraEnv = {}) {
+  if (process.env[NO_HOOK_ENV] === "1") return Promise.resolve(null); // inside a BackUpper subagent
+  if (!existsSync(HOOK)) {
+    console.warn(\`backupper: hook missing: \${HOOK} (reinstall with: backupper install openclaw)\`);
+    return Promise.resolve(null);
+  }
+  const env = { ...process.env, ...extraEnv };
+  delete env[NO_HOOK_ENV];
+  return new Promise((resolve) => {
+    const child = spawn("node", [HOOK, hook, "--agent", "openclaw"], { cwd: root, env, stdio: ["pipe", "pipe", "ignore"] });
+    let out = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
+    child.stdout.on("data", (d) => { out += d; });
+    child.on("error", (e) => { clearTimeout(timer); console.warn(\`backupper: hook failed (\${hook}): \${e.message}\`); resolve(null); });
+    child.on("close", () => {
+      clearTimeout(timer);
+      try { resolve(out.trim() ? JSON.parse(out) : null); } catch { resolve(null); }
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+function toolInput(toolName, params) {
+  const input = { ...params };
+  if ((toolName === "write" || toolName === "edit") && typeof input.path === "string") input.file_path ??= input.path;
+  return input;
+}
+
+function approvalDefaults() {
+  const dir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+  try { return JSON.parse(readFileSync(path.join(dir, "exec-approvals.json"), "utf-8")).defaults ?? {}; } catch { return {}; }
+}
+
+/**
+ * OpenClaw applies its exec policy inside the exec tool, after this hook. Report
+ * "bypassPermissions" exactly when that policy runs every command without asking
+ * (security=full and ask=off in the config, the approvals defaults and the call itself).
+ * Otherwise "default": BackUpper then executes nothing in the hook and prepends its copies to
+ * the command, so a denied command changes nothing.
+ */
+function permissionMode(config, params) {
+  const exec = config?.tools?.exec ?? {};
+  const approvals = approvalDefaults();
+  const security = [exec.security, approvals.security, params.security];
+  const ask = [exec.ask, approvals.ask, params.ask];
+  const open = security.every((v) => v === undefined || v === "full") && ask.every((v) => v === undefined || v === "off");
+  return open ? "bypassPermissions" : "default";
+}
+
+/** Where exec runs when it is not this machine (a sandbox container or a paired node). */
+function execTarget(config, params) {
+  const host = params.host ?? config?.tools?.exec?.host ?? "auto";
+  if (host === "sandbox" || host === "node") return host;
+  const sandbox = config?.agents?.defaults?.sandbox?.mode;
+  return host === "auto" && sandbox && sandbox !== "off" ? "sandbox" : "";
+}
+
+export default {
+  id: "backupper",
+  name: "BackUpper",
+  description: "Captures what a tool call is about to destroy before it runs.",
+  register(api) {
+    // <workspace>/.openclaw/extensions/backupper
+    const root = path.resolve(api.rootDir ?? path.dirname(new URL(import.meta.url).pathname), "..", "..", "..");
+
+    api.on("before_tool_call", async (event, ctx) => {
+      const mapped = NAME_MAP[event.toolName] ?? event.toolName;
+      const target = mapped === "Bash" ? execTarget(api.config, event.params) : "";
+      const out = (await run(root, "pre", {
+        hook_event: "PreToolUse",
+        tool_name: mapped,
+        tool_input: toolInput(event.toolName, event.params),
+        session_id: ctx.sessionId ?? ctx.sessionKey ?? "",
+        tool_use_id: event.toolCallId ?? "",
+        cwd: root,
+        permission_mode: permissionMode(api.config, event.params),
+      }, target ? { BACKUPPER_EXEC_TARGET: target } : {})) ?? {};
+      const hso = out.hookSpecificOutput ?? {};
+      if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) {
+        pendingContext.push(hso.additionalContext.trim());
+      }
+      const update = hso.updatedInput;
+      if (update && typeof update === "object") {
+        const params = { ...event.params };
+        for (const [k, v] of Object.entries(update)) if (k in params) params[k] = v;
+        return { params };
+      }
+    }, { timeoutMs: TIMEOUT_MS });
+
+    api.on("after_tool_call", async (event, ctx) => {
+      await run(root, "post", {
+        hook_event: "PostToolUse",
+        tool_name: NAME_MAP[event.toolName] ?? event.toolName,
+        tool_input: toolInput(event.toolName, event.params ?? {}),
+        tool_output: event.error ? { error: event.error } : event.result,
+        session_id: ctx.sessionId ?? ctx.sessionKey ?? "",
+        tool_use_id: event.toolCallId ?? "",
+        cwd: root,
+      });
+    }, { timeoutMs: TIMEOUT_MS });
+
+    api.on("before_prompt_build", async (event, ctx) => {
+      const out = (await run(root, "prompt", {
+        hook_event: "UserPromptSubmit",
+        prompt: typeof event.currentUserMessage === "string" ? event.currentUserMessage : event.prompt ?? "",
+        session_id: ctx.sessionId ?? ctx.sessionKey ?? "",
+      })) ?? {};
+      const parts = [];
+      const extra = out.hookSpecificOutput?.additionalContext;
+      if (typeof extra === "string" && extra.trim()) parts.push(extra.trim());
+      parts.push(...pendingContext.splice(0));
+      return parts.length ? { prependContext: parts.join("\\n\\n") } : undefined;
+    });
+  },
+};
+`;
+}
+
+export const openclawAdapter: AgentAdapter = {
+  name: "openclaw",
+  description: "OpenClaw (workspace plugin in .openclaw/extensions/backupper/, with OPENCLAW_WORKSPACE_DIR)",
+  bin: "openclaw",
+  runner: "claude",
+  canRewrite: CAN_REWRITE["openclaw"],
+
+  hookStatus(projectRoot: string): HookStatus {
+    let scripts: string[] = [];
+    try {
+      const src = fs.readFileSync(path.join(projectRoot, OC_PLUGIN_DIR, "index.js"), "utf-8");
+      if (src.startsWith(OC_MARKER)) {
+        scripts = [...src.matchAll(/^const HOOK = ("[^"]+");$/gm)].map((m) => JSON.parse(m[1]));
+      }
+    } catch { /* not installed */ }
+    return { installed: scripts.length > 0, location: OC_PLUGIN_DIR, hookScripts: scripts };
+  },
+
+  install(projectRoot: string, pkgRoot: string): AgentInstallResult {
+    const dir = path.join(projectRoot, OC_PLUGIN_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, "package.json"), {
+      name: "backupper-openclaw", private: true, type: "module", openclaw: { extensions: ["./index.js"] },
+    });
+    writeJson(path.join(dir, "openclaw.plugin.json"), {
+      id: OC_PLUGIN_ID, name: "BackUpper", activation: { onStartup: true },
+      configSchema: { type: "object", additionalProperties: false },
+    });
+    fs.writeFileSync(path.join(dir, "index.js"), ocPluginSource(pkgRoot), "utf-8");
+    const log = [`Plugin written to ${OC_PLUGIN_DIR}/`];
+    const failed = OC_CONFIG.filter(([key, value]) => !openclaw(projectRoot, ["config", "set", key, value])?.ok);
+    if (failed.length === 0) {
+      log.push("OpenClaw config: plugin enabled");
+    } else {
+      log.push(
+        "Could not update the OpenClaw config (is `openclaw` on PATH?). Run:",
+        ...failed.map(([key, value]) => `  openclaw config set ${key} ${JSON.stringify(value)}`),
+      );
+    }
+    log.push(`Start OpenClaw with this project as its workspace: ${ocLaunch(projectRoot)}`);
+    return { log };
+  },
+
+  uninstall(projectRoot: string): AgentInstallResult {
+    const dir = path.join(projectRoot, OC_PLUGIN_DIR);
+    let ours = false;
+    try { ours = fs.readFileSync(path.join(dir, "index.js"), "utf-8").startsWith(OC_MARKER); } catch { /* absent */ }
+    if (!ours) return { log: [] };
+    for (const f of ["index.js", "package.json", "openclaw.plugin.json"]) fs.rmSync(path.join(dir, f), { force: true });
+    removeEmptyDirs(dir, projectRoot);
+    const log = [`Removed ${OC_PLUGIN_DIR}/`];
+    if (openclaw(projectRoot, ["config", "unset", `plugins.entries.${OC_PLUGIN_ID}`])?.ok) log.push("OpenClaw config: plugin entry removed");
+    else log.push("To finish, run:", `  openclaw config unset plugins.entries.${OC_PLUGIN_ID}`);
+    return { log };
   },
 };
 
@@ -702,8 +1173,8 @@ export const hermesAdapter: AgentAdapter = {
 // =============================================================================
 
 /**
- * Agent adapter registry: each supported agent (Claude Code, Codex, Hermes) provides its own
- * install/uninstall recipe and reports whether its hooks are in place.
+ * Agent adapter registry: each supported agent provides its own install/uninstall recipe and
+ * reports whether its hooks are in place.
  */
 
 export interface AgentInstallResult {
@@ -742,10 +1213,15 @@ export interface AgentAdapter {
 }
 
 
-export const ALL_ADAPTERS: AgentAdapter[] = [claudeCodeAdapter, codexAdapter, hermesAdapter];
+export const ALL_ADAPTERS: AgentAdapter[] = [
+  claudeCodeAdapter, codexAdapter, hermesAdapter, openhandsAdapter, deepseekHarnessAdapter, openclawAdapter,
+];
 
 /** Accepted spellings for each agent on the command line. */
-const ALIASES: Record<string, string> = { claude: "claude-code", "claude-code": "claude-code", codex: "codex", hermes: "hermes" };
+const ALIASES: Record<string, string> = {
+  claude: "claude-code", "claude-code": "claude-code", codex: "codex", hermes: "hermes", openhands: "openhands",
+  "deepseek-harness": "deepseek-harness", deepseek: "deepseek-harness", dsh: "deepseek-harness", openclaw: "openclaw",
+};
 
 export function findAdapter(name: string): AgentAdapter | undefined {
   const canonical = ALIASES[name] ?? name;
@@ -769,12 +1245,13 @@ export function hookCommand(pkgRoot: string, hook: HookName, agent: string): str
 }
 
 /**
- * True for a hook command written by this package: the current `hook.js <hook>` form, or
+ * True for a hook command written by this package: `hook.js <hook>`, `backupper hook <hook>`, or
  * the `hooks/<hook>.js` form of older installs (so that reinstall and uninstall replace them).
  */
 export function isOurCommand(cmd: unknown): boolean {
   return typeof cmd === "string" &&
     (/[\\/]hook\.js"?\s+(pre|post|prompt)\s+--agent\s+[a-z-]+/.test(cmd) ||
+      /^backupper\s+hook\s+(pre|post|prompt)\s+--agent\s+[a-z-]+/.test(cmd) ||
       /[\\/]hooks[\\/](pre-tool|post-tool|user-prompt)\.js"?\s+--agent\s+[a-z-]+/.test(cmd));
 }
 
