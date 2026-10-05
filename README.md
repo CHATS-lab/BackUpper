@@ -112,6 +112,12 @@ backupper config set personalization beyond-request  # only effects you did not 
 backupper config set personalization human-work      # only human-authored content
 ```
 
+Or describe your own preference in plain words:
+
+```bash
+backupper config set personalizationPolicy "Only back up the customer database and anything under docs/"
+```
+
 Turn on **self-improvement** to let BackUpper learn a new rule after each subagent backup, so the next similar call is handled without a model call:
 
 ```bash

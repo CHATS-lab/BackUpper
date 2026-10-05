@@ -43,7 +43,7 @@ Tier 4 runs only when all of these hold:
 
 ## Customization and self-improvement
 
-- **Personalized modes** limit what gets backed up to one preference: **High-Impact** (hard-to-reverse changes), **Beyond-Request** (effects the user did not ask for) or **Human-Work** (human-authored content). In these modes the preference check runs before every tier.
+- **Personalized modes** limit what gets backed up to one preference: **High-Impact** (hard-to-reverse changes), **Beyond-Request** (effects the user did not ask for) or **Human-Work** (human-authored content), or to your own preference written in `personalizationPolicy` (mode `custom`). In these modes the preference check runs before every tier.
 - **Self-improvement** adds one reflection turn after each Tier 4 backup. It writes a deterministic rule, so the next similar call is handled by a rule instead of the subagent.
 
 ## Restore

@@ -587,3 +587,24 @@ describe("subagent bookkeeping: runSubagentBackup end to end", () => {
   });
 });
 }
+
+describe("custom personalization", () => {
+  it("uses the user's own preference text, and setting it turns custom on", async () => {
+    const { personalizationPrompt, captureScope } = await import("../../src/backup/personalization.js");
+    const { loadConfig } = await import("../../src/config/load.js");
+    const own = "Only back up the customer database and anything under docs/.";
+    assert.match(personalizationPrompt("custom", own), /USER BACKUP PREFERENCE: Only back up the customer database/);
+    assert.match(captureScope("custom", { protect: true, targets: ["docs/a.md"], why: "w" } as never, own), /^Only back up the customer database/);
+    assert.throws(() => personalizationPrompt("custom", "  "), /personalizationPolicy is empty/);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bu-custom-pref-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".backupper"));
+      fs.writeFileSync(path.join(dir, ".backupper", "config.json"), JSON.stringify({ personalizationPolicy: own }));
+      const c = loadConfig(dir);
+      assert.equal(c.personalization, "custom");
+      assert.equal(c.personalizationPolicy, own);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

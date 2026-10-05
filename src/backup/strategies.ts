@@ -3280,7 +3280,7 @@ function runBackupTiers(
           const { captureScope } = require("./personalization.js");
           spawnConfig = {
             ...config,
-            personalizationCaptureScope: captureScope(config.personalization!, personalizationDecision),
+            personalizationCaptureScope: captureScope(config.personalization!, personalizationDecision, config.personalizationPolicy),
           };
           if (personalizationDecision.targets.length) checkerTargets = personalizationDecision.targets;
         } else if (checkerOutcome) {

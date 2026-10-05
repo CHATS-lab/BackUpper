@@ -28,7 +28,8 @@ argument, e.g. `backupper config set subagentModels '{"claude":"sonnet"}'`.
 | `alwaysBackupPatterns` | JSON array | 15 patterns | Regexes for commands that are always treated as mutating. |
 | `effectManifest` | boolean | `true` | Logs each call's effects to `.backupper/effects.jsonl`. |
 | `learnedReadOnlyEnabled` | boolean | `false` | Lets read-only patterns learned in a session skip later checker calls. |
-| `personalization` | `""`, `high-impact`, `beyond-request`, `human-work`, `hard-to-reverse-only`, `unrequested-effects-only`, `human-authored-only` | unset | Limits tier 4 to one preference: `high-impact`, `beyond-request` or `human-work` (the older names `hard-to-reverse-only`, `unrequested-effects-only` and `human-authored-only` still work). |
+| `personalization` | `""`, `high-impact`, `beyond-request`, `human-work`, `custom`, `hard-to-reverse-only`, `unrequested-effects-only`, `human-authored-only` | unset | Limits tier 4 to one preference: `high-impact`, `beyond-request`, `human-work`, or `custom` for your own text in `personalizationPolicy` (the older names `hard-to-reverse-only`, `unrequested-effects-only` and `human-authored-only` still work). |
+| `personalizationPolicy` | string | unset | Your own backup preference in plain words, e.g. `Only back up the customer database and anything under docs/`. Setting it turns on `custom` personalization. |
 | `personalizationUserRequests` | JSON array | unset | User turns given to the personalization checker as evidence. |
 | `selfImproving` | boolean | `false` | After each tier-4 capture, one reflection turn writes a deterministic rule for similar calls. |
 | `selfImprovingGeneralize` | boolean | `false` | Extends each learned rule to sibling operations. Needs `selfImproving`. |

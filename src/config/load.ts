@@ -43,6 +43,9 @@ export function loadConfig(projectRoot: string = process.cwd()): SandboxConfig {
     delete userConfig.mode;
     const legacy = typeof userConfig.personalization === "string" ? PERSONALIZATION_ALIASES[userConfig.personalization] : undefined;
     if (legacy) userConfig.personalization = legacy;
+    // Writing your own preference text turns on custom personalization.
+    const ownPolicy = typeof userConfig.personalizationPolicy === "string" ? userConfig.personalizationPolicy.trim() : "";
+    if (ownPolicy && !userConfig.personalization) userConfig.personalization = "custom";
     return {
       ...DEFAULT_CONFIG,
       ...(userConfig as Partial<SandboxConfig>),

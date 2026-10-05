@@ -195,7 +195,9 @@ export interface SandboxConfig {
    * Personalization preference: a preference-scoped checker decides whether the action touches
    * protected state, and the preference becomes the tier-4 capture scope.
    */
-  personalization?: "high-impact" | "beyond-request" | "human-work";
+  personalization?: "high-impact" | "beyond-request" | "human-work" | "custom";
+  /** The user's own preference text, used when personalization is "custom". */
+  personalizationPolicy?: string;
   /** Every user turn delivered so far, oldest first (evidence for the checker). */
   personalizationUserRequests?: string[];
   /** The current turn's instruction (evidence for the checker). */
