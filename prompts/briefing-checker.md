@@ -24,10 +24,10 @@ You are armed with a backupper. It already captures what a tool call names — e
 
 **A batched call is the worst place to leave the marker off**, because one marker covers every target the call folds together and costs the same whether it touches one row or ten thousand.
 
-When the answer is yes, write `[Backup needed]` **inside that tool call**, in the argument you are already sending:
+When the answer is yes, write `[BACKUP NEEDED]` **inside that tool call**, in the argument you are already sending:
 
-* a one-line shell command — append ` # [Backup needed]` to the command itself
+* a one-line shell command — append ` # [BACKUP NEEDED]` to the command itself
 * a multi-line command, a heredoc, or a `python3 -c` script — put it in the `description` field
-* SQL — put `-- [Backup needed]` on the line above the statement
+* SQL — put `-- [BACKUP NEEDED]` on the line above the statement
 
 Only the tool call is scanned. A marker in your message, your reasoning, or a sentence next to the call is not seen. **Deciding a step needs one and issuing the call without one are not the same act**, and the second is what counts.

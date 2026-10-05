@@ -1,7 +1,7 @@
 /**
- * Tier-3 subagent backup: spawns a headless agent CLI with a constrained prompt,
+ * Tier-4 subagent backup: spawns a headless agent CLI with a constrained prompt,
  * parses its JSON result, and records it as a `subagent` artifact in the action folder.
- * BACKUPPER_NO_HOOK=1 prevents recursion; any failure falls back to tier-2 alone.
+ * BACKUPPER_NO_HOOK=1 prevents recursion; any failure falls back to tier-3 alone.
  */
 
 import { SUBAGENT_BACKUP as P, render } from "../prompts.generated.js";
@@ -444,7 +444,7 @@ function tellUser(message: string): void {
   }
 }
 
-/** The tier-3 subagent prompt. */
+/** The tier-4 subagent prompt. */
 function buildSubagentPrompt(
   ctx: HookContext,
   actionDir: string,
@@ -491,7 +491,7 @@ const REMOTE_SHELL_COMMAND = new RegExp(
   ")\\b",
 );
 
-/** Backup guidance prompt for the tier-3 subagent. */
+/** Backup guidance prompt for the tier-4 subagent. */
 export function buildBackupGuidance(opts: BackupGuidanceOpts): string {
   // Request learned read-only patterns only when the store is enabled.
   const learnedReadOnlyBlock = opts.config?.learnedReadOnlyEnabled === true
@@ -982,7 +982,7 @@ function runnerModelLabel(runner: string, config: SandboxConfig): string {
 export type SubagentOutcome = BackupArtifact | "read_only" | null;
 
 /**
- * Runs the tier-3 backup subagent synchronously for an out-of-workspace action
+ * Runs the tier-4 backup subagent synchronously for an out-of-workspace action
  * and returns its outcome. Every exit records a forensic envelope in the action dir.
  */
 export function runSubagentBackup(
@@ -1365,7 +1365,7 @@ export function runSubagentBackup(
 
   // Read-only verdict: honored as a clean skip (no artifact, no warning) and
   // resolved before the UNVERIFIED check, since it has empty recovery arrays.
-  // Tiers 0-2 still cover the workspace independently.
+  // Tiers 1-3 still cover the workspace independently.
   if (parsed.no_backup_needed === true) {
     logDebug(`subagent verdict: read-only, no backup needed (${parsed.description.slice(0, 80)})`);
 

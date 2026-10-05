@@ -27,7 +27,7 @@ function pluginSource(pkgRoot: string): string {
   return `${MARKER}
 """BackUpper plugin for Hermes, written by \`backupper install hermes\` (regenerated on install).
 
-Each tool call is sent to the BackUpper Node hooks as Claude Code hook JSON. A tier-0 rewrite is
+Each tool call is sent to the BackUpper Node hooks as Claude Code hook JSON. A tier-1 rewrite is
 applied to the live args dict; a deny rewrites a terminal command into a failing no-op. Messages
 the pre-tool hook addresses to the agent are delivered at the next model call.
 """
@@ -46,7 +46,7 @@ _PRE_TOOL = ${hook("pre-tool")}
 _POST_TOOL = ${hook("post-tool")}
 _USER_PROMPT = ${hook("user-prompt")}
 _NO_HOOK_ENV = "BACKUPPER_NO_HOOK"
-# Above the tier-3 subagent timeout, so a capture in progress is never cut off here.
+# Above the tier-4 subagent timeout, so a capture in progress is never cut off here.
 _TIMEOUT_SEC = 600.0
 
 # Hermes tool names mapped to the names the hooks key their rules on.

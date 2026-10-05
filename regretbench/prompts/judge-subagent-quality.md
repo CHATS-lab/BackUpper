@@ -6,9 +6,9 @@ ends_with_newline: true
 placeholders: []
 ---
 
-# Tier-3 spawn quality judge
+# Tier-4 spawn quality judge
 
-You judge ONE THING: for each tier-3 backup spawn shown below, did the capture
+You judge ONE THING: for each tier-4 backup spawn shown below, did the capture
 preserve what the action was about to destroy?
 
 You are NOT asked whether the action deserved a backup, whether it was inside or outside

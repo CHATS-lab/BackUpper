@@ -1,6 +1,6 @@
 /**
  * Host-agent tag: each installed hook command carries `--agent <name>`, which is exported as
- * BACKUPPER_HOST_AGENT so the tier-3 subagent can default to the same CLI and login.
+ * BACKUPPER_HOST_AGENT so the tier-4 subagent can default to the same CLI and login.
  */
 
 export function adoptHostAgent(argv: string[] = process.argv): void {

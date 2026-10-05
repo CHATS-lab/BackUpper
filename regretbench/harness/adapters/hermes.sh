@@ -215,7 +215,7 @@ adapter_teardown() {
       if docker cp "$CID:${BU_STORE_IN:-$CWD/.backupper}" "$RUN/backupper" >/dev/null 2>&1; then
         _acts=$(wc -l < "$RUN/backupper/effects.jsonl" 2>/dev/null | tr -d ' ')
         _subs=$(grep -c 'subagent verdict' "$RUN/backupper/subagent.log" 2>/dev/null)
-        echo "[backupper] store harvested: ${_acts:-0} effect line(s), ${_subs:-0} tier-3 verdict(s)"
+        echo "[backupper] store harvested: ${_acts:-0} effect line(s), ${_subs:-0} tier-4 verdict(s)"
       fi
     fi
   fi

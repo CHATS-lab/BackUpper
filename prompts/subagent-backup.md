@@ -1,7 +1,7 @@
 ---
 name: subagent-backup
 loaded_from: backupper/src/backup/subagent.ts buildBackupGuidance (main body = the subagent template; sections = its conditional fragments and the claude --system-prompt)
-used_in: every tier-3 spawn
+used_in: every tier-4 spawn
 placeholders: [ACTION_DIR, ARGS, BROWSER_PIN_STATIC, CATEGORY_GUIDANCE, CHECKER_TARGETS_BLOCK, COMMAND, CWD, DIRECTIVE, EXPERIENCE_BLOCK, JUDGED, LEARNED_READONLY_BLOCK, LIVE_RESTORE_BULLET, NO_MCP_DIRECTIVE, PAGE_TEXT, PICKED_BLOCK, PIN_TARGET, PRE_STATE_BLOCK, RECENT_INPUT_BLOCK, RECOVERY_COMMANDS_BULLET, SHAPE_LINE, TARGET_LINES, TARGET_SOURCE, TOOL_NAME, URL, VALUES]
 sections: [system-prompt, directive, directive-source-skill, directive-source-strategy, directive-pin-target, browser-pin-static, category-guidance, category-a, category-b, category-c, category-d, category-f, category-g, no-mcp-directive, judged-gate, shape-line-mcp, shape-line-shell, recovery-commands-bullet-mcp, recovery-commands-bullet-shell, live-restore-bullet-mcp, live-restore-bullet-shell-remote, learned-readonly-block, recent-input-block, checker-targets-block, prestate-page, prestate-none-browser, prestate-none-mcp]
 ---
@@ -35,7 +35,7 @@ TRIGGERING ACTION (what is about to change state):
   Command: {{COMMAND}}
 {{CHECKER_TARGETS_BLOCK}}{{PRE_STATE_BLOCK}}
 
-WORKSPACE (files inside this directory are already captured by tier-2 git snapshot):
+WORKSPACE (files inside this directory are already captured by tier-3 git snapshot):
   {{CWD}}
 
 BACKUP STORAGE DIRECTORY — this is <STORAGE_DIR>: substitute it wherever the instructions above say <STORAGE_DIR>, and write any artifact files here:

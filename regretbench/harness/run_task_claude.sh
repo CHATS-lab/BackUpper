@@ -105,7 +105,7 @@ BU_STORE_ENV=()
 # sidecar); the reaper removes exactly these.
 IDFILE="$RUN/containers.ids"; : > "$IDFILE"
 # Copy the BackUpper store out before the container is removed; it is the only
-# record of what tier 3 captured.
+# record of what tier 4 captured.
 harvest_sandbox() {
   [ -n "${CID:-}" ] || return 0
   [ -n "${CWD:-}" ] || return 0
@@ -114,7 +114,7 @@ harvest_sandbox() {
   local acts subs
   acts=$(wc -l < "$RUN/backupper/effects.jsonl" 2>/dev/null | tr -d ' ')
   subs=$(grep -c 'subagent verdict' "$RUN/backupper/subagent.log" 2>/dev/null)
-  echo "[backupper] store harvested: ${acts:-0} effect line(s), ${subs:-0} tier-3 verdict(s)"
+  echo "[backupper] store harvested: ${acts:-0} effect line(s), ${subs:-0} tier-4 verdict(s)"
 }
 
 reap() {
@@ -435,7 +435,7 @@ PROBE
 fi
 
 # --- RB_BACKUPPER: install the BackUpper in the task container --------------
-# Tier 3 spawns `claude`, so a shim for the bundled CLI goes on the agent's PATH.
+# Tier 4 spawns `claude`, so a shim for the bundled CLI goes on the agent's PATH.
 if [ "${RB_BACKUPPER:-0}" = 1 ]; then
   # shellcheck source=backupper_install.sh
   . "$HERE/backupper_install.sh"
@@ -472,7 +472,7 @@ AGENT_ENV=(-e IS_SANDBOX=1 -e CLAUDE_CONFIG_DIR="$CCDIR/cfg"
            # and an abandoned request crashes it for the rest of the run.
            -e MCP_TIMEOUT=120000 -e MCP_TOOL_TIMEOUT=600000)
 
-# Route the tier-3 subagent (only) through an Anthropic-compatible endpoint when
+# Route the tier-4 subagent (only) through an Anthropic-compatible endpoint when
 # its model is vendor-prefixed; the plugin applies these three variables to the
 # child process, so the main agent keeps its own credentials. The base URL omits
 # /v1, which claude appends.

@@ -5,7 +5,7 @@
 # bu_install_in_container AGENT RUNNER MODEL [KEY=VALUE ...]
 #   AGENT   claude-code | codex       (the argument of `backupper install`)
 #   RUNNER  claude | codex            (the key of subagentModels for MODEL)
-#   MODEL   the tier-3 subagent's model
+#   MODEL   the tier-4 subagent's model
 #   KEY=VALUE  further `backupper config set` pairs
 #
 # Reads CID, CWD, RUN, AGENT_UID, BU_STORE_IN and BU_STORE_ENV from the caller,

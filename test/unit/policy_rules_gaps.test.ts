@@ -1,5 +1,5 @@
 /**
- * Tier-0 rules for further destructive commands:
+ * Tier-1 rules for further destructive commands:
  * git-clean, git-worktree-remove-force, rsync-delete, find-delete,
  * shell-truncate, helm-uninstall, and the recursive (`-R`) forms of
  * chmod / chown.
@@ -209,7 +209,7 @@ describe("policy rule: rsync-delete", () => {
     assert.ok(fs.existsSync(path.join("dst", "doomed.txt")));
   });
 
-  it("ignores a remote destination (tier 3's job, not ours)", () => {
+  it("ignores a remote destination (tier 4's job, not ours)", () => {
     setupTrees();
     assert.equal(
       applyPolicyRules(bash("rsync -a --delete src/ backup-host:/srv/dst/"), trash),

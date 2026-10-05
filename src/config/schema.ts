@@ -14,6 +14,15 @@ type Kind =
 
 const RUNNERS = ["claude", "codex", "hermes"] as const;
 
+/** Personalization modes, named as in the paper. */
+export const PERSONALIZATION_MODES = ["high-impact", "beyond-request", "human-work"] as const;
+/** Earlier names for the same modes; still accepted and mapped on load and on `config set`. */
+export const PERSONALIZATION_ALIASES: Record<string, (typeof PERSONALIZATION_MODES)[number]> = {
+  "hard-to-reverse-only": "high-impact",
+  "unrequested-effects-only": "beyond-request",
+  "human-authored-only": "human-work",
+};
+
 export const CONFIG_SCHEMA: Record<string, Kind> = {
   enabled: { type: "boolean" },
   mode: { type: "enum", values: ["checker", "off"] },
@@ -35,7 +44,7 @@ export const CONFIG_SCHEMA: Record<string, Kind> = {
   learnedReadOnlyEnabled: { type: "boolean" },
   personalization: {
     type: "enum",
-    values: ["", "hard-to-reverse-only", "unrequested-effects-only", "human-authored-only"],
+    values: ["", ...PERSONALIZATION_MODES, ...Object.keys(PERSONALIZATION_ALIASES)],
   },
   personalizationUserRequests: { type: "json", shape: "array" },
   selfImproving: { type: "boolean" },
@@ -55,16 +64,16 @@ export const CONFIG_SCHEMA: Record<string, Kind> = {
  */
 export const CONFIG_DOCS: Record<keyof typeof CONFIG_SCHEMA, string> = {
   enabled: "Master switch.",
-  mode: "`checker` runs tiers 0-2 on every mutating call and tier 3 on a `[Backup needed]` marker or a checker verdict. `off` disables everything.",
-  subagentEnabled: "Turns tier 3 (and the checker) on or off.",
-  subagentRunner: "CLI for tier 3 and the checker. `auto` follows the agent whose hook fired.",
-  subagentModel: "Model for tier 3 and the checker, on every runner. Empty uses `subagentModels`.",
+  mode: "`checker` runs tiers 1-3 on every mutating call and tier 4 on a `[BACKUP NEEDED]` marker or a checker verdict. `off` disables everything.",
+  subagentEnabled: "Turns tier 4 (and the checker) on or off.",
+  subagentRunner: "CLI for tier 4 and the checker. `auto` follows the agent whose hook fired.",
+  subagentModel: "Model for tier 4 and the checker, on every runner. Empty uses `subagentModels`.",
   subagentModels: "Per-runner model used when `subagentModel` is empty. A runner without an entry uses its CLI's default model.",
   subagentProvider: "Hermes only: provider for `hermes chat`. Empty uses Hermes's configured provider.",
-  subagentTimeoutSeconds: "Time limit for one tier-3 capture.",
+  subagentTimeoutSeconds: "Time limit for one tier-4 capture.",
   subagentPermissionMode: "Claude runner only. `acceptEdits` restricts the subagent to file edits.",
   subagentMcpConfig: "MCP config file the subagent may use. Empty uses the project's `.mcp.json`.",
-  subagentRestoreModel: "A different model for live restores. Empty reuses the tier-3 model.",
+  subagentRestoreModel: "A different model for live restores. Empty reuses the tier-4 model.",
   maxActions: "Action folders kept; the oldest are pruned first. `0` means unlimited.",
   maxTotalSizeMB: "Size cap on action folders. `0` means unlimited.",
   maxAgeHours: "Age cap on action folders. `0` means unlimited.",
@@ -72,16 +81,16 @@ export const CONFIG_DOCS: Record<keyof typeof CONFIG_SCHEMA, string> = {
   alwaysBackupPatterns: "Regexes for commands that are always treated as mutating.",
   effectManifest: "Logs each call's effects to `.backupper/effects.jsonl`.",
   learnedReadOnlyEnabled: "Lets read-only patterns learned in a session skip later checker calls.",
-  personalization: "Limits tier 3 to one preference: `hard-to-reverse-only`, `unrequested-effects-only` or `human-authored-only`.",
+  personalization: "Limits tier 4 to one preference: `high-impact`, `beyond-request` or `human-work` (the older names `hard-to-reverse-only`, `unrequested-effects-only` and `human-authored-only` still work).",
   personalizationUserRequests: "User turns given to the personalization checker as evidence.",
-  selfImproving: "After each tier-3 capture, one reflection turn writes a deterministic rule for similar calls.",
+  selfImproving: "After each tier-4 capture, one reflection turn writes a deterministic rule for similar calls.",
   selfImprovingGeneralize: "Extends each learned rule to sibling operations. Needs `selfImproving`.",
   learnedBackupRulesPath: "Where learned rules are stored.",
-  reflectionSubagentRunner: "Runner for reflection turns. Empty reuses the tier-3 runner.",
-  reflectionSubagentModel: "Model for reflection turns. Empty reuses the tier-3 model.",
+  reflectionSubagentRunner: "Runner for reflection turns. Empty reuses the tier-4 runner.",
+  reflectionSubagentModel: "Model for reflection turns. Empty reuses the tier-4 model.",
   experienceForServer: "Maps an MCP server to an experience file, e.g. `{\"playwright\": \"shop\"}`.",
   notifyOnSuccess: "Tells the agent about every successful backup. Failures and unverified backups are always reported.",
-  announceOnce: "Briefs the agent once per session about the `[Backup needed]` marker.",
+  announceOnce: "Briefs the agent once per session about the `[BACKUP NEEDED]` marker.",
   verbose: "Writes hook decisions to stderr.",
 };
 
@@ -112,7 +121,8 @@ export function parseConfigValue(key: string, raw: string): unknown {
       throw new Error(`${key} must be a non-negative integer (0 disables a limit)`);
     }
     case "enum": {
-      const v = raw === '""' ? "" : raw;
+      const v0 = raw === '""' ? "" : raw;
+      const v = key === "personalization" ? (PERSONALIZATION_ALIASES[v0] ?? v0) : v0;
       if (kind.values.includes(v)) return v;
       throw new Error(`${key} must be one of: ${describe(kind)}`);
     }

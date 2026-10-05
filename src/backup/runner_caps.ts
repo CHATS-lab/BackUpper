@@ -1,5 +1,5 @@
 /**
- * Per-runner capability table for the tier-3 backup/restore subagent: how
+ * Per-runner capability table for the tier-4 backup/restore subagent: how
  * each runner CLI can be given MCP access, whether its tool surface can be
  * narrowed, and whether it has a turn cap. The prompt and invocation builders
  * consult it so a runner without MCP is told so rather than asked to use it.
@@ -26,7 +26,7 @@ export function hostAgent(): string | undefined {
 }
 
 /**
- * The runner for the tier-3 subagent. An explicit `subagentRunner` wins; "auto" follows the
+ * The runner for the tier-4 subagent. An explicit `subagentRunner` wins; "auto" follows the
  * host agent, and outside a hook (e.g. `backupper restore`) the agent installed in the project.
  */
 export function resolveRunner(config: Pick<SandboxConfig, "subagentRunner">, host?: string): SubagentRunner {

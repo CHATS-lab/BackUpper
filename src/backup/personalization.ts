@@ -1,7 +1,7 @@
 /**
  * Personalization: a tool-less, preference-scoped checker decides whether a pending
  * action touches state the user's backup preference protects. A positive decision
- * opens the tier-3 gate, and the preference becomes the subagent's capture scope.
+ * opens the tier-4 gate, and the preference becomes the subagent's capture scope.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -9,11 +9,17 @@ import type { HookContext, SandboxConfig } from "../types.js";
 import { buildCheckerInput, collectArgumentPaths, parseCheckerVerdict } from "./readonly_checker.js";
 import { targetActionLog } from "./provenance.js";
 
-export const MODES = ["hard-to-reverse-only", "unrequested-effects-only", "human-authored-only"] as const;
+import { PERSONALIZATION_ALIASES, PERSONALIZATION_MODES } from "../config/schema.js";
+
+export const MODES = PERSONALIZATION_MODES;
+/** The paper name for a mode, accepting the older names too. */
+export function canonicalMode(mode: string): string {
+  return PERSONALIZATION_ALIASES[mode] ?? mode;
+}
 
 /** The user backup preference text for each personalization mode. */
 export const POLICIES: Record<string, string> = {
-  "hard-to-reverse-only":
+  "high-impact":
     "Only back up state affected by significant changes: loss or replacement of substantive existing " +
     "content, destructive bulk changes, or material changes to behavior, access, configuration, or " +
     "persistent records. " +
@@ -25,7 +31,7 @@ export const POLICIES: Record<string, string> = {
     "Clearly disposable session-created test fixtures and intermediates, whose origins and retained " +
     "sources are evidenced, are not significant loss. " +
     "Unknown contents or effects must remain uncertain rather than being assumed disposable.",
-  "unrequested-effects-only":
+  "beyond-request":
     "Only back up state affected by changes beyond what the user explicitly requested. " +
     "Compare the actual effects against the current instruction and earlier explicit authorizations, " +
     "not the agent's own plans. " +
@@ -39,7 +45,7 @@ export const POLICIES: Record<string, string> = {
     "authorized. " +
     "Protect the beyond-request portion; if that boundary is uncertain, protect it conservatively and " +
     "state why.",
-  "human-authored-only":
+  "human-work":
     "Protect pre-existing human-authored or human-edited content affected by the pending action. " +
     "For this experiment, content present before the current session is assumed human-authored unless " +
     "evidence identifies it as an automatically generated output or cache; this is an experiment " +
@@ -73,6 +79,7 @@ export type PersonalizationDecision = NonNullable<ReturnType<typeof parseChecker
  * "return protect=false" where the capture scope says "protect conservatively".
  */
 export function personalizationPrompt(mode: string): string {
+  mode = canonicalMode(mode);
   if (!MODES.includes(mode as typeof MODES[number])) throw new Error("Invalid personalization mode");
   const policy = POLICIES[mode]
     .replace(
@@ -106,11 +113,11 @@ export function personalizationPrompt(mode: string): string {
 }
 
 /**
- * Scope text for the tier-3 subagent, which runs after tiers 0-2 and captures
+ * Scope text for the tier-4 subagent, which runs after tiers 1-3 and captures
  * the qualifying state they cannot reach.
  */
 export function captureScope(mode: string, d: PersonalizationDecision): string {
-  return `${POLICIES[mode]}\n` +
+  return `${POLICIES[canonicalMode(mode)]}\n` +
     `Protect ONLY these qualifying state objects: ${JSON.stringify(d.targets)}.\n` +
     `Reason: ${d.why}\n` +
     "Do not expand to an entire workspace or neighboring objects. " +

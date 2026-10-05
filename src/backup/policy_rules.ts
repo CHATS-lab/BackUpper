@@ -1,5 +1,5 @@
 /**
- * Tier-0 policy rules.
+ * Tier-1 command-rewriting rules.
  *
  * Rewrite mode (hosts that apply a rewritten tool input: Claude Code, Hermes): a matching
  * call is rewritten into a recoverable form, e.g. `rm -rf path` becomes a move into the
@@ -21,7 +21,7 @@ import {
   EXTRA_RULES,
   copyVictimsToTrash,
   excludeSandboxStore,
-  logTier0Note,
+  logTier1Note,
   storeDenyReason,
   stripShellComment,
 } from "./policy_rules_extra.js";
@@ -49,7 +49,7 @@ export interface PolicyRuleResult {
   /** Stable rule id (for debugging + UI). */
   ruleId: string;
   /**
-   * If true, the tier-0 artifact is recorded but tier 2 still snapshots the workspace;
+   * If true, the tier-1 artifact is recorded but tier 3 still snapshots the workspace;
    * used by rules whose own recovery is partial (e.g. `git reset --hard`).
    */
   preserveLowerTiers?: boolean;
@@ -239,7 +239,7 @@ export const POLICY_RULES: PolicyRule[] = [
         };
       }
       if (skipped.length > 0) {
-        logTier0Note(
+        logTier1Note(
           trashDir,
           "rm-to-trash",
           `refused: ${skipped.join(", ")} is, or contains, the sandbox ` +
@@ -328,19 +328,19 @@ export const POLICY_RULES: PolicyRule[] = [
   ...EXTRA_RULES,
 ];
 
-/** Record a tier-0 refusal on stderr and in `<sandbox root>/tier0-skipped.log`. */
-function logTier0Refusal(
+/** Record a tier-1 refusal on stderr and in `<sandbox root>/tier1-skipped.log`. */
+function logTier1Refusal(
   trashDir: string,
   ruleId: string,
   foreign: ForeignExecTarget,
   commandOrJson: string,
 ): void {
   const line =
-    `[BackUpper] TIER-0 DISABLED: the agent executes through a ` +
+    `[BackUpper] TIER-1 DISABLED: the agent executes through a ` +
     `'${foreign.backend}' backend (${foreign.source}), not this filesystem. ` +
-    `Rule '${ruleId}' matched but was NOT applied — a tier-0 rewrite runs its ` +
+    `Rule '${ruleId}' matched but was NOT applied — a tier-1 rewrite runs its ` +
     `own mv/cp/rm HERE, which would mutate the wrong machine and still leave ` +
-    `the real target unprotected. Command passed through unmodified; tiers 1-3 ` +
+    `the real target unprotected. Command passed through unmodified; tiers 2-4 ` +
     `still apply. Action: ${commandOrJson.slice(0, 300)}`;
   try {
     process.stderr.write(line + "\n");
@@ -349,7 +349,7 @@ function logTier0Refusal(
     const root = path.dirname(path.dirname(path.dirname(path.resolve(trashDir))));
     fs.mkdirSync(root, { recursive: true });
     fs.appendFileSync(
-      path.join(root, "tier0-skipped.log"),
+      path.join(root, "tier1-skipped.log"),
       `[${new Date().toISOString()}] ${line}\n`,
     );
   } catch { /* best-effort */ }
@@ -381,7 +381,7 @@ export function applyPolicyRules(
     // Checked after the match, so the log names the rule, and before apply().
     const foreign = foreignExecTarget();
     if (foreign) {
-      logTier0Refusal(trashDir, rule.id, foreign, commandOrJson);
+      logTier1Refusal(trashDir, rule.id, foreign, commandOrJson);
       return null;
     }
     const result = rule.apply(m, ctx, trashDir, storeRoot, { rewrite });

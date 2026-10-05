@@ -146,7 +146,7 @@ async function main(): Promise<void> {
   if (result.decision === "backup") {
     const backupResult = runBackup(ctx, config);
 
-    // A backup-only tier-0 rule found the backup store in the victim set of a command it
+    // A backup-only tier-1 rule found the backup store in the victim set of a command it
     // cannot rewrite: block the call.
     if (backupResult.deny) {
       const output: PreToolHookOutput = {
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
           `Backup: ${artifact.description} (${artifact.strategy})`
         );
       }
-      // Tell the agent that a tier-3 reversal was recorded and it can proceed.
+      // Tell the agent that a tier-4 reversal was recorded and it can proceed.
       if (backupResult.artifacts.some((a) => a.strategy === "subagent")) {
         contextParts.push(
           "BackUpper backed up this action (reversal recorded); continue."
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // A tier-0 rewrite is always reported, since the command that runs
+    // A tier-1 rewrite is always reported, since the command that runs
     // differs from the one the agent wrote. A backup-only capture changes nothing the agent
     // sees, so it follows notifyOnSuccess like the other tiers.
     for (const artifact of backupResult.artifacts) {
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
       // non-fatal
     }
 
-    // Allow the call with backup context, propagating any tier-0 updatedInput.
+    // Allow the call with backup context, propagating any tier-1 updatedInput.
     // Nothing to report and no rewrite: exit without a hook response.
     if (!contextMsg && !backupResult.updatedInput) {
       process.exit(0);

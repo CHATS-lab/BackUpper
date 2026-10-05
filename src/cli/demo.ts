@@ -1,9 +1,9 @@
 /**
  * `backupper demo`: an offline walk-through in a temporary project. It feeds two tool calls to
  * the real PreToolUse hook (an `rm` of a file and an in-workspace edit), carries them out and
- * reports them to the PostToolUse hook as an agent would, lists what tiers 0-2 captured, then
+ * reports them to the PostToolUse hook as an agent would, lists what tiers 1-3 captured, then
  * restores and checks both files.
- * No agent, model or key is involved: the tier-3 subagent and the checker are disabled.
+ * No agent, model or key is involved: the tier-4 subagent and the checker are disabled.
  */
 
 import * as fs from "node:fs";
@@ -44,7 +44,7 @@ export function demo(pkgRoot: string, opts: { keep: boolean; json: boolean }): n
   try {
     fs.writeFileSync(path.join(dir, "notes.txt"), NOTES);
     fs.writeFileSync(path.join(dir, "settings.toml"), SETTINGS);
-    // Offline configuration: tiers 0-2 only.
+    // Offline configuration: tiers 1-3 only.
     saveConfig({ enabled: true, mode: "checker", subagentEnabled: false, announceOnce: false }, dir);
 
     say(`BackUpper demo, in a scratch project: ${dir}`);
@@ -76,8 +76,8 @@ export function demo(pkgRoot: string, opts: { keep: boolean; json: boolean }): n
       say(`   #${a.seq}  tier ${a.tiers.join(",") || "-"}  ${a.originalAction || a.toolName}  (${a.strategies.join(" + ")})`);
     }
     check("two actions were recorded", actions.length === 2);
-    check("the rm was captured by tier 0 (move to trash)", actions[0]?.strategies.includes("policy_rewrite") ?? false);
-    check("the edit was captured by tier 2 (workspace snapshot)", actions[1]?.strategies.includes("git_snapshot") ?? false);
+    check("the rm was captured by tier 1 (move to trash)", actions[0]?.strategies.includes("policy_rewrite") ?? false);
+    check("the edit was captured by tier 3 (snapshot)", actions[1]?.strategies.includes("git_snapshot") ?? false);
 
     const first = actions[0]?.seq ?? 1;
     say(`\n4. Undo both steps: \`backupper restore ${first}\` (undo action #${first} and everything after it).`);

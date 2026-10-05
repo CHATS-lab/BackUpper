@@ -1,6 +1,6 @@
 /**
  * Agent-written backup declarations. The agent marks a tool call with
- * `[Backup needed]` (optionally followed by free text) to request a tier-3
+ * `[BACKUP NEEDED]` (optionally followed by free text) to request a tier-4
  * backup; the declaration is only a trigger and its text is never shown to
  * the backup subagent, which performs its own discovery.
  *

@@ -1,13 +1,13 @@
 /**
- * Tier-0 host-hazard guard.
+ * Tier-1 host-hazard guard.
  *
- * Tier-0 policy rules do not describe a rewrite, they PERFORM it — `mv`,
+ * Tier-1 policy rules do not describe a rewrite, they PERFORM it — `mv`,
  * `cp`, `git stash` — inside the hook process, against the hook process's
  * own filesystem, and then no-op the agent's command. That is only sound
  * when the agent's tool calls land on that same filesystem.
  *
  * When the host agent uses a container/ssh terminal backend
- * (hermes `TERMINAL_ENV=docker`) the hook still runs on the HOST. A tier-0
+ * (hermes `TERMINAL_ENV=docker`) the hook still runs on the HOST. A tier-1
  * match would then delete/move the HOST's files while the container the
  * agent is really driving stays untouched. These tests pin the fail-safe:
  * the rule must NOT execute, the file must survive, and the caller must get
@@ -48,7 +48,7 @@ beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "backupper-exec-"));
   process.chdir(workspace);
   // .backupper/backups/action_001/trash — the shape strategies.ts passes,
-  // so the refusal log lands in .backupper/tier0-skipped.log.
+  // so the refusal log lands in .backupper/tier1-skipped.log.
   trash = path.join(workspace, ".backupper", "backups", "action_001", "trash");
   restoreEnv();
   delete process.env.TERMINAL_ENV;
@@ -101,7 +101,7 @@ describe("foreignExecTarget", () => {
   });
 });
 
-describe("tier-0 refuses to act on a foreign execution target", () => {
+describe("tier-1 refuses to act on a foreign execution target", () => {
   it("rm-to-trash DELETES the local file when execution is local (control)", () => {
     fs.writeFileSync("victim.txt", "host data\n");
     const r = applyPolicyRules(bash("rm -rf victim.txt"), trash);
@@ -123,10 +123,10 @@ describe("tier-0 refuses to act on a foreign execution target", () => {
     process.env.TERMINAL_ENV = "docker";
     fs.writeFileSync("victim.txt", "host data\n");
     applyPolicyRules(bash("rm -rf victim.txt"), trash);
-    const logPath = path.join(workspace, ".backupper", "tier0-skipped.log");
-    assert.ok(fs.existsSync(logPath), "tier0-skipped.log must exist");
+    const logPath = path.join(workspace, ".backupper", "tier1-skipped.log");
+    assert.ok(fs.existsSync(logPath), "tier1-skipped.log must exist");
     const log = fs.readFileSync(logPath, "utf8");
-    assert.match(log, /TIER-0 DISABLED/);
+    assert.match(log, /TIER-1 DISABLED/);
     assert.match(log, /docker/);
     assert.match(log, /rm-to-trash/);
   });
@@ -156,7 +156,7 @@ describe("tier-0 refuses to act on a foreign execution target", () => {
     process.env.TERMINAL_ENV = "local";
     fs.writeFileSync("victim.txt", "container data\n");
     const r = applyPolicyRules(bash("rm -rf victim.txt"), trash);
-    assert.ok(r, "tier 0 must work normally once hook and agent share a filesystem");
+    assert.ok(r, "tier 1 must work normally once hook and agent share a filesystem");
     assert.equal(fs.existsSync("victim.txt"), false);
   });
 });

@@ -18,17 +18,17 @@
      bound ledger; tractor-feed perforation on the timeline tape;
      ticket-stamp action numbers. Monospace for technical terms.
 
-     Each of the four backup tiers (T0–T3) has one colour, used
+     Each of the four backup tiers (T1–T4) has one colour, used
      consistently; the CSS variable index matches the tier number:
-       T0 rewrite  = amber      (--t0)
-       T1 manifest = sage       (--t1)
-       T2 snapshot = teal       (--t2)
-       T3 subagent = slate blue (--t3)  */
+       T1 rewrite  = amber      (--t0)
+       T2 manifest = sage       (--t1)
+       T3 snapshot = teal       (--t2)
+       T4 subagent = slate blue (--t3)  */
 
   /* Palette: warm cream paper (#faf9f5) with warm-gray ink and a deep
      green-teal accent (#12867e); dark mode uses navy ink (#10131a) with
-     a mint-teal accent (#54cfc3). Teal doubles as the T2 colour;
-     amber, sage and slate distinguish T0, T1 and T3. */
+     a mint-teal accent (#54cfc3). Teal doubles as the T3 colour;
+     amber, sage and slate distinguish T1, T2 and T4. */
   :root, [data-theme="light"] {
     --bg:         #faf9f5;
     --bg-soft:    #f2f0e8;
@@ -172,7 +172,7 @@
   .tl-row.selected.t-snapshot { border-left-color: var(--t2); }
   .tl-row.selected.t-subagent { border-left-color: var(--t3); }
 
-  /* The spine node is the tier label (T0–T3). A bordered chip
+  /* The spine node is the tier label (T1–T4). A bordered chip
      sitting on the vertical spine, its bg masking the line behind it. */
   .tl-node {
     justify-self: center; position: relative; z-index: 2;
@@ -303,7 +303,7 @@
   .bk-state.deleted  { color: var(--danger); }
   .bk-tags { display: flex; gap: 5px; flex-wrap: wrap; }
   .bk-tag { display: inline-block; border: 1px solid currentColor; padding: 0 5px; font-size: 10px; font-family: "JetBrains Mono", monospace; line-height: 1.6; }
-  /* Tier colours, as on the timeline: git=T2, trash=T0, sub=T3. */
+  /* Tier colours, as on the timeline: git=T3, trash=T1, sub=T4. */
   .bk-tag.git   { color: var(--t2); }
   .bk-tag.trash { color: var(--t0); }
   .bk-tag.sub   { color: var(--t3); }
@@ -687,28 +687,28 @@ async function loadStatus() {
 // Plain-language definitions for key terms — surfaced as hover
 // tooltips so the dashboard is self-contained for new users.
 const TERM_HELP = {
-  policy_rewrite: "Tier 0 backup: the destructive command was rewritten into a reversible form (e.g. rm becomes move-to-trash) before it ran. Restore replays the exact inverse; no model is involved.",
-  git_snapshot: "Tier 2 backup: the workspace was committed to a hidden shadow git repository before this action ran. Restore checks that snapshot back out.",
-  file_copy: "Tier 2 backup: an exact pre-image copy of a single file outside the workspace, taken before the action. Restore writes it back.",
-  subagent: "Tier 3 backup: a backup subagent captured state that lives outside the workspace (remote service, database, system files) and recorded recovery commands.",
-  learned_rule: "Tier 3 backup: a deterministic capture rule learned from earlier tier-3 subagent runs, applied without invoking a model.",
-  pip_freeze: "Tier 1 backup: a package-version manifest (pip freeze) taken before the action. Restore reinstalls those exact versions.",
-  npm_list: "Tier 1 backup: an npm package manifest taken before the action.",
-  env_snapshot: "Tier 1 backup: a snapshot of environment variables taken before the action.",
-  git_tag: "Tier 1 backup: a git tag recorded at the pre-action commit.",
+  policy_rewrite: "Tier 1 backup: the destructive command was rewritten into a reversible form (e.g. rm becomes move-to-trash) before it ran. Restore replays the exact inverse; no model is involved.",
+  git_snapshot: "Tier 3 backup: the workspace was committed to a hidden shadow git repository before this action ran. Restore checks that snapshot back out.",
+  file_copy: "Tier 3 backup: an exact pre-image copy of a single file outside the workspace, taken before the action. Restore writes it back.",
+  subagent: "Tier 4 backup: a backup subagent captured state that lives outside the workspace (remote service, database, system files) and recorded recovery commands.",
+  learned_rule: "Tier 4 backup: a deterministic capture rule learned from earlier tier-4 subagent runs, applied without invoking a model.",
+  pip_freeze: "Tier 2 backup: a package-version manifest (pip freeze) taken before the action. Restore reinstalls those exact versions.",
+  npm_list: "Tier 2 backup: an npm package manifest taken before the action.",
+  env_snapshot: "Tier 2 backup: a snapshot of environment variables taken before the action.",
+  git_tag: "Tier 2 backup: a git tag recorded at the pre-action commit.",
   "shadow.git": "The hidden shadow git repository (.backupper/shadow-repo) holding all workspace snapshots, deduplicated and compressed.",
-  "external-shadow": "A tier-3 shadow git repository covering files outside the workspace.",
-  git: "Workspace snapshots in the shadow git repository (tier 2).",
-  trash: "The per-action trash folder where tier-0 rewrites place files instead of deleting them.",
+  "external-shadow": "A tier-4 shadow git repository covering files outside the workspace.",
+  git: "Workspace snapshots in the shadow git repository (tier 3).",
+  trash: "The per-action trash folder where tier-1 rewrites place files instead of deleting them.",
   created: "This file did not exist before — it was created during these actions.",
   modified: "This file existed before and its content was changed.",
-  deleted: "This file was removed (a tier-0 rewrite keeps its content in trash, so it is recoverable).",
+  deleted: "This file was removed (a tier-1 rewrite keeps its content in trash, so it is recoverable).",
 };
 const TIER_HELP = {
-  T0: "Tier 0 — policy rewrite: the destructive command is replaced with a reversible one (rm → trash). Cheapest and exact.",
-  T1: "Tier 1 — targeted manifest: an environment recipe (pip freeze, npm list, env dump) recorded before the action.",
-  T2: "Tier 2 — workspace snapshot: the workspace is committed to the shadow git repository (or a single out-of-workspace file is copied verbatim) before the action.",
-  T3: "Tier 3 — backup subagent: a subagent (or a rule learned from earlier subagent runs) captures out-of-workspace or remote state.",
+  T1: "Tier 1 — command rewriting: the destructive command is replaced with a reversible one (rm → trash). Cheapest and exact.",
+  T2: "Tier 2 — command pairing: an environment recipe (pip freeze, npm list, env dump) recorded before the action.",
+  T3: "Tier 3 — snapshot: the workspace is committed to the shadow git repository (or a single out-of-workspace file is copied verbatim) before the action.",
+  T4: "Tier 4 — backup subagent: a subagent (or a rule learned from earlier subagent runs) captures out-of-workspace or remote state.",
 };
 function helpAttr(label) {
   const h = TERM_HELP[label];
@@ -765,10 +765,10 @@ function renderStatus() {
   if (s.subagentEnabled) {
     const runner = s.subagentRunner || "auto";
     const sub = s.subagentModel ? `${runner}/${s.subagentModel}` : runner;
-    const tip = s.subagentModel ? "Tier-3 runner / model" : "Tier-3 runner (runner's default model)";
-    left.push(`<span class="pill" title="${escapeHtml(tip)}">T3 subagent <code>${escapeHtml(sub)}</code></span>`);
+    const tip = s.subagentModel ? "Tier-4 runner / model" : "Tier-4 runner (runner's default model)";
+    left.push(`<span class="pill" title="${escapeHtml(tip)}">T4 subagent <code>${escapeHtml(sub)}</code></span>`);
   } else {
-    left.push(`<span class="pill">T3 subagent <code style="color:var(--muted)">off</code></span>`);
+    left.push(`<span class="pill">T4 subagent <code style="color:var(--muted)">off</code></span>`);
   }
 
   const max = s.maxActions || 50;
@@ -827,18 +827,18 @@ function getFilteredActions() {
 }
 
 // Backup strategy → tier:
-//   T0 policy rewrite     (rm → trash)                      policy_rewrite
-//   T1 targeted manifest  (pip freeze, npm list, env dump)  pip_freeze, npm_list, env_snapshot, git_tag
-//   T2 workspace snapshot (shadow git; single-file copy)    git_snapshot, file_copy
-//   T3 backup subagent    (out-of-workspace / remote)       subagent, learned_rule
-const T1_STRATS = ["pip_freeze", "npm_list", "env_snapshot", "git_tag"];
-const T3_STRATS = ["subagent", "learned_rule"];
+//   T1 command rewriting  (rm → trash)                      policy_rewrite
+//   T2 command pairing    (pip freeze, npm list, env dump)  pip_freeze, npm_list, env_snapshot, git_tag
+//   T3 snapshot           (shadow git; single-file copy)    git_snapshot, file_copy
+//   T4 backup subagent    (out-of-workspace / remote)       subagent, learned_rule
+const T2_STRATS = ["pip_freeze", "npm_list", "env_snapshot", "git_tag"];
+const T4_STRATS = ["subagent", "learned_rule"];
 function tierOf(a) {
   const s = a.strategies || [];
-  if (s.some((x) => T3_STRATS.includes(x))) return { tag: "T3", name: "subagent", cls: "t-subagent" };
-  if (s.includes("policy_rewrite")) return { tag: "T0", name: "rewrite",  cls: "t-rewrite" };
-  if (s.some((x) => T1_STRATS.includes(x))) return { tag: "T1", name: "manifest", cls: "t-manifest" };
-  return { tag: "T2", name: "snapshot", cls: "t-snapshot" };
+  if (s.some((x) => T4_STRATS.includes(x))) return { tag: "T4", name: "subagent", cls: "t-subagent" };
+  if (s.includes("policy_rewrite")) return { tag: "T1", name: "rewrite",  cls: "t-rewrite" };
+  if (s.some((x) => T2_STRATS.includes(x))) return { tag: "T2", name: "manifest", cls: "t-manifest" };
+  return { tag: "T3", name: "snapshot", cls: "t-snapshot" };
 }
 function classifyAction(a) {
   return tierOf(a).cls;
@@ -924,7 +924,7 @@ function renderTimelineRowHtml(a) {
   }
   const tier = tierOf(a);
 
-  // The spine node is the tier label (T0–T3); colour reinforces it.
+  // The spine node is the tier label (T1–T4); colour reinforces it.
   return `<div class="tl-row ${tier.cls}" data-seq="${a.seq}">
     <div class="tl-node ${tier.cls} term" title="${escapeHtml(TIER_HELP[tier.tag] || tier.name)}">${tier.tag}</div>
     <div class="tl-content">
@@ -982,7 +982,7 @@ function legendHtml() {
   const item = (cls, tag, word) =>
     `<span class="item ${cls}" data-tier="${tag}" title="Click for a description"><span class="ld"></span><b>${tag}</b> ${word}</span>`;
   return `<div class="tl-legend">
-    ${item("rew", "T0", "rewrite")}${item("man", "T1", "manifest")}${item("snap", "T2", "snapshot")}${item("sub", "T3", "subagent")}
+    ${item("rew", "T1", "rewrite")}${item("man", "T2", "manifest")}${item("snap", "T3", "snapshot")}${item("sub", "T4", "subagent")}
   </div><div class="tl-tier-info" id="tier-info"></div>`;
 }
 
@@ -1238,7 +1238,7 @@ async function loadDiff(seq) {
       diffEl.innerHTML = colorizeDiff(d.diff);
     } else if (d.note) {
       diffEl.textContent = d.policyRewrite
-        ? "tier-0 rewrite — no workspace snapshot needed (see Command rewrite above)"
+        ? "tier-1 rewrite — no workspace snapshot needed (see Command rewrite above)"
         : d.note;
       diffEl.style.color = "var(--muted)";
     } else {
@@ -1249,7 +1249,7 @@ async function loadDiff(seq) {
     const accx = (title, body) =>
       `<div class="detail-section"><h4>${title}</h4>${body}</div>`;
     let extraHtml = "";
-    // Tier-0 command rewrite: raw and revised command shown inline;
+    // Tier-1 command rewrite: raw and revised command shown inline;
     // recovery commands folded.
     if (d.policyRewrite) {
       const pr = d.policyRewrite;
@@ -1408,10 +1408,10 @@ function bkStorageLabel(p) {
 }
 
 function bkTierForStrategy(strat) {
-  if (T3_STRATS.includes(strat)) return { tag: "T3", cls: "sub" };
-  if (strat === "policy_rewrite") return { tag: "T0", cls: "trash" };
-  if (T1_STRATS.includes(strat)) return { tag: "T1", cls: "git" };
-  return { tag: "T2", cls: "git" };  // git_snapshot, file_copy
+  if (T4_STRATS.includes(strat)) return { tag: "T4", cls: "sub" };
+  if (strat === "policy_rewrite") return { tag: "T1", cls: "trash" };
+  if (T2_STRATS.includes(strat)) return { tag: "T2", cls: "git" };
+  return { tag: "T3", cls: "git" };  // git_snapshot, file_copy
 }
 
 // "By storage" — group every storage entry by physical location
@@ -1886,7 +1886,7 @@ function renderPatterns() {
     box.innerHTML = `<div class="empty">No experiences found. Experiences are per-MCP-server capture
       playbooks stored in <code>.backupper/experiences/&lt;server&gt;.json</code>
       (<code>backupper init</code> copies the bundled starter set there). They are injected
-      into the tier-3 backup subagent's prompt.</div>`;
+      into the tier-4 backup subagent's prompt.</div>`;
     return;
   }
 
@@ -1903,7 +1903,7 @@ function renderPatterns() {
     if (Array.isArray(sv.readOnlyTools) && sv.readOnlyTools.length) svExtra.push(`<div class="pat-note">read-only tools: ${escapeHtml(sv.readOnlyTools.join(", "))}</div>`);
     html += `<div class="pat-card">
       <div class="pat-head">
-        <span class="bk-tag sub">T3</span>
+        <span class="bk-tag sub">T4</span>
         <code class="pat-server">${escapeHtml(sv.server || "?")}</code>
         <span class="pat-meta">${meta.join(" · ")}</span>
       </div>
@@ -1928,7 +1928,7 @@ function renderPatterns() {
 const CONFIG_SECTIONS = [
   { title: "Core", fields: [
     { key: "enabled", type: "bool", title: "Enabled", desc: "Master switch for BackUpper." },
-    { key: "mode", type: "select", title: "Mode", desc: "checker = tiers 0–2 run on every mutating call; tier 3 runs when the agent marks the step [Backup needed] or a tool-less read-only checker judges the call not read-only. off = nothing runs, including deny rules.", options: ["checker", "off"] },
+    { key: "mode", type: "select", title: "Mode", desc: "checker = tiers 1–3 run on every mutating call; tier 4 runs when the agent marks the step [BACKUP NEEDED] or a tool-less read-only checker judges the call not read-only. off = nothing runs, including deny rules.", options: ["checker", "off"] },
     { key: "notifyOnSuccess", type: "bool", title: "Notify on success", desc: "Report to the agent when a backup completes." },
     { key: "announceOnce", type: "bool", title: "Announce once", desc: "Announce BackUpper to the agent only once per session." },
     { key: "verbose", type: "bool", title: "Verbose", desc: "Print extra diagnostic messages." },
@@ -1938,7 +1938,7 @@ const CONFIG_SECTIONS = [
     { key: "maxTotalSizeMB", type: "number", title: "Max total size (MB)", desc: "Cap the combined size of action folders. 0 = unlimited." },
     { key: "maxAgeHours", type: "number", title: "Max age (hours)", desc: "Drop action folders older than this. 0 = unlimited." },
   ]},
-  { title: "Subagent (tier-3 backup)", fields: [
+  { title: "Subagent (tier-4 backup)", fields: [
     { key: "subagentEnabled", type: "bool", title: "Enabled", desc: "Run a backup subagent for out-of-workspace and remote state." },
     { key: "subagentRunner", type: "select", title: "Runner", desc: "CLI that runs the subagent. auto follows the agent whose hook fired.", options: ["auto", "claude", "codex", "hermes"] },
     { key: "subagentModel", type: "text", title: "Model", desc: "Model name passed to the runner; overrides every runner. Empty = the per-runner default in subagentModels (claude: haiku, codex: gpt-6-luna, hermes: its provider default)." },
@@ -1947,9 +1947,9 @@ const CONFIG_SECTIONS = [
     { key: "subagentPermissionMode", type: "select", title: "Permission mode", desc: "Claude runner only. bypassPermissions = unrestricted · acceptEdits = file edits only.", options: ["bypassPermissions", "acceptEdits"] },
   ]},
   { title: "Learning", fields: [
-    { key: "selfImproving", type: "bool", title: "Self-improving", desc: "Learn deterministic capture rules from tier-3 subagent runs." },
+    { key: "selfImproving", type: "bool", title: "Self-improving", desc: "Learn deterministic capture rules from tier-4 subagent runs." },
     { key: "selfImprovingGeneralize", type: "bool", title: "Generalize learned rules", desc: "Generalize each newly learned rule beyond the exact call that produced it." },
-    { key: "personalization", type: "select", title: "Personalization", desc: "Restrict tier-3 backups to one class of action. none = no restriction.", options: ["", "hard-to-reverse-only", "unrequested-effects-only", "human-authored-only"] },
+    { key: "personalization", type: "select", title: "Personalization", desc: "Restrict tier-4 backups to one class of action. none = no restriction.", options: ["", "high-impact", "beyond-request", "human-work"] },
   ]},
 ];
 

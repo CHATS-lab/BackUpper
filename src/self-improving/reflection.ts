@@ -1,7 +1,7 @@
 /**
  * Self-improving turns.
  *
- * Reflection: after a tier-3 backup, one no-tools model call reads the backup's
+ * Reflection: after a tier-4 backup, one no-tools model call reads the backup's
  * evidence and decides whether to add or update a learned rule (or do nothing).
  * Generalize: after a rule is written (or a built-in rule handled an action), one
  * more call proposes sibling rules. Each turn writes a receipt JSON into the action dir.
@@ -396,7 +396,7 @@ export function generalizeAfterReflection(ctx: HookContext, dir: string, sourceI
 }
 
 /**
- * The reflection turn after a tier-3 backup: ask the model for one table update,
+ * The reflection turn after a tier-4 backup: ask the model for one table update,
  * stamp the rule with where it was learned, apply it, write reflection.json and,
  * if a rule was written, run the generalize turn.
  */

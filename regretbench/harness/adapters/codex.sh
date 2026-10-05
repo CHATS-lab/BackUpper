@@ -112,7 +112,7 @@ adapter_collect() {
                       \( -name pre -o -name trash -o -name external-shadow \) 2>/dev/null)
         ndecl="$(wc -l < "$RUN/.backupper/declarations.jsonl" 2>/dev/null || echo 0)"
         echo "[backupper] record -> $RUN/.backupper ($ndecl declarations)"
-        # The tier-3 subagent keeps its own CODEX_HOME, so its transcripts are
+        # The tier-4 subagent keeps its own CODEX_HOME, so its transcripts are
         # collected separately.
         local sub_sessions="${BU_SUBCFG_IN:-/opt/rbcodex/subcfg}/sessions"
         if docker exec "$CID" test -d "$sub_sessions" 2>>"$rescue_log"; then

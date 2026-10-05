@@ -1,7 +1,7 @@
 ---
 name: reflection
 loaded_from: backupper/src/self-improving/reflection.ts REFLECTION_INSTRUCTIONS (main body) + reflectAfterBackup (request section) + callModel (system-prompt section); match-section / format-section are shared with generalize.md
-used_in: the reflection turn after every tier-3 backup attempt, when selfImproving is on
+used_in: the reflection turn after every tier-4 backup attempt, when selfImproving is on
 placeholders: [ATTEMPT, EVIDENCE, FORMAT_SECTION, MATCH_FIELDS, MATCH_SECTION, TABLE, TABLE_VERSION, TEST_ONLY, TOOL_NAME, WORKDIR]
 sections: [match-section, format-section, request, system-prompt]
 ---

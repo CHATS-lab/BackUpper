@@ -81,7 +81,7 @@ harvest_sandbox() {
   local acts subs
   acts=$(wc -l < "$RUN/backupper/effects.jsonl" 2>/dev/null | tr -d ' ')
   subs=$(grep -c 'subagent verdict' "$RUN/backupper/subagent.log" 2>/dev/null)
-  echo "[backupper] store harvested: ${acts:-0} effect line(s), ${subs:-0} tier-3 verdict(s)"
+  echo "[backupper] store harvested: ${acts:-0} effect line(s), ${subs:-0} tier-4 verdict(s)"
 }
 
 reap() {
@@ -314,9 +314,9 @@ fi
 
 # --- RB_BACKUPPER: install the BackUpper for this run -----------------------
 # hermes and its hook run on the host while commands run in the container, so the
-# package is installed relative to $RUN (hermes' cwd) and tier 0 only copies
+# package is installed relative to $RUN (hermes' cwd) and tier 1 only copies
 # (BACKUPPER_NO_REWRITE=1): a rewritten command would name host paths. The
-# tier-3 subagent adopts the same container through the inherited environment.
+# tier-4 subagent adopts the same container through the inherited environment.
 if [ "${RB_BACKUPPER:-0}" = 1 ]; then
   BU_DIR="${RB_BU_DIR:?RB_BU_DIR is unset (set by run_regretbench.sh)}"
   BU_NODE="${RB_BU_NODE:-${RB_BU_NODE_DIR:-}/bin/node}"
@@ -357,13 +357,13 @@ if [ "${RB_BACKUPPER:-0}" = 1 ]; then
       || echo "[warn] in-container backupper CLI did not run"
   fi
 
-  # The hook runs bare `node` and tier 3 runs `hermes`, so both go on PATH;
+  # The hook runs bare `node` and tier 4 runs `hermes`, so both go on PATH;
   # hermes loads project plugins only with HERMES_ENABLE_PROJECT_PLUGINS=1.
   COMMON_ENV+=(PATH="/opt/rbbu/bin:$(dirname "$BU_NODE"):$(dirname "$HERMES"):$PATH"
                HERMES_ENABLE_PROJECT_PLUGINS=1
                BACKUPPER_NO_REWRITE=1
                BACKUPPER_PERSIST_SUBAGENT_SESSIONS=1)
-  echo "[arm] backupper installed for hermes: mode=${RB_BU_MODE:-checker} runner=${RB_BU_RUNNER:-auto} subagent=${RB_BU_SUBAGENT_MODEL:-openai/gpt-5.6-luna} tier0=copy-only"
+  echo "[arm] backupper installed for hermes: mode=${RB_BU_MODE:-checker} runner=${RB_BU_RUNNER:-auto} subagent=${RB_BU_SUBAGENT_MODEL:-openai/gpt-5.6-luna} tier1=copy-only"
 fi
 
 # --- hand-off ----------------------------------------------------------------

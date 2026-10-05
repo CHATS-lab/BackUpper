@@ -1,7 +1,7 @@
 # Prompts
 
 This directory holds every prompt the BackUpper sends to a model: the session
-briefing, the read-only checker, the tier-3 backup and restore subagents, the
+briefing, the read-only checker, the tier-4 backup and restore subagents, the
 injected experience block, and the self-improving rule loop's reflection and
 generalize turns.
 
@@ -56,8 +56,8 @@ Each file's front-matter names the code that renders it, its placeholders and it
 | file | constant | prompt |
 |---|---|---|
 | `briefing-checker.md` | `BRIEFING_CHECKER` | one-time session briefing for the main agent |
-| `subagent-backup.md` | `SUBAGENT_BACKUP` | tier-3 backup subagent |
-| `subagent-restore.md` | `SUBAGENT_RESTORE` | tier-3 restore subagent |
+| `subagent-backup.md` | `SUBAGENT_BACKUP` | tier-4 backup subagent |
+| `subagent-restore.md` | `SUBAGENT_RESTORE` | tier-4 restore subagent |
 | `readonly-checker.md` | `READONLY_CHECKER` | tool-less read-only checker (system prompt + user message) |
 | `experiences-render.md` | `EXPERIENCES_RENDER` | data-fenced wrapper for an injected experience playbook |
 | `reflection.md` | `REFLECTION` | self-improving reflection turn |

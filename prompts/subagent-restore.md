@@ -1,7 +1,7 @@
 ---
 name: subagent-restore
 loaded_from: backupper/src/restore/restore.ts buildSubagentRestorePrompt
-used_in: tier-3 restore
+used_in: tier-4 restore
 placeholders: [ACTION, ARTIFACT_PATH, CAPTURED_BLOCK, COMMANDS, DESCRIPTION, JSON]
 sections: [captured-state-block, no-commands-line]
 ---

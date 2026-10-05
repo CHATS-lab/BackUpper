@@ -96,7 +96,7 @@ export interface PreToolHookOutput {
     /** "allow" | "deny" | "ask" */
     permissionDecision?: "allow" | "deny" | "ask";
     permissionDecisionReason?: string;
-    /** Replacement tool input, used for the tier-0 rewrite (e.g. rm to mv-to-trash). */
+    /** Replacement tool input, used for the tier-1 rewrite (e.g. rm to mv-to-trash). */
     updatedInput?: Record<string, unknown>;
     /** Extra context injected into the conversation */
     additionalContext?: string;
@@ -114,8 +114,8 @@ export interface PostToolHookOutput {
 
 /**
  * Operating mode.
- * "checker": tiers 0-2 run on every call; the tier-3 subagent runs when the read-only checker
- * says the call is not read-only or the agent declared `[Backup needed]`. "off": nothing runs.
+ * "checker": tiers 1-3 run on every call; the tier-4 subagent runs when the read-only checker
+ * says the call is not read-only or the agent declared `[BACKUP NEEDED]`. "off": nothing runs.
  */
 export type SandboxMode = "checker" | "off";
 
@@ -130,7 +130,7 @@ export function isReadOnlyCheckerEnabled(config?: { mode?: SandboxMode }): boole
   return config?.mode === "checker";
 }
 
-/** A CLI that can run the tier-3 subagent. */
+/** A CLI that can run the tier-4 subagent. */
 export type SubagentRunnerName = "claude" | "codex" | "hermes";
 
 export interface SandboxConfig {
@@ -156,14 +156,14 @@ export interface SandboxConfig {
   alwaysBackupPatterns: string[];
   /** Verbose logging */
   verbose: boolean;
-  /** Enable tier-3 subagent backup for out-of-workspace actions */
+  /** Enable tier-4 subagent backup for out-of-workspace actions */
   subagentEnabled: boolean;
   /**
-   * Session-scoped store of read-only patterns learned from tier-3 verdicts; a matching
+   * Session-scoped store of read-only patterns learned from tier-4 verdicts; a matching
    * simple command skips the spawn. Invalidated when the program's bytes change.
    */
   learnedReadOnlyEnabled: boolean;
-  /** Run one reflection turn after a successful tier-3 backup. */
+  /** Run one reflection turn after a successful tier-4 backup. */
   selfImproving: boolean;
   /** After reflection writes a rule, run one more turn that generalises it to sibling operations. */
   selfImprovingGeneralize: boolean;
@@ -173,7 +173,7 @@ export interface SandboxConfig {
   reflectionSubagentRunner: "" | SubagentRunnerName;
   reflectionSubagentModel: string;
   /**
-   * Model for the tier-3 subagent, passed to the runner's model flag. Empty uses the runner's
+   * Model for the tier-4 subagent, passed to the runner's model flag. Empty uses the runner's
    * own default (the model the user configured for that CLI).
    */
   subagentModel: string;
@@ -186,9 +186,9 @@ export interface SandboxConfig {
   subagentTimeoutSeconds: number;
   /**
    * Personalization preference: a preference-scoped checker decides whether the action touches
-   * protected state, and the preference becomes the tier-3 capture scope.
+   * protected state, and the preference becomes the tier-4 capture scope.
    */
-  personalization?: "hard-to-reverse-only" | "unrequested-effects-only" | "human-authored-only";
+  personalization?: "high-impact" | "beyond-request" | "human-work";
   /** Every user turn delivered so far, oldest first (evidence for the checker). */
   personalizationUserRequests?: string[];
   /** The current turn's instruction (evidence for the checker). */
@@ -201,7 +201,7 @@ export interface SandboxConfig {
    */
   subagentPermissionMode: "bypassPermissions" | "acceptEdits";
   /**
-   * CLI that runs the tier-3 subagent. "auto" follows the agent whose hook fired
+   * CLI that runs the tier-4 subagent. "auto" follows the agent whose hook fired
    * (Claude Code runs claude, Codex runs codex, Hermes runs hermes).
    */
   subagentRunner: "auto" | SubagentRunnerName;
@@ -238,7 +238,7 @@ export interface SandboxConfig {
 const CMD_BOUNDARY =
   "(?:^|[;&|(]\\s*|\\n\\s*)(?:(?:sudo|doas)\\s+(?:-\\S+\\s+)*)?";
 
-/** Default backup-store directory name; a relocated store is guarded by tier 0 instead. */
+/** Default backup-store directory name; a relocated store is guarded by tier 1 instead. */
 const STORE_DIR = "\\.backupper";
 
 /**
@@ -340,7 +340,7 @@ export const DEFAULT_DENY_REASONS: Readonly<Record<string, string>> =
     Object.fromEntries(DEFAULT_DENY_RULES.map((r) => [r.pattern, r.why])),
   );
 
-/** Default tier-3/checker model per runner: the CLI's cheapest current tier. */
+/** Default tier-4/checker model per runner: the CLI's cheapest current tier. */
 export const DEFAULT_SUBAGENT_MODELS: Readonly<Partial<Record<SubagentRunnerName, string>>> =
   Object.freeze({ claude: "haiku", codex: "gpt-6-luna" });
 
@@ -375,7 +375,7 @@ export const DEFAULT_CONFIG: SandboxConfig = {
     "DELETE\\s+FROM",
   ],
   verbose: false,
-  // Tier-3 subagent enabled by default.
+  // Tier-4 subagent enabled by default.
   subagentEnabled: true,
   // Live read-only learning, off by default.
   learnedReadOnlyEnabled: false,
@@ -385,7 +385,7 @@ export const DEFAULT_CONFIG: SandboxConfig = {
   reflectionSubagentRunner: "",
   reflectionSubagentModel: "",
   subagentModel: "",
-  // Cheap per-runner defaults for tier 3 and the checker; hermes keeps its provider's default.
+  // Cheap per-runner defaults for tier 4 and the checker; hermes keeps its provider's default.
   subagentModels: { ...DEFAULT_SUBAGENT_MODELS },
   // Allows for cold starts of the subagent CLI.
   subagentTimeoutSeconds: 120,
@@ -427,7 +427,7 @@ export interface BackupArtifact {
   artifactPath: string;
   /** Size in bytes (if applicable) */
   sizeBytes?: number;
-  /** Commands the subagent ran to create this backup (tier 3 only) */
+  /** Commands the subagent ran to create this backup (tier 4 only) */
   subagentCommands?: string[];
   /** The original action that was about to execute (for restore context) */
   originalAction?: string;

@@ -11,7 +11,7 @@ import type { AgentAdapter, AgentInstallResult, HookStatus } from "./index.js";
 import { hookCommand, isOurCommand, readJsonObject, removeEmptyDirs, scriptOf, writeJson } from "./index.js";
 
 const HOOKS = path.join(".codex", "hooks.json");
-/** Generous, so a tier-3 capture is never cut off by the agent before its own timeout. */
+/** Generous, so a tier-4 capture is never cut off by the agent before its own timeout. */
 const HOOK_TIMEOUT_SEC = 600;
 const EVENTS = { PreToolUse: "pre-tool", PostToolUse: "post-tool", UserPromptSubmit: "user-prompt" } as const;
 

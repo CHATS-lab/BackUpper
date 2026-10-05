@@ -463,7 +463,7 @@ echo "[cfg] model=$MODEL auth=$CODEX_AUTH provider=$PROVIDER reasoning_effort=$R
 # --- RB_BACKUPPER: install the BackUpper in the task container --------------
 #   * `codex exec` runs hooks only with --dangerously-bypass-hook-trust, which
 #     adapters/codex.sh passes.
-#   * Codex ignores a rewritten tool input, so the package itself runs tier 0 in
+#   * Codex ignores a rewritten tool input, so the package itself runs tier 1 in
 #     backup-only mode under codex (it copies what a call would destroy).
 if [ "${RB_BACKUPPER:-0}" = 1 ]; then
   # shellcheck source=backupper_install.sh
@@ -471,7 +471,7 @@ if [ "${RB_BACKUPPER:-0}" = 1 ]; then
   BU_EXTRA_PATH="$CCDIR/pkg/codex/codex-path"
   bu_install_in_container codex codex "${RB_BU_SUBAGENT_MODEL:-gpt-5.6-luna}" || exit 1
 
-  # --- the tier-3 subagent's own CODEX_HOME --------------------------------
+  # --- the tier-4 subagent's own CODEX_HOME --------------------------------
   # A private CODEX_HOME, so that the next turn's `resume --last` does not pick
   # up the subagent's session. The `codex` shim below selects it.
   docker exec -u 0 "$CID" sh -c "install -d -m 700 -o ${AGENT_UID:-0} -g 0 $CCDIR/subcfg" || true

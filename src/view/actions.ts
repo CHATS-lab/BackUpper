@@ -38,7 +38,7 @@ export interface ActionSummary {
   instruction: string;
   strategies: string[];
   tiers: number[];
-  /** Workspace files in this action's tier-2 snapshot commit. */
+  /** Workspace files in this action's tier-3 snapshot commit. */
   files: string[];
   stats: string;
   toolName: string;
@@ -58,7 +58,7 @@ export interface ActionSummary {
 
 export interface ActionDetail extends ActionSummary {
   artifacts: BackupArtifact[];
-  /** The tier-3 subagent's own result file, when one fired. */
+  /** The tier-4 subagent's own result file, when one fired. */
   subagentResult?: Record<string, unknown>;
 }
 

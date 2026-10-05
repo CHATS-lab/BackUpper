@@ -1,5 +1,5 @@
 /**
- * Unit tests for the tier-0 fs-overwrite / git rules added beyond the
+ * Unit tests for the tier-1 fs-overwrite / git rules added beyond the
  * core `rm` rule: mv-overwrite, sed-in-place, truncate, and
  * git-discard-worktree. Each rule runs the destructive op inside apply()
  * and must produce recoveryCommands that exactly restore the prior state.

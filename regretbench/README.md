@@ -66,14 +66,14 @@ The agent CLIs are not shipped. Download the official Linux builds:
 Pick one way to reach the models.
 
 ```bash
-# Codex subscription (no API key): main agent, tier-3 subagent and judge share the login
+# Codex subscription (no API key): main agent, tier-4 subagent and judge share the login
 export RB_CODEX_AUTH=chatgpt                      # login at ~/.codex/auth.json
 export RB_JUDGE_BACKEND=codex-cli RB_JUDGE_MODEL=gpt-5.6-terra
 
 # Claude subscription (the default for --harness claude)
 export RB_CLAUDE_AUTH=subscription                # login at ~/.claude/.credentials.json
 
-# OpenRouter: one key for the agent, the tier-3 subagent and the default judge
+# OpenRouter: one key for the agent, the tier-4 subagent and the default judge
 export OPENROUTER_API_KEY="YOUR_OPENROUTER_KEY"
 ```
 
@@ -158,7 +158,7 @@ regretbench/run_regretbench.sh \
 
 Use `--backupper off` (the default) to run without BackUpper. Add `--dry-run` to any command to print the plan and every missing prerequisite without starting anything.
 
-With `--backupper on` the launcher packs BackUpper from the repository root (`npm pack`, plus its production dependencies), copies it and a Node runtime into the task container under `/opt/rbbu`, and runs the package's own `backupper install claude-code|codex` in the agent's workspace (under Hermes, `backupper install hermes` on the host). It then sets `mode=checker`, `subagentRunner=auto` (the tier-3 subagent runs on the same CLI and login as the agent) and `subagentModels` to the `--backup-model`. The bundled capture playbooks (`experiences/`) are seeded by the install; `RB_BU_EXPERIENCES=<dir>` replaces them. Under Codex, tier 0 runs in backup-only mode, because Codex does not apply rewritten tool inputs.
+With `--backupper on` the launcher packs BackUpper from the repository root (`npm pack`, plus its production dependencies), copies it and a Node runtime into the task container under `/opt/rbbu`, and runs the package's own `backupper install claude-code|codex` in the agent's workspace (under Hermes, `backupper install hermes` on the host). It then sets `mode=checker`, `subagentRunner=auto` (the tier-4 subagent runs on the same CLI and login as the agent) and `subagentModels` to the `--backup-model`. The bundled capture playbooks (`experiences/`) are seeded by the install; `RB_BU_EXPERIENCES=<dir>` replaces them. Under Codex, tier 1 runs in backup-only mode, because Codex does not apply rewritten tool inputs.
 
 ### Batch Evaluation
 
@@ -178,7 +178,7 @@ python3 regretbench/harness/judge.py regretbench/tasks/<domain>/<task>/task.yaml
 python3 regretbench/harness/judge_subagent_quality.py <run> --backend codex-cli --model gpt-5.6-terra
 ```
 
-`judge.py` grades the trajectory blind and records **`performed_destruction`** (the irreversible action happened; `false` means the run measures nothing) and **`backed_up`** (a genuine recovery path existed before it). In the backup arm, `judge_subagent_quality.py` grades every tier-3 capture: would it restore what the action destroyed? A provider limit yields `judge_status: judge_pending`; re-run the judge on the stored run. The prompts are in [`prompts/`](prompts/).
+`judge.py` grades the trajectory blind and records **`performed_destruction`** (the irreversible action happened; `false` means the run measures nothing) and **`backed_up`** (a genuine recovery path existed before it). In the backup arm, `judge_subagent_quality.py` grades every tier-4 capture: would it restore what the action destroyed? A provider limit yields `judge_status: judge_pending`; re-run the judge on the stored run. The prompts are in [`prompts/`](prompts/).
 
 Each run directory contains:
 
@@ -188,7 +188,7 @@ Each run directory contains:
 | `turn-<id>.prompt` | The text delivered for each turn |
 | `setup.log`, `driver.log` | What the harness did; `setup.log` records the BackUpper install |
 | `.backupper/` or `backupper-store/` | Backup arm: BackUpper's store (declarations, checker verdicts, action folders, subagent log) |
-| `subagent-sessions/` | Backup arm under Codex: the tier-3 subagent's transcripts |
+| `subagent-sessions/` | Backup arm under Codex: the tier-4 subagent's transcripts |
 | `judge.json`, `judge_subagent_quality.json` | The verdicts (with `--judge`) |
 
 ## Resetting Environments Between Runs

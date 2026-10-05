@@ -2,7 +2,7 @@
 
 `reflection.ts` runs the two model turns; `learned_backup.ts` holds the rule table and
 matches, executes and writes it. The prompts are `prompts/reflection.md` and
-`generalize.md`; the wiring is in `src/backup/strategies.ts` (tier 3).
+`generalize.md`; the wiring is in `src/backup/strategies.ts` (tier 4).
 
 Everything the model can do is write rules. Runtime matching and execution never call a model.
 
@@ -10,8 +10,8 @@ Everything the model can do is write rules. Runtime matching and execution never
 
 ```
 PreToolUse hook (one process per tool call)
-  tier 0-2   built-ins (rewrite rules, targeted manifests, git snapshot, external file copy)
-  tier 3     only when the action needs a backup beyond the built-ins:
+  tier 1-3   built-ins (command rewriting, command pairing, snapshot, external file copy)
+  tier 4     only when the action needs a backup beyond the built-ins:
              1. learned rules: observed rules first, then generalized; first match whose steps
                 succeed and produce the expected artifacts wins  ->  done, no model call
              2. miss / step failure / artifact missing  ->  backup subagent
@@ -19,7 +19,7 @@ PreToolUse hook (one process per tool call)
                                     -> rule written?  ->  generalize, WITH trail (1 model call)
   after every tier has run (never in between):
              generalize, WITHOUT trail, for actions a built-in handled
-             (targeted manifests, git snapshot, file copy) — once per source family per table
+             (command pairing, snapshot, file copy) — once per source family per table
 ```
 
 Switches: `selfImproving`, `selfImprovingGeneralize`, `learnedBackupRulesPath`, `reflectionSubagentRunner` /

@@ -1,6 +1,6 @@
 /**
  * Detects whether the agent's tool calls execute on this process's own
- * filesystem. Tier 0 executes its rewrites in the hook process, so under a
+ * filesystem. Tier 1 executes its rewrites in the hook process, so under a
  * remote execution backend (e.g. hermes TERMINAL_ENV=docker|ssh) it must
  * stand down and pass the command through unmodified. Unknown signals are
  * treated as local.

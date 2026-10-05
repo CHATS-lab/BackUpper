@@ -1,5 +1,5 @@
 /**
- * Session-scoped store of read-only command patterns learned by the tier-3
+ * Session-scoped store of read-only command patterns learned by the tier-4
  * subagent; a later command matching a stored pattern skips the spawn.
  *
  * Matching is positive-only (it can only remove a spawn), applies to a single

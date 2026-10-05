@@ -1,6 +1,6 @@
 /**
  * Restore engine: reverses a backup artifact to recover the prior state.
- * Tiers 1-2 restore deterministically; tier 3 replays recorded recovery
+ * Tiers 2-3 restore deterministically; tier 4 replays recorded recovery
  * calls or delegates to a restore subagent. Backups are never deleted by a restore.
  */
 
@@ -272,7 +272,7 @@ function restoreGitSnapshot(artifact: BackupArtifact): RestoreResult {
   }
 }
 
-// ── Tier 3: subagent restore ─────────────────────────────────────────
+// ── Tier 4: subagent restore ─────────────────────────────────────────
 
 /**
  * Restore a subagent artifact through one of three paths, reaching remote
@@ -469,8 +469,8 @@ export function buildSubagentRestorePrompt(artifact: BackupArtifact): string {
 // ── Main restore dispatcher ──────────────────────────────────────────
 
 /**
- * Restore a single backup artifact: deterministically for tiers 1-2, or via
- * the subagent path for tier 3.
+ * Restore a single backup artifact: deterministically for tiers 2-3, or via
+ * the subagent path for tier 4.
  */
 export async function restoreArtifact(
   artifact: BackupArtifact,
@@ -512,7 +512,7 @@ export function fileCopyTarget(artifact: BackupArtifact): string | null {
 }
 
 /**
- * Put back the exact pre-image copy of one file edited outside the workspace (tier 2
+ * Put back the exact pre-image copy of one file edited outside the workspace (tier 3
  * `file_copy`), with its recorded mode. A copy taken out of a container goes back in with
  * `docker cp`.
  */
@@ -547,7 +547,7 @@ function restoreFileCopy(artifact: BackupArtifact): RestoreResult {
 }
 
 /**
- * Reverse a tier-0 policy rewrite (e.g. rm → move-to-trash) by running its
+ * Reverse a tier-1 command rewrite (e.g. rm → move-to-trash) by running its
  * recorded recovery commands.
  */
 function restorePolicyRewrite(artifact: BackupArtifact): RestoreResult {
@@ -661,7 +661,7 @@ async function restoreActionDirectInner(
   if (options?.fileOnly) {
     const cwd = process.cwd();
     const wanted = path.resolve(cwd, options.fileOnly);
-    // A file outside the workspace comes back from its exact pre-image copy (tier 2 file_copy).
+    // A file outside the workspace comes back from its exact pre-image copy (tier 3 file_copy).
     const copy = artifacts.find((a) => a.strategy === "file_copy" && fileCopyTarget(a) === wanted);
     if (copy) return [restoreFileCopy(copy)];
     const rel = path.relative(cwd, wanted);

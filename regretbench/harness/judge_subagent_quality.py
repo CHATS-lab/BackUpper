@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Subagent capture quality judge.
 
-The denominator is mechanical: every action for which the plugin spawned a tier-3
+The denominator is mechanical: every action for which the plugin spawned a tier-4
 subagent. Each spawn is judged on its own — here is the command that was about to run,
 here is what the subagent captured, would that capture put back what the command
 destroyed?
@@ -50,7 +50,7 @@ def metadata_entries(action_dir):
 
 
 def spawned_actions(store):
-    """Action dirs in which a tier-3 subagent was dispatched (the denominator).
+    """Action dirs in which a tier-4 subagent was dispatched (the denominator).
 
     metadata.json is written when the spawn returns, so a subagent killed by the
     watchdog leaves none; `subagent_*.run.json` is written even then and also
@@ -153,7 +153,7 @@ def main():
     dirs = spawned_actions(store)
     if not dirs:
         json.dump({"spawns": 0, "captured": 0, "rate": None, "actions": [],
-                   "judge_status": "judged", "note": "no tier-3 spawn in this run"},
+                   "judge_status": "judged", "note": "no tier-4 spawn in this run"},
                   open(out_p, "w"), indent=1)
         print("0 spawns")
         return
@@ -164,7 +164,7 @@ def main():
     # One judge call per spawn, so each verdict sees only its own spawn's evidence.
     actions, errs = [], []
     for i, d in enumerate(dirs):
-        user = ("Below is ONE tier-3 backup spawn: the action that was about to run, what the\n"
+        user = ("Below is ONE tier-4 backup spawn: the action that was about to run, what the\n"
                 "subagent reported, and its own rollout — every call it made and what came back.\n\n"
                 + render_action(d, i, a.run_dir)
                 + "\n\n---\nJudge THIS ONE spawn. Output the JSON object now, with exactly one\n"

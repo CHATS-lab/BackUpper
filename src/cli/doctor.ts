@@ -1,7 +1,7 @@
 /**
- * `backupper doctor`: checks that an agent, its hooks, the config, git and the tier-3 runner
+ * `backupper doctor`: checks that an agent, its hooks, the config, git and the tier-4 runner
  * are ready. Every failed check carries a one-line fix. `--probe` makes one small model call
- * through the invocation the tier-3 subagent uses.
+ * through the invocation the tier-4 subagent uses.
  */
 
 import * as fs from "node:fs";
@@ -128,8 +128,8 @@ function checkConfig(projectRoot: string): Check {
 function checkGit(): Check {
   const v = run("git", ["--version"]);
   return v.ok
-    ? { id: "git", status: "ok", summary: `${firstLine(v.out)} (tier 2 snapshots)` }
-    : { id: "git", status: "fail", summary: "git not found; tier 2 workspace snapshots are disabled", fix: "install git" };
+    ? { id: "git", status: "ok", summary: `${firstLine(v.out)} (tier 3 snapshots)` }
+    : { id: "git", status: "fail", summary: "git not found; tier 3 snapshots are disabled", fix: "install git" };
 }
 
 function presentEnv(names: string[]): string[] {
@@ -138,13 +138,13 @@ function presentEnv(names: string[]): string[] {
 
 /** Whether the runner CLI is installed and has credentials, without calling a model. */
 function checkRunnerAuth(runner: string, config: SandboxConfig): Check[] {
-  const id = "tier3.runner";
+  const id = "tier4.runner";
   if (!isCommandAvailable(runner)) {
-    return [{ id, status: "fail", summary: `tier-3 runner \`${runner}\` not found on PATH`, fix: `install ${runner}, or: backupper config set subagentRunner <claude|codex|hermes>` }];
+    return [{ id, status: "fail", summary: `tier-4 runner \`${runner}\` not found on PATH`, fix: `install ${runner}, or: backupper config set subagentRunner <claude|codex|hermes>` }];
   }
   const chosen = subagentModelFor(config, runner as SubagentRunnerName);
   const model = chosen ? ` with model ${chosen}` : " with its default model";
-  const checks: Check[] = [{ id, status: "ok", summary: `tier-3 subagent runs \`${runner}\`${model}` }];
+  const checks: Check[] = [{ id, status: "ok", summary: `tier-4 subagent runs \`${runner}\`${model}` }];
 
   if (runner === "claude") {
     const env = presentEnv(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]);
@@ -156,15 +156,15 @@ function checkRunnerAuth(runner: string, config: SandboxConfig): Check[] {
       loggedIn = j.loggedIn === true;
       method = String(j.authMethod ?? "");
     } catch { /* older CLI without `auth status` */ }
-    if (loggedIn) checks.push({ id: "tier3.auth", status: "ok", summary: `claude is logged in (${method || "login"})` });
-    else if (env.length) checks.push({ id: "tier3.auth", status: "ok", summary: `claude credentials from ${env.join(", ")}` });
-    else checks.push({ id: "tier3.auth", status: "fail", summary: "claude is not logged in and no API key is set", fix: "run `claude` and /login, or export ANTHROPIC_API_KEY=..." });
+    if (loggedIn) checks.push({ id: "tier4.auth", status: "ok", summary: `claude is logged in (${method || "login"})` });
+    else if (env.length) checks.push({ id: "tier4.auth", status: "ok", summary: `claude credentials from ${env.join(", ")}` });
+    else checks.push({ id: "tier4.auth", status: "fail", summary: "claude is not logged in and no API key is set", fix: "run `claude` and /login, or export ANTHROPIC_API_KEY=..." });
   } else if (runner === "codex") {
     const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
     const env = presentEnv(["OPENAI_API_KEY", "CODEX_API_KEY"]);
-    if (fs.existsSync(path.join(home, "auth.json"))) checks.push({ id: "tier3.auth", status: "ok", summary: `codex login found (${path.join(home, "auth.json")})` });
-    else if (env.length) checks.push({ id: "tier3.auth", status: "ok", summary: `codex credentials from ${env.join(", ")}` });
-    else checks.push({ id: "tier3.auth", status: "fail", summary: "codex has no login and no API key is set", fix: "codex login   (or export OPENAI_API_KEY=...)" });
+    if (fs.existsSync(path.join(home, "auth.json"))) checks.push({ id: "tier4.auth", status: "ok", summary: `codex login found (${path.join(home, "auth.json")})` });
+    else if (env.length) checks.push({ id: "tier4.auth", status: "ok", summary: `codex credentials from ${env.join(", ")}` });
+    else checks.push({ id: "tier4.auth", status: "fail", summary: "codex has no login and no API key is set", fix: "codex login   (or export OPENAI_API_KEY=...)" });
   } else if (runner === "hermes") {
     const home = process.env.HERMES_HOME || path.join(os.homedir(), ".hermes");
     const cfg = path.join(home, "config.yaml");
@@ -183,27 +183,27 @@ function checkRunnerAuth(runner: string, config: SandboxConfig): Check[] {
       }
     } catch { /* no hermes config */ }
     if (!provider && !modelName) {
-      checks.push({ id: "tier3.auth", status: "fail", summary: `no hermes model/provider configured (${cfg})`, fix: "hermes setup   (or: backupper config set subagentProvider <name> && backupper config set subagentModel <id>)" });
+      checks.push({ id: "tier4.auth", status: "fail", summary: `no hermes model/provider configured (${cfg})`, fix: "hermes setup   (or: backupper config set subagentProvider <name> && backupper config set subagentModel <id>)" });
     } else {
       const keyVars = Object.keys(process.env).filter((k) => /_API_KEY$|_TOKEN$/.test(k) && process.env[k]);
       const envFile = path.join(home, ".env");
       const hasEnvFile = fs.existsSync(envFile);
       checks.push(keyVars.length || hasEnvFile
-        ? { id: "tier3.auth", status: "ok", summary: `hermes provider ${provider || "(default)"}${modelName ? `, model ${modelName}` : ""}; credentials ${hasEnvFile ? `in ${envFile}` : "in the environment"}` }
-        : { id: "tier3.auth", status: "warn", summary: `hermes provider ${provider || "(default)"} configured, but no API key found in the environment or ${envFile}`, fix: "hermes setup   (or export the provider's API key)" });
+        ? { id: "tier4.auth", status: "ok", summary: `hermes provider ${provider || "(default)"}${modelName ? `, model ${modelName}` : ""}; credentials ${hasEnvFile ? `in ${envFile}` : "in the environment"}` }
+        : { id: "tier4.auth", status: "warn", summary: `hermes provider ${provider || "(default)"} configured, but no API key found in the environment or ${envFile}`, fix: "hermes setup   (or export the provider's API key)" });
     }
   }
   return checks;
 }
 
-/** One real, tiny model call through the tier-3 invocation (tools disabled). */
+/** One real, tiny model call through the tier-4 invocation (tools disabled). */
 function probe(config: SandboxConfig, runner: string, projectRoot: string): Check {
   const cfg = { ...config, subagentRunner: runner as SandboxConfig["subagentRunner"] };
   const inv = buildSubagentInvocation("Reply with exactly the word READY and nothing else.", cfg, {
     noTools: true,
     systemPrompt: "You are a connectivity probe. Answer with one word.",
   });
-  if (!inv) return { id: "tier3.probe", status: "fail", summary: `${runner} not found on PATH`, fix: `install ${runner}` };
+  if (!inv) return { id: "tier4.probe", status: "fail", summary: `${runner} not found on PATH`, fix: `install ${runner}` };
   const t0 = Date.now();
   let r;
   try {
@@ -221,11 +221,11 @@ function probe(config: SandboxConfig, runner: string, projectRoot: string): Chec
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const out = `${r.stdout ?? ""}`;
   if (r.status === 0 && /READY/i.test(out)) {
-    return { id: "tier3.probe", status: "ok", summary: `probe call through ${runner} answered in ${secs}s` };
+    return { id: "tier4.probe", status: "ok", summary: `probe call through ${runner} answered in ${secs}s` };
   }
   const why = firstLine(`${r.stderr ?? ""}`.split("\n").reverse().join("\n")) || firstLine(out) || r.error?.message || `exit ${r.status}`;
   return {
-    id: "tier3.probe", status: "fail",
+    id: "tier4.probe", status: "fail",
     summary: `probe call through ${runner} failed after ${secs}s: ${why.slice(0, 200)}`,
     fix: runner === "claude" ? "check `claude -p hi` works in this shell (login, network, org policy)"
       : runner === "codex" ? "check `codex exec hi` works in this shell (login, network)"
@@ -238,14 +238,14 @@ export function doctor(adapter: AgentAdapter, projectRoot: string, pkgRoot: stri
   const runner = resolveRunner(config, adapter.name);
   const checks: Check[] = [checkNode(), checkAgentCli(adapter), ...checkHooks(adapter, projectRoot, pkgRoot), checkConfig(projectRoot), checkGit()];
   if (!config.subagentEnabled) {
-    checks.push({ id: "tier3.runner", status: "skip", summary: "tier-3 subagent disabled (subagentEnabled=false)" });
+    checks.push({ id: "tier4.runner", status: "skip", summary: "tier-4 subagent disabled (subagentEnabled=false)" });
     return checks;
   }
   const runnerChecks = checkRunnerAuth(runner, config);
   checks.push(...runnerChecks);
   if (opts.probe) {
     checks.push(runnerChecks.some((c) => c.status === "fail")
-      ? { id: "tier3.probe", status: "skip", summary: "probe skipped: the runner is not ready" }
+      ? { id: "tier4.probe", status: "skip", summary: "probe skipped: the runner is not ready" }
       : probe(config, runner, projectRoot));
   }
   return checks;

@@ -169,7 +169,7 @@ function handleGetStatus(res: http.ServerResponse, config: SandboxConfig, projec
  * Honest accounting: the per-action folder is tiny metadata, so the
  * real bytes live in (a) the shared git shadow repo as blobs — queried
  * with `git ls-tree -l` for the latest snapshot, and (b) per-action
- * trash/ dirs for tier-0 rm→trash files. We report the logical
+ * trash/ dirs for tier-1 rm→trash files. We report the logical
  * (uncompressed) blob size per file — what one snapshot of that file
  * costs — plus how many actions touched it.
  */
@@ -213,7 +213,7 @@ function handleGetStorageByFile(
     } catch { /* no HEAD yet / empty repo */ }
   }
 
-  // (b) tier-0 trash files (rm→trash) — these were deleted from the
+  // (b) tier-1 trash files (rm→trash) — these were deleted from the
   //     workspace so they're not in the snapshot tree.
   const walk = (dir: string, rel: string, cb: (relPath: string, bytes: number) => void): void => {
     let entries: fs.Dirent[] = [];
@@ -344,7 +344,7 @@ function handleGetDiff(
     artifacts = JSON.parse(fs.readFileSync(meta, "utf-8")) as Array<Record<string, unknown>>;
   } catch { /* */ }
 
-  // ── Remote state (tier-3 subagent for MCP writes) ──────────────────
+  // ── Remote state (tier-4 subagent for MCP writes) ──────────────────
   // Surface remote-state.json + the subagent's recorded recovery plan
   // so MCP-write actions don't look empty in the dashboard.
   let remoteState: unknown = undefined;
@@ -379,7 +379,7 @@ function handleGetDiff(
     }
   } catch { /* */ }
 
-  // ── Workspace diff (tier-2 git_snapshot) ──────────────────────────
+  // ── Workspace diff (tier-3 git_snapshot) ──────────────────────────
   // MCP-only actions may have no git_snapshot — that's expected, just
   // return empty diff and let the frontend render subagent/remote
   // sections instead.
@@ -408,7 +408,7 @@ function handleGetDiff(
     diffNote = "no git_snapshot (remote-only action)";
   }
 
-  // ── Tier-0 policy rewrite: original vs revised action ──────────────
+  // ── Tier-1 command rewriting: original vs revised action ──────────────
   // Surface what the rm/chmod was rewritten to (the reversible
   // equivalent) and how restore reverses it.
   let policyRewrite:
@@ -445,7 +445,7 @@ function readArtifacts(config: SandboxConfig, dirName: string): Array<Record<str
   }
 }
 
-/** Recovery commands recorded on an action's artifacts (T0 + T3). */
+/** Recovery commands recorded on an action's artifacts (T1 + T4). */
 function artifactCommands(artifacts: Array<Record<string, unknown>>): string[] {
   const out: string[] = [];
   for (const a of artifacts) {
@@ -501,7 +501,7 @@ function handleGetRestorePreview(
       directNote = "shadow repo missing";
     }
   } else {
-    directNote = "no workspace snapshot (remote/T0-only action)";
+    directNote = "no workspace snapshot (remote/T1-only action)";
   }
   const directCommands = artifactCommands(artifacts);
 

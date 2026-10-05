@@ -256,9 +256,9 @@ describe("subagent temp files are removed after the spawn", () => {
   });
 });
 
-// ── Default tier-3 model per runner ───────────────────────────────────
+// ── Default tier-4 model per runner ───────────────────────────────────
 
-describe("tier-3 model defaults", () => {
+describe("tier-4 model defaults", () => {
   it("uses the cheap per-runner default, and subagentModel overrides every runner", () => {
     assert.equal(subagentModelFor(DEFAULT_CONFIG, "claude"), "haiku");
     assert.equal(subagentModelFor(DEFAULT_CONFIG, "codex"), "gpt-6-luna");

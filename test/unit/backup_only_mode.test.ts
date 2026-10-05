@@ -1,5 +1,5 @@
 /**
- * Tier 0 in backup-only mode (hosts that ignore a rewritten tool input, e.g. Codex).
+ * Tier 1 in backup-only mode (hosts that ignore a rewritten tool input, e.g. Codex).
  *
  * For each rule: applyPolicyRules(..., { rewrite: false }) must capture a restorable copy,
  * execute NOTHING the command targets and return no updatedInput. The test then runs the
@@ -14,7 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { applyPolicyRules, type PolicyRuleResult } from "../../src/backup/policy_rules.js";
-import { tier0CanRewrite, CAN_REWRITE } from "../../src/agents/capabilities.js";
+import { tier1CanRewrite, CAN_REWRITE } from "../../src/agents/capabilities.js";
 import { ALL_ADAPTERS } from "../../src/agents/index.js";
 import type { HookContext } from "../../src/types.js";
 
@@ -86,12 +86,12 @@ describe("backup-only mode: host capability", () => {
   });
 
   it("follows the host tag, with BACKUPPER_NO_REWRITE as an override", () => {
-    assert.equal(tier0CanRewrite({ BACKUPPER_HOST_AGENT: "codex" }), false);
-    assert.equal(tier0CanRewrite({ BACKUPPER_HOST_AGENT: "claude-code" }), true);
-    assert.equal(tier0CanRewrite({ BACKUPPER_HOST_AGENT: "hermes" }), true);
-    assert.equal(tier0CanRewrite({}), false, "an unknown host gets the mode that is safe everywhere");
-    assert.equal(tier0CanRewrite({ BACKUPPER_HOST_AGENT: "claude-code", BACKUPPER_NO_REWRITE: "1" }), false);
-    assert.equal(tier0CanRewrite({ BACKUPPER_HOST_AGENT: "codex", BACKUPPER_NO_REWRITE: "0" }), true);
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "codex" }), false);
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "claude-code" }), true);
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "hermes" }), true);
+    assert.equal(tier1CanRewrite({}), false, "an unknown host gets the mode that is safe everywhere");
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "claude-code", BACKUPPER_NO_REWRITE: "1" }), false);
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "codex", BACKUPPER_NO_REWRITE: "0" }), true);
   });
 });
 
@@ -241,7 +241,7 @@ describe("backup-only mode: git rules", () => {
     assert.equal(git("for-each-ref refs/backupper"), "", "the temporary backup ref is removed");
   });
 
-  it("git reset --hard: records HEAD and executes nothing (tier 2 snapshots the worktree)", () => {
+  it("git reset --hard: records HEAD and executes nothing (tier 3 snapshots the worktree)", () => {
     initRepo();
     fs.writeFileSync("tracked.txt", "v1\n");
     execSync("git commit -qam v1");
@@ -261,7 +261,7 @@ describe("backup-only mode: git rules", () => {
     fs.writeFileSync("tracked.txt", "dirty\n");
     const r = applyPolicyRules(bash("git reset --hard"), trash, store);
     assert.ok(r && r.ruleId === "git-reset-hard");
-    assert.equal(r!.updatedInput, undefined, "no rewrite: tier 2 must snapshot before the reset runs");
+    assert.equal(r!.updatedInput, undefined, "no rewrite: tier 3 must snapshot before the reset runs");
     assert.equal(read("tracked.txt"), "dirty\n");
   });
 
@@ -334,23 +334,23 @@ describe("backup-only mode: git rules", () => {
   });
 });
 
-describe("a trailing `# [Backup needed]` marker does not defeat tier 0", () => {
-  it("git stash drop # [Backup needed] (backup-only)", () => {
+describe("a trailing `# [BACKUP NEEDED]` marker does not defeat tier 1", () => {
+  it("git stash drop # [BACKUP NEEDED] (backup-only)", () => {
     initRepo();
     fs.writeFileSync("tracked.txt", "s1\n");
     execSync("git stash -q");
     fs.writeFileSync("tracked.txt", "s2\n");
     execSync("git stash -q");
-    const r = capture("git stash drop # [Backup needed]");
+    const r = capture("git stash drop # [BACKUP NEEDED]");
     assert.equal(r.ruleId, "git-stash-drop");
-    hostRuns("git stash drop # [Backup needed]");
+    hostRuns("git stash drop # [BACKUP NEEDED]");
     recover(r);
     assert.equal(git("stash list").split("\n").length, 2);
   });
 
-  it("sed -i ... # [Backup needed] (rewrite mode) and a quoted # is not a comment", () => {
+  it("sed -i ... # [BACKUP NEEDED] (rewrite mode) and a quoted # is not a comment", () => {
     fs.writeFileSync("f.txt", "a#b\n");
-    const r = applyPolicyRules(bash("sed -i 's/#/-/' f.txt # [Backup needed]"), trash, store);
+    const r = applyPolicyRules(bash("sed -i 's/#/-/' f.txt # [BACKUP NEEDED]"), trash, store);
     assert.ok(r && r.ruleId === "sed-in-place");
     assert.equal(read("f.txt"), "a-b\n");
     recover(r!);

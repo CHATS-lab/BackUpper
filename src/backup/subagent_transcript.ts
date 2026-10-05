@@ -1,5 +1,5 @@
 /**
- * Copies the tier-3 backup subagent's step-by-step session record from the
+ * Copies the tier-4 backup subagent's step-by-step session record from the
  * runner's own store into the action dir, or writes a marker saying why none exists.
  */
 
@@ -359,7 +359,7 @@ export function captureTranscript(args: {
     const name = `subagent_${id}.transcript.MISSING.txt`;
     try {
       fs.writeFileSync(path.join(actionDir, name),
-        `BackUpper tier-3 subagent: NO STEP-BY-STEP TRANSCRIPT WAS CAPTURED\n` +
+        `BackUpper tier-4 subagent: NO STEP-BY-STEP TRANSCRIPT WAS CAPTURED\n` +
         `\n` +
         `runner        ${runner}\n` +
         `records       ${base.runnerRecord}\n` +

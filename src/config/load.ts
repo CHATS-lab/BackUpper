@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DEFAULT_CONFIG, storeDirOverride, type SandboxConfig, type SandboxMode } from "../types.js";
-import { validateConfig } from "./schema.js";
+import { PERSONALIZATION_ALIASES, validateConfig } from "./schema.js";
 
 const CONFIG_DIR = ".backupper";
 const CONFIG_FILE = "config.json";
@@ -41,6 +41,8 @@ export function loadConfig(projectRoot: string = process.cwd()): SandboxConfig {
     const userConfig = { ...parsed } as Partial<SandboxConfig> &
       Record<string, unknown>;
     delete userConfig.mode;
+    const legacy = typeof userConfig.personalization === "string" ? PERSONALIZATION_ALIASES[userConfig.personalization] : undefined;
+    if (legacy) userConfig.personalization = legacy;
     return {
       ...DEFAULT_CONFIG,
       ...(userConfig as Partial<SandboxConfig>),

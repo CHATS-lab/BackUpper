@@ -26,11 +26,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xli04/BackUpper.git"
+    "url": "git+https://github.com/CHATS-lab/BackUpper.git"
   },
-  "homepage": "https://github.com/xli04/BackUpper#readme",
+  "homepage": "https://github.com/CHATS-lab/BackUpper#readme",
   "bugs": {
-    "url": "https://github.com/xli04/BackUpper/issues"
+    "url": "https://github.com/CHATS-lab/BackUpper/issues"
   },
   "keywords": [
     "claude-code",

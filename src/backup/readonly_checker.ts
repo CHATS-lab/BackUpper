@@ -1,7 +1,7 @@
 /**
  * Read-only checker.
  *
- * Before the tier-3 backup subagent is spawned, a tool-less model call decides whether the
+ * Before the tier-4 backup subagent is spawned, a tool-less model call decides whether the
  * pending tool call writes anything. The subagent is spawned when
  *
  *     outsideWorkspace && !targetedSucceeded && !externalFileSnapshot

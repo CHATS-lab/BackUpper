@@ -1,8 +1,8 @@
 /**
  * Backup strategies, cheapest first:
- *   tier 1: targeted manifest (pip freeze, npm list, env snapshot, git tag);
- *   tier 2: commit of the workspace to a shared shadow git repo;
- *   tier 3: a backup subagent, for effects outside the workspace.
+ *   tier 2: command pairing (pip freeze, npm list, env snapshot, git tag);
+ *   tier 3: commit of the workspace to a shared shadow git repo;
+ *   tier 4: a backup subagent, for effects outside the workspace.
  * Artifacts live under .backupper/backups/action_NNN_<timestamp>/.
  */
 
@@ -310,7 +310,7 @@ function makeId(): string {
 }
 
 // =====================================================================
-// 1st Level: Targeted manifests (cheapest — saves recipes, not files)
+// Tier 2: command pairing (cheapest — saves recipes, not files)
 // =====================================================================
 
 function pipFreezeBackup(
@@ -338,7 +338,7 @@ function pipFreezeBackup(
     }
   }
 
-  // An empty manifest still marks the action as handled by tier 1, so tier 3 is not spawned.
+  // An empty manifest still marks the action as handled by tier 2, so tier 4 is not spawned.
   fs.writeFileSync(dest, freeze + "\n", "utf-8");
   return {
     id,
@@ -430,7 +430,7 @@ function gitTagBackup(
   };
 }
 
-/** Run the targeted manifest matching the command; returns null if none matches. */
+/** Run the command-pairing backup matching the command; returns null if none matches. */
 function tryTargetedManifest(
   ctx: HookContext,
   actionDir: string
@@ -461,7 +461,7 @@ function tryTargetedManifest(
 }
 
 // =====================================================================
-// 2nd Level: workspace snapshot in the shared shadow repo
+// Tier 3: snapshot in the shared shadow repo
 // =====================================================================
 
 /** Commit the workspace to the shadow repo; returns null when nothing changed. */
@@ -499,7 +499,7 @@ function gitSnapshotBackup(
       hasChanges = status.trim().length > 0;
     }
 
-    // Remote (MCP / browser) actions take no workspace snapshot; their effects are handled by tier 3.
+    // Remote (MCP / browser) actions take no workspace snapshot; their effects are handled by tier 4.
     if (ctx.tool_name.startsWith("mcp__") || /(^|_)browser_[a-z]/.test(ctx.tool_name)) {
       return null;
     }
@@ -568,7 +568,7 @@ function gitSnapshotBackup(
 
 /**
  * True for a browser-automation tool exposed under a bare `browser_*` name
- * (no `mcp__` prefix); treated like an MCP browser tool for tier-3 detection.
+ * (no `mcp__` prefix); treated like an MCP browser tool for tier-4 detection.
  */
 function isBareBrowserTool(toolName: string): boolean {
   return /^browser_/.test(toolName);
@@ -923,16 +923,16 @@ export function touchesOutsideWorkspace(ctx: HookContext, config?: SandboxConfig
 export interface BackupResult {
   /** Artifacts created (may be multiple). */
   artifacts: BackupArtifact[];
-  /** Whether a tier-3 subagent should be called. */
+  /** Whether a tier-4 subagent should be called. */
   needsSubagent: boolean;
   /** Reason the subagent is needed. */
   subagentReason?: string;
-  /** Rewritten tool_input when a tier-0 policy rule changed the command. */
+  /** Rewritten tool_input when a tier-1 command-rewriting rule changed the command. */
   updatedInput?: Record<string, unknown>;
   /** Folder of the action recorded for this backup, when one was created. */
   actionDir?: string;
   /**
-   * Set when the call must be blocked: a backup-only tier-0 rule found the backup store in
+   * Set when the call must be blocked: a backup-only tier-1 rule found the backup store in
    * the victim set of a command it cannot rewrite. The text is the reason shown to the agent.
    */
   deny?: string;
@@ -1913,8 +1913,8 @@ function isReadOnlyBashInner(command: string, depth: number): boolean {
 
 // ── Effect-bounded Bash ───────────────────────────────────────────────
 // A command whose every segment has its effect fully described by its arguments, all
-// resolving inside the workspace, is already covered by the tier-2 snapshot and needs no
-// tier-3 subagent. Commands that execute a program (interpreters, scripts, launchers) are
+// resolving inside the workspace, is already covered by the tier-3 snapshot and needs no
+// tier-4 subagent. Commands that execute a program (interpreters, scripts, launchers) are
 // never effect-bounded.
 
 /**
@@ -2353,7 +2353,7 @@ export function loadRecentBrowserSnapshot(
 }
 
 // =====================================================================
-// Tier-3 (cheap): a create whose learned pattern carries a deterministic `reverter`
+// Tier-4 (cheap): a create whose learned pattern carries a deterministic `reverter`
 // records its native MCP inverse (e.g. create_directory → delete_directory), with no subagent.
 // =====================================================================
 
@@ -2481,7 +2481,7 @@ export function tryPatternCreateReverter(
   return recordDeterministicArtifact(ctx, config, { recoveryCommands: cmds, description });
 }
 
-/** Record a tier-3 artifact carrying a deterministic reversal, either recoveryCommands or
+/** Record a tier-4 artifact carrying a deterministic reversal, either recoveryCommands or
  *  recoveryMcpCalls, which restore replays without a subagent. */
 function recordDeterministicArtifact(
   ctx: HookContext,
@@ -2600,7 +2600,7 @@ function containerStat(cid: string, abs: string): [number, number] | null {
   }
 }
 
-/** Largest file copied inline; larger files fall through to tier 3. */
+/** Largest file copied inline; larger files fall through to tier 4. */
 const EXTERNAL_COPY_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Path of the ledger mapping each absolute path to the artifact holding its pre-agent state. */
@@ -2629,7 +2629,7 @@ function writeExternalLedger(config: SandboxConfig, abs: string, dest: string): 
 
 /**
  * Copy the single out-of-workspace file an Edit/Write is about to change. Returns null when
- * the case is not mechanically decidable, leaving the action to tier 3.
+ * the case is not mechanically decidable, leaving the action to tier 4.
  */
 function tryExternalFileSnapshot(
   ctx: HookContext,
@@ -2637,7 +2637,7 @@ function tryExternalFileSnapshot(
 ): BackupArtifact | null {
   const MUTATORS = new Set(["Edit", "Write", "write_file", "patch", "NotebookEdit"]);
 
-  // Only Edit/Write-style tools; Bash goes to tier 3.
+  // Only Edit/Write-style tools; Bash goes to tier 4.
   if (!MUTATORS.has(ctx.tool_name)) return null;
 
   const input = ctx.tool_input as { file_path?: unknown; path?: unknown };
@@ -2662,7 +2662,7 @@ function tryExternalFileSnapshot(
     } else {
       abs = path.posix.normalize(raw);
     }
-    // The container's working directory is covered by tier 2.
+    // The container's working directory is covered by tier 3.
     if (ccwd && (abs === ccwd || abs.startsWith(ccwd + "/"))) return null;
     // So is the host run directory, which is bind-mounted into the container.
     const hostWs = path.resolve(process.cwd());
@@ -2675,7 +2675,7 @@ function tryExternalFileSnapshot(
   } else {
     abs = path.resolve(raw);
     const ws = path.resolve(process.cwd());
-    // Paths inside the workspace are covered by tier 2.
+    // Paths inside the workspace are covered by tier 3.
     if (abs === ws || abs.startsWith(ws + path.sep)) return null;
     let st: fs.Stats;
     try {
@@ -2748,8 +2748,8 @@ export function runBackup(
 }
 
 /**
- * Run backup strategies in order: tier 0 policy rewrite, tier 2 workspace snapshot, tier 1
- * targeted manifest, external file copy, then the tier-3 gate and subagent. Action folders are
+ * Run backup strategies in order: tier 1 command rewriting, tier 3 snapshot, tier 2
+ * command pairing, external file copy, then the tier-4 gate and subagent. Action folders are
  * created only when an artifact is produced.
  */
 function runBackupTiers(
@@ -2773,7 +2773,7 @@ function runBackupTiers(
     return { artifacts: [], needsSubagent: false };
   }
 
-  // The declaration is used only for the tier-3 gate and this record; the subagent never sees it.
+  // The declaration is used only for the tier-4 gate and this record; the subagent never sees it.
   if (declaration) recordDeclaration(ctx, config, declaration);
   // A declaration overrides the inferred read-only checks below, but not READ_ONLY_TOOLS.
   const declaredOverride = declaration !== null;
@@ -2812,13 +2812,13 @@ function runBackupTiers(
   preparePendingAction(config);
   const result: BackupResult = { artifacts: [], needsSubagent: false };
 
-  // ── Tier 0: policy rules ──────────────────────────────────────────
+  // ── Tier 1: command rewriting ──────────────────────────────────────────
   // Destructive commands are rewritten into reversible equivalents (e.g. mv to a per-action
   // trash) on hosts that apply a rewritten input. On hosts that do not (Codex), or with
   // BACKUPPER_NO_REWRITE=1, the rules run in backup-only mode: they capture a restorable copy,
   // execute nothing, and the host runs the original command once.
-  const { tier0CanRewrite } = require("../agents/capabilities.js");
-  const rewrite: boolean = tier0CanRewrite();
+  const { tier1CanRewrite } = require("../agents/capabilities.js");
+  const rewrite: boolean = tier1CanRewrite();
   const { applyPolicyRules } = require("./policy_rules.js");
   const pendingDir = path.join(path.resolve(config.backupDir), _pendingActionName ?? "");
   const trashDir = path.join(pendingDir, "trash");
@@ -2856,7 +2856,7 @@ function runBackupTiers(
   // A positive personalization decision escalates like a declaration.
   const outsideWorkspace = personalizationDecision !== null || touchesOutsideWorkspace(ctx, config);
 
-  // ── 2nd level: workspace snapshot (returns null when nothing changed) ──
+  // ── Tier 3: snapshot (returns null when nothing changed) ──
   const gitSnapshot = gitSnapshotBackup(ctx, config);
   if (gitSnapshot) {
     const dir = materializeActionDir(config);
@@ -2866,7 +2866,7 @@ function runBackupTiers(
     generalizeAfterNativeRule(ctx, dir, gitSnapshot, config);
   }
 
-  // ── 1st level: targeted manifest, for known command patterns ─
+  // ── Tier 2: command pairing, for known command patterns ─
   const targetedFn = () => {
     const dir = materializeActionDir(config);
     result.actionDir = dir;
@@ -2907,36 +2907,36 @@ function runBackupTiers(
     }
   }
 
-  // ── Tier-3 gate ───────────────────────────────────────────────────
+  // ── Tier-4 gate ───────────────────────────────────────────────────
   // A declaration (or a positive personalization decision) opens the gate for the subagent.
-  let tier3Gated = declaration === null && personalizationDecision === null;
+  let tier4Gated = declaration === null && personalizationDecision === null;
 
   // ── Read-only checker ───────────────────────────────────
   // Without a declaration, the checker opens the gate when the action is not read-only and the
   // mechanical tiers did not capture it. Errors fail open (spawn).
   let checkerOutcome: { spawn: boolean; targets: string[]; reason: string } | null = null;
-  // The checker only gates tier 3, so it is skipped when tier 3 is disabled.
-  if (tier3Gated && outsideWorkspace && !targetedSucceeded && !externalFileSnapshot && config.subagentEnabled
+  // The checker only gates tier 4, so it is skipped when tier 4 is disabled.
+  if (tier4Gated && outsideWorkspace && !targetedSucceeded && !externalFileSnapshot && config.subagentEnabled
       && isReadOnlyCheckerEnabled(config) && personalizationDecision === null) {
     try {
       const { runReadOnlyChecker } = require("./readonly_checker.js");
       checkerOutcome = runReadOnlyChecker(ctx, config);
       // Target resolution guides capture; it must not veto the checker verdict.
-      if (checkerOutcome && checkerOutcome.spawn) tier3Gated = false;
+      if (checkerOutcome && checkerOutcome.spawn) tier4Gated = false;
     } catch (e) {
       // Fail open: spawn the subagent.
-      tier3Gated = false;
+      tier4Gated = false;
       if (config.verbose) process.stderr.write(`[BackUpper] read-only checker error: ${e}\n`);
     }
   }
 
   // ── 3rd level: subagent for outside-workspace state ────────────
-  // Trigger when outside-workspace, no targeted manifest succeeded, the mechanical
-  // external copy did not already hold the file, and the tier-3 gate is open.
-  if (outsideWorkspace && !targetedSucceeded && !externalFileSnapshot && !tier3Gated) {
+  // Trigger when outside-workspace, no command-pairing backup succeeded, the mechanical
+  // external copy did not already hold the file, and the tier-4 gate is open.
+  if (outsideWorkspace && !targetedSucceeded && !externalFileSnapshot && !tier4Gated) {
     const cmdStr = String(ctx.tool_input.command ?? JSON.stringify(ctx.tool_input));
 
-    // ── Tier-3 (free): the session's learned read-only store ──────
+    // ── Tier-4 (free): the session's learned read-only store ──────
     // Skip the spawn if the line is one simple command, a stored pattern matches its argv, and
     // the program's hash is unchanged since the pattern was learned. A miss changes nothing.
     if (config.learnedReadOnlyEnabled !== false &&
@@ -2976,7 +2976,7 @@ function runBackupTiers(
       }
     }
 
-    // ── Tier-3 (cheap): pattern-driven MCP create reverter ────────
+    // ── Tier-4 (cheap): pattern-driven MCP create reverter ────────
     // Falls through to the capture subagent if the pinned identifier cannot be resolved.
     try {
       const rev = tryPatternCreateReverter(ctx, config);
@@ -2992,7 +2992,7 @@ function runBackupTiers(
       // fall through to the capture subagent
     }
 
-    // ── Tier-3 (deterministic): learned rules ──
+    // ── Tier-4 (deterministic): learned rules ──
     // Any miss or failure falls through to the backup subagent.
     {
       try {
@@ -3140,14 +3140,14 @@ function runBackupTiers(
         (gitSnapshot
           ? `Workspace files were captured via git snapshot. `
           : `No workspace changes detected. `) +
-        `Subagent tier-3 backup was ${config.subagentEnabled ? "attempted but failed" : "disabled"}. ` +
+        `Subagent tier-4 backup was ${config.subagentEnabled ? "attempted but failed" : "disabled"}. ` +
         `Proceed with caution.`;
     }
 
     return result;
   }
 
-  // No outside-workspace effect: the artifacts from tiers 0-2 (possibly none) are the backup.
+  // No outside-workspace effect: the artifacts from tiers 1-3 (possibly none) are the backup.
   return result;
 }
 

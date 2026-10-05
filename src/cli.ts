@@ -112,7 +112,7 @@ function initProject(projectRoot: string, quiet = false): void {
   if (created) {
     const models = loadConfig(projectRoot).subagentModels ?? {};
     const shown = (["claude", "codex", "hermes"] as const).map((r) => `${r}: ${models[r] || "its default"}`).join(", ");
-    console.log(`Tier-3 model per runner (${shown}); override with: backupper config set subagentModel <model>`);
+    console.log(`Tier-4 model per runner (${shown}); override with: backupper config set subagentModel <model>`);
   }
   if (seeded) console.log(`Copied ${seeded} starter experience file(s) to .backupper/experiences/`);
   if (ignored) console.log(ignored);
@@ -131,7 +131,7 @@ function install(projectRoot: string, args: string[]): void {
   if (config.subagentEnabled) {
     const runner = resolveRunner(config, adapter.name);
     const model = subagentModelFor(config, runner);
-    console.log(`  Tier-3 subagent runs \`${runner}\`` +
+    console.log(`  Tier-4 subagent runs \`${runner}\`` +
       (model ? ` with model ${model} and your existing login` : " with its default model and your existing login"));
     console.log("  Change the model: backupper config set subagentModel <model>");
   }
@@ -242,7 +242,7 @@ function showCommand(projectRoot: string, args: string[]): void {
   for (const a of d.artifacts) {
     const t = tierOf(a.strategy);
     const label = a.strategy === "policy_rewrite" && a.backupOnly
-      ? "pre-state captured by a tier-0 rule (the command ran unmodified)"
+      ? "pre-state captured by a tier-1 rule (the command ran unmodified)"
       : STRATEGY_TEXT[a.strategy] ?? a.strategy;
     console.log(`    tier ${t ?? "?"}  ${label}`);
     console.log(`            ${oneLine(a.description ?? "", 160)}`);
@@ -304,7 +304,7 @@ function statusCommand(projectRoot: string): void {
   console.log(`  Config:    ${status.configFile ?? "none (defaults; run backupper init)"}`);
   console.log(`  Enabled:   ${config.enabled}   mode: ${config.mode}`);
   console.log(`  Hooks:     ${hooks.length ? hooks.map((h) => `${h.agent} (${h.location})`).join(", ") : "not installed (backupper install <agent>)"}`);
-  console.log(`  Tier 3:    ${status.subagent ? `\`${status.subagent.runner}\`${status.subagent.model ? ` model ${status.subagent.model}` : " default model"}${config.subagentRunner === "auto" ? " (auto)" : ""}` : "disabled"}`);
+  console.log(`  Tier 4:    ${status.subagent ? `\`${status.subagent.runner}\`${status.subagent.model ? ` model ${status.subagent.model}` : " default model"}${config.subagentRunner === "auto" ? " (auto)" : ""}` : "disabled"}`);
   console.log(`  Actions:   ${names.length}${config.maxActions > 0 ? ` (keeps the newest ${config.maxActions})` : ""}, ${(bytes / 1024).toFixed(1)} KB in action folders`);
 }
 
@@ -489,7 +489,7 @@ Setup
   init                          Create .backupper/ with the default config in this project
   install <agent>               Register the hooks for claude-code | codex | hermes
   uninstall [agent]             Remove the hooks (every installed agent when none is named)
-  doctor [agent] [--probe]      Check the agent, hooks, config, git and the tier-3 runner
+  doctor [agent] [--probe]      Check the agent, hooks, config, git and the tier-4 runner
   demo [--keep]                 Offline demo in a temporary directory (no agent, no key)
 
 Inspect

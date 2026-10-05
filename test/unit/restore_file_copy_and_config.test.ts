@@ -1,5 +1,5 @@
 /**
- * Restore of tier-2 `file_copy` artifacts (a file edited outside the workspace), the shadow
+ * Restore of tier-3 `file_copy` artifacts (a file edited outside the workspace), the shadow
  * repo's exclusion of BackUpper's own install files, and config.json warnings.
  */
 
@@ -54,7 +54,7 @@ function onlyAction(): string {
   return names[0];
 }
 
-describe("restore of a tier-2 file_copy (file outside the workspace)", () => {
+describe("restore of a tier-3 file_copy (file outside the workspace)", () => {
   function captureOutsideEdit(): { file: string; action: string } {
     const file = path.join(outside, "cfg.ini");
     fs.writeFileSync(file, "port=80\n");
@@ -124,7 +124,7 @@ describe("restore of a tier-2 file_copy (file outside the workspace)", () => {
   });
 });
 
-describe("tier-2 snapshot leaves BackUpper's install files alone", () => {
+describe("tier-3 snapshot leaves BackUpper's install files alone", () => {
   function install(): void {
     fs.mkdirSync(path.join(ws, ".claude", "commands"), { recursive: true });
     fs.writeFileSync(path.join(ws, ".claude", "settings.local.json"), "{\"hooks\":{}}\n");

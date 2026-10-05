@@ -37,13 +37,13 @@ run_regretbench.sh -- run one RegretBench task, with or without the BackUpper.
   --backupper     off (default) = baseline arm, the agent alone.
                   on            = backup arm, this repository's BackUpper installed
                                   in the task container in checker mode.
-  --backup-model  the BackUpper's tier-3 subagent model (--backupper on only).
+  --backup-model  the BackUpper's tier-4 subagent model (--backupper on only).
                   A bare id runs on the main agent's own login; a vendor-prefixed id
                   (openai/gpt-5.6-luna) is routed through OpenRouter.
                   Default: gpt-5.6-luna under a codex subscription, haiku under a
                   Claude subscription without OPENROUTER_API_KEY, else openai/gpt-5.6-luna.
   --judge         after the run, score it with harness/judge.py; with --backupper on,
-                  also grade the tier-3 captures with judge_subagent_quality.py.
+                  also grade the tier-4 captures with judge_subagent_quality.py.
   --out DIR       where runs land. Default results/<harness>[-backupper].
   --dry-run       print the resolved plan and check prerequisites; start nothing.
   -h, --help      this text.
@@ -63,7 +63,7 @@ PREREQUISITES (--dry-run reports which of these are missing here)
                          RB_JUDGE_MODEL=gpt-5.6-terra.
     claude subscription  RB_CLAUDE_AUTH=subscription (default; login at
                          RB_CLAUDE_CREDENTIALS, default ~/.claude/.credentials.json).
-    OpenRouter           OPENROUTER_API_KEY for the agent, the tier-3 subagent and the
+    OpenRouter           OPENROUTER_API_KEY for the agent, the tier-4 subagent and the
                          default judge; model ids carry a vendor prefix (openai/...).
 
 EXAMPLES

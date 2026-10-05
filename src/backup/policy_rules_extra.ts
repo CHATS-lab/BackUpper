@@ -7,7 +7,7 @@ import type { HookContext } from "../types.js";
 import type { PolicyApplyOptions, PolicyRule, PolicyRuleResult } from "./policy_rules.js";
 
 /*
- * EXTRA_RULES: tier-0 policy rules beyond the core `rm` rule in policy_rules.ts.
+ * EXTRA_RULES: tier-1 command-rewriting rules beyond the core `rm` rule in policy_rules.ts.
  * Run-and-rewrite rules execute the destructive operation inside apply() and return a no-op;
  * record-and-pass rules capture pre-state and let the original command run. Recovery commands
  * are exact inverses run by `backupper restore`.
@@ -148,7 +148,7 @@ function tokenize(command: string): string[] | null {
 
 /**
  * Drop a trailing shell comment (an unquoted `#` that starts a word), such as the
- * `# [Backup needed]` marker an agent appends to a step. Without this, the marker's words
+ * `# [BACKUP NEEDED]` marker an agent appends to a step. Without this, the marker's words
  * parse as extra operands and every rule stands down on a marked command.
  */
 export function stripShellComment(command: string): string {
@@ -352,16 +352,16 @@ export function excludeSandboxStore(
 }
 
 /**
- * Record a tier-0 stand-down or partial application on stderr and in
- * `<store root>/tier0-skipped.log`.
+ * Record a tier-1 stand-down or partial application on stderr and in
+ * `<store root>/tier1-skipped.log`.
  */
-export function logTier0Note(
+export function logTier1Note(
   trashDir: string,
   ruleId: string,
   detail: string,
   storeRoot?: string,
 ): void {
-  const line = `[BackUpper] TIER-0 '${ruleId}': ${detail}`;
+  const line = `[BackUpper] TIER-1 '${ruleId}': ${detail}`;
   try {
     process.stderr.write(line + "\n");
   } catch { /* best-effort */ }
@@ -369,7 +369,7 @@ export function logTier0Note(
     const root = storeRootOf(trashDir, storeRoot);
     fs.mkdirSync(root, { recursive: true });
     fs.appendFileSync(
-      path.join(root, "tier0-skipped.log"),
+      path.join(root, "tier1-skipped.log"),
       `[${new Date().toISOString()}] ${line}\n`,
     );
   } catch { /* best-effort */ }
@@ -388,7 +388,7 @@ function moveVictimsToTrash(
   // Backstop: refuse store paths even if a caller did not filter them.
   const store = absPaths.filter((p) => isSandboxStorePath(p, trashDir, storeRoot));
   if (store.length > 0) {
-    logTier0Note(
+    logTier1Note(
       trashDir,
       ruleId,
       `stood down: victim set reached moveVictimsToTrash still holding ` +
@@ -401,14 +401,14 @@ function moveVictimsToTrash(
   try {
     fs.mkdirSync(trashDir, { recursive: true });
   } catch {
-    logTier0Note(trashDir, ruleId, `stood down: cannot create trash dir ${trashDir}.`, storeRoot);
+    logTier1Note(trashDir, ruleId, `stood down: cannot create trash dir ${trashDir}.`, storeRoot);
     return null;
   }
   let trashDev: number;
   try {
     trashDev = fs.statSync(trashDir).dev;
   } catch {
-    logTier0Note(trashDir, ruleId, `stood down: cannot stat trash dir ${trashDir}.`, storeRoot);
+    logTier1Note(trashDir, ruleId, `stood down: cannot stat trash dir ${trashDir}.`, storeRoot);
     return null;
   }
 
@@ -426,7 +426,7 @@ function moveVictimsToTrash(
     try {
       if (fs.lstatSync(abs).dev !== trashDev) {
         unwind();
-        logTier0Note(
+        logTier1Note(
           trashDir,
           ruleId,
           `stood down: ${abs} is on a different filesystem than the trash — ` +
@@ -437,14 +437,14 @@ function moveVictimsToTrash(
       }
     } catch {
       unwind();
-      logTier0Note(trashDir, ruleId, `stood down: cannot stat victim ${abs}. Moves unwound.`, storeRoot);
+      logTier1Note(trashDir, ruleId, `stood down: cannot stat victim ${abs}. Moves unwound.`, storeRoot);
       return null;
     }
     const dest = join(trashDir, `${ruleId}-${nonce}-${idx++}-${trashName(abs)}`);
     const mv = `mv ${shq(abs)} ${shq(dest)}`;
     if (!runSilent(mv)) {
       unwind();
-      logTier0Note(trashDir, ruleId, `stood down: \`${mv}\` failed. Moves unwound.`, storeRoot);
+      logTier1Note(trashDir, ruleId, `stood down: \`${mv}\` failed. Moves unwound.`, storeRoot);
       return null;
     }
     preCommands.push(mv);
@@ -457,7 +457,7 @@ function moveVictimsToTrash(
     ]);
   }
   if (preCommands.length === 0) {
-    logTier0Note(trashDir, ruleId, "stood down: empty victim set.", storeRoot);
+    logTier1Note(trashDir, ruleId, "stood down: empty victim set.", storeRoot);
     return null;
   }
   // LIFO, matching the core rm rule.
@@ -512,13 +512,13 @@ export function copyVictimsToTrash(
   for (const abs of absPaths) {
     const m = measureTree(abs);
     if (m === null) {
-      logTier0Note(trashDir, ruleId, `stood down: ${abs} is too large to copy in the hook (or unreadable).`, storeRoot);
+      logTier1Note(trashDir, ruleId, `stood down: ${abs} is too large to copy in the hook (or unreadable).`, storeRoot);
       return null;
     }
     entries += m.entries;
     bytes += m.bytes;
     if (entries > MAX_TREE_ENTRIES || bytes > MAX_COPY_BYTES) {
-      logTier0Note(trashDir, ruleId, `stood down: the victim set is too large to copy in the hook.`, storeRoot);
+      logTier1Note(trashDir, ruleId, `stood down: the victim set is too large to copy in the hook.`, storeRoot);
       return null;
     }
   }
@@ -540,7 +540,7 @@ export function copyVictimsToTrash(
       for (const d of [...copied, dest]) {
         try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
-      logTier0Note(trashDir, ruleId, `stood down: \`${cp}\` failed.`, storeRoot);
+      logTier1Note(trashDir, ruleId, `stood down: \`${cp}\` failed.`, storeRoot);
       return null;
     }
     preCommands.push(cp);
@@ -615,8 +615,8 @@ const gitResetHard: PolicyRule = {
     if (!runSilent(saveCmd)) return null;
 
     // Record-and-pass in both modes: the saved sha cannot restore uncommitted changes, so
-    // tier 2 must snapshot the worktree BEFORE the reset runs. Running the reset here would
-    // let tier 2 snapshot the already-reset tree.
+    // tier 3 must snapshot the worktree BEFORE the reset runs. Running the reset here would
+    // let tier 3 snapshot the already-reset tree.
     return {
       preCommands: [saveCmd],
       recoveryCommands: [`git reset --hard ${head}`],
@@ -1250,7 +1250,7 @@ const outsideWorkspaceWriteNew: PolicyRule = {
   pattern: /.*/,
   confidence: "high",
   description:
-    "Write to a NEW path outside cwd: no data to preserve, record rm as recovery (cheaper than escalating to tier-3 subagent).",
+    "Write to a NEW path outside cwd: no data to preserve, record rm as recovery (cheaper than escalating to tier-4 subagent).",
   apply(_match, ctx, _trashDir): PolicyRuleResult | null {
     const target = ctx.tool_input.file_path as string | undefined;
     if (!target || typeof target !== "string") return null;
@@ -1691,7 +1691,7 @@ const gitClean: PolicyRule = {
       };
     }
     if (skipped.length > 0) {
-      logTier0Note(
+      logTier1Note(
         trashDir,
         "git-clean",
         `kept the sandbox store out of the victim set: ${skipped.join(", ")}. ` +
@@ -1901,7 +1901,7 @@ const rsyncDelete: PolicyRule = {
     // final token means a flag's value is never mistaken for it.
     const dest = tokens[tokens.length - 1];
     if (dest.startsWith("-")) return null;
-    // Remote destinations cannot be snapshotted here and are left to tier 3.
+    // Remote destinations cannot be snapshotted here and are left to tier 4.
     if (dest.includes(":")) return null;
     if (!isSafePath(dest)) return null;
 
@@ -2063,7 +2063,7 @@ const findDelete: PolicyRule = {
       };
     }
     if (skipped.length > 0) {
-      logTier0Note(
+      logTier1Note(
         trashDir,
         "find-delete",
         `kept the sandbox store out of the victim set: ${skipped.join(", ")}. ` +

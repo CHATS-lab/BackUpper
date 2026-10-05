@@ -28,10 +28,10 @@ export interface AgentAdapter {
   description: string;
   /** The agent's CLI executable. */
   bin: string;
-  /** The CLI that runs the tier-3 subagent when this agent is the host. */
+  /** The CLI that runs the tier-4 subagent when this agent is the host. */
   runner: SubagentRunnerName;
   /**
-   * The host applies a hook's rewritten tool input (`updatedInput`). When false, tier 0 runs
+   * The host applies a hook's rewritten tool input (`updatedInput`). When false, tier 1 runs
    * in backup-only mode (see agents/capabilities.ts).
    */
   canRewrite: boolean;

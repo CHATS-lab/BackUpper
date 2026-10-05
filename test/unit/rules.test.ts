@@ -19,7 +19,7 @@ function cfg(overrides?: Partial<SandboxConfig>): SandboxConfig {
 
 describe("deny rules", () => {
   it("default config blocks the operations that have no inverse", () => {
-    // Tier 0 deliberately refuses to rewrite dangerous paths, so without
+    // Tier 1 deliberately refuses to rewrite dangerous paths, so without
     // a default deny list the LEAST recoverable operation had the LEAST
     // protection. `rm -rf /` is the canonical case.
     const r = evaluate(makeCtx("Bash", { command: "rm -rf /" }), cfg());
@@ -64,7 +64,7 @@ describe("deny rules", () => {
 // ── Shipped default deny list ────────────────────────────────────────
 //
 // Two halves, and the second matters as much as the first: a deny rule
-// that over-fires blocks legitimate work, which is worse than the tier-0
+// that over-fires blocks legitimate work, which is worse than the tier-1
 // escalation it was meant to replace.
 
 describe("default deny list: blocks operations with no inverse", () => {

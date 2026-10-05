@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline end-to-end checks against the globally installed `backupper` (run inside the e2e
-# container). No model calls: the tier-3 subagent is disabled and the container has no network.
+# container). No model calls: the tier-4 subagent is disabled and the container has no network.
 # Deny rules are checked by feeding tool calls to the hook, which decides but never executes.
 set -uo pipefail
 
@@ -113,7 +113,7 @@ git add -A && git commit -qm init
 pre="$(hook_cmd claude-code PreToolUse)"
 post="$(hook_cmd claude-code PostToolUse)"
 
-# rm: tier 0 rewrites it into a move to the action's trash; run what the agent would run.
+# rm: tier 1 rewrites it into a move to the action's trash; run what the agent would run.
 res="$(send "$pre" Bash '{"command":"rm notes.txt"}')"
 run="$(node -e 'const o = JSON.parse(process.argv[1]); console.log(o.hookSpecificOutput?.updatedInput?.command ?? "rm notes.txt")' "$res")"
 sh -c "$run"
@@ -121,7 +121,7 @@ printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"comma
 check "rm was rewritten into a reversible move" sh -c "echo '$run' | grep -qv '^rm notes.txt$'"
 check "notes.txt is gone after the rm" test ! -e notes.txt
 
-# Write: tier 2 snapshots the workspace first; then the file is overwritten.
+# Write: tier 3 snapshots the workspace first; then the file is overwritten.
 send "$pre" Write "{\"file_path\":\"$PWD/app.txt\",\"content\":\"clobbered\\n\"}" >/dev/null
 printf 'clobbered\n' > app.txt
 printf '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"%s/app.txt"},"tool_response":"","cwd":"%s"}' "$PWD" "$PWD" | sh -c "$post"
@@ -139,7 +139,7 @@ check "app.txt restored with its content" grep -qx original app.txt
 backupper uninstall >/dev/null
 check "uninstall removes .claude/" test ! -e .claude
 
-# ── 5b. A file outside the workspace: tier-2 copy, restore N and restore N --file /abs ──
+# ── 5b. A file outside the workspace: tier-3 copy, restore N and restore N --file /abs ──
 new_project outside
 backupper install claude-code >/dev/null
 backupper config set subagentEnabled false >/dev/null
@@ -154,7 +154,7 @@ printf 'port=81\n' > /srv/outside/cfg.ini
 check "restore 1 (loop) brings the outside file back" \
   sh -c 'backupper restore 1 >/dev/null && grep -qx port=80 /srv/outside/cfg.ini'
 
-# ── 5c. Codex: tier 0 is backup-only (Codex ignores a rewritten command) ──
+# ── 5c. Codex: tier 1 is backup-only (Codex ignores a rewritten command) ──
 new_project codex-backup-only
 git config user.email e@x && git config user.name e
 printf 'a\nb\n' > notes.txt && printf 'keep\n' > gone.txt && echo v0 > w.txt

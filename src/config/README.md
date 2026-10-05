@@ -12,32 +12,32 @@ argument, e.g. `backupper config set subagentModels '{"claude":"sonnet"}'`.
 | key | values | default | meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Master switch. |
-| `mode` | `checker`, `off` | `"checker"` | `checker` runs tiers 0-2 on every mutating call and tier 3 on a `[Backup needed]` marker or a checker verdict. `off` disables everything. |
-| `subagentEnabled` | boolean | `true` | Turns tier 3 (and the checker) on or off. |
-| `subagentRunner` | `auto`, `claude`, `codex`, `hermes` | `"auto"` | CLI for tier 3 and the checker. `auto` follows the agent whose hook fired. |
-| `subagentModel` | string | `""` | Model for tier 3 and the checker, on every runner. Empty uses `subagentModels`. |
+| `mode` | `checker`, `off` | `"checker"` | `checker` runs tiers 1-3 on every mutating call and tier 4 on a `[BACKUP NEEDED]` marker or a checker verdict. `off` disables everything. |
+| `subagentEnabled` | boolean | `true` | Turns tier 4 (and the checker) on or off. |
+| `subagentRunner` | `auto`, `claude`, `codex`, `hermes` | `"auto"` | CLI for tier 4 and the checker. `auto` follows the agent whose hook fired. |
+| `subagentModel` | string | `""` | Model for tier 4 and the checker, on every runner. Empty uses `subagentModels`. |
 | `subagentModels` | JSON object | `{"claude":"haiku","codex":"gpt-6-luna"}` | Per-runner model used when `subagentModel` is empty. A runner without an entry uses its CLI's default model. |
 | `subagentProvider` | string | `""` | Hermes only: provider for `hermes chat`. Empty uses Hermes's configured provider. |
-| `subagentTimeoutSeconds` | integer | `120` | Time limit for one tier-3 capture. |
+| `subagentTimeoutSeconds` | integer | `120` | Time limit for one tier-4 capture. |
 | `subagentPermissionMode` | `bypassPermissions`, `acceptEdits` | `"bypassPermissions"` | Claude runner only. `acceptEdits` restricts the subagent to file edits. |
 | `subagentMcpConfig` | string | unset | MCP config file the subagent may use. Empty uses the project's `.mcp.json`. |
-| `subagentRestoreModel` | string | unset | A different model for live restores. Empty reuses the tier-3 model. |
+| `subagentRestoreModel` | string | unset | A different model for live restores. Empty reuses the tier-4 model. |
 | `maxActions` | integer | `50` | Action folders kept; the oldest are pruned first. `0` means unlimited. |
 | `maxTotalSizeMB` | integer | `0` | Size cap on action folders. `0` means unlimited. |
 | `maxAgeHours` | integer | `0` | Age cap on action folders. `0` means unlimited. |
 | `alwaysBackupPatterns` | JSON array | 15 patterns | Regexes for commands that are always treated as mutating. |
 | `effectManifest` | boolean | `true` | Logs each call's effects to `.backupper/effects.jsonl`. |
 | `learnedReadOnlyEnabled` | boolean | `false` | Lets read-only patterns learned in a session skip later checker calls. |
-| `personalization` | `""`, `hard-to-reverse-only`, `unrequested-effects-only`, `human-authored-only` | unset | Limits tier 3 to one preference: `hard-to-reverse-only`, `unrequested-effects-only` or `human-authored-only`. |
+| `personalization` | `""`, `high-impact`, `beyond-request`, `human-work`, `hard-to-reverse-only`, `unrequested-effects-only`, `human-authored-only` | unset | Limits tier 4 to one preference: `high-impact`, `beyond-request` or `human-work` (the older names `hard-to-reverse-only`, `unrequested-effects-only` and `human-authored-only` still work). |
 | `personalizationUserRequests` | JSON array | unset | User turns given to the personalization checker as evidence. |
-| `selfImproving` | boolean | `false` | After each tier-3 capture, one reflection turn writes a deterministic rule for similar calls. |
+| `selfImproving` | boolean | `false` | After each tier-4 capture, one reflection turn writes a deterministic rule for similar calls. |
 | `selfImprovingGeneralize` | boolean | `false` | Extends each learned rule to sibling operations. Needs `selfImproving`. |
 | `learnedBackupRulesPath` | string | `".backupper/learned-backup-rules.json"` | Where learned rules are stored. |
-| `reflectionSubagentRunner` | `""`, `claude`, `codex`, `hermes` | `""` | Runner for reflection turns. Empty reuses the tier-3 runner. |
-| `reflectionSubagentModel` | string | `""` | Model for reflection turns. Empty reuses the tier-3 model. |
+| `reflectionSubagentRunner` | `""`, `claude`, `codex`, `hermes` | `""` | Runner for reflection turns. Empty reuses the tier-4 runner. |
+| `reflectionSubagentModel` | string | `""` | Model for reflection turns. Empty reuses the tier-4 model. |
 | `experienceForServer` | JSON object | unset | Maps an MCP server to an experience file, e.g. `{"playwright": "shop"}`. |
 | `notifyOnSuccess` | boolean | `false` | Tells the agent about every successful backup. Failures and unverified backups are always reported. |
-| `announceOnce` | boolean | `true` | Briefs the agent once per session about the `[Backup needed]` marker. |
+| `announceOnce` | boolean | `true` | Briefs the agent once per session about the `[BACKUP NEEDED]` marker. |
 | `verbose` | boolean | `false` | Writes hook decisions to stderr. |
 
 <!-- config-table:end -->
@@ -47,7 +47,7 @@ Environment variables:
 | variable | effect |
 |---|---|
 | `BACKUPPER_STORE_DIR=<abs path>` | keeps the store outside the project |
-| `BACKUPPER_NO_REWRITE=1` | tier 0 only copies and never rewrites or runs the command (the Codex behaviour, on any agent); `0` forces rewriting |
-| `BACKUPPER_PERSIST_SUBAGENT_SESSIONS=1` | keeps the tier-3 subagent's own CLI session (Claude Code otherwise runs it with `--no-session-persistence`), so its full transcript can be copied into the action folder |
+| `BACKUPPER_NO_REWRITE=1` | tier 1 only copies and never rewrites or runs the command (the Codex behaviour, on any agent); `0` forces rewriting |
+| `BACKUPPER_PERSIST_SUBAGENT_SESSIONS=1` | keeps the tier-4 subagent's own CLI session (Claude Code otherwise runs it with `--no-session-persistence`), so its full transcript can be copied into the action folder |
 | `BACKUPPER_READONLY_CHECKER=0` or `1` | forces the checker off or on |
 | `BACKUPPER_NO_HOOK=1` | skips the hooks; set inside BackUpper's own subagents |
