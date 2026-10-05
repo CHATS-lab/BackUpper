@@ -2,7 +2,7 @@
 
 `learned.ts` holds the rule table and matches, executes and writes it (its first half),
 and runs the two model turns (its second half). The prompts are the `reflection` and
-`generalize` sections of the top-level `prompts.md`; the wiring is in
+`generalize` sections of `src/prompts.md`; the wiring is in
 `src/backup/strategies.ts` (tier 4).
 
 Everything the model can do is write rules. Runtime matching and execution never call a model.

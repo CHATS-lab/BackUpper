@@ -157,7 +157,6 @@ Add `--backupper on` to evaluate with BackUpper.
 ```
 BackUpper/
 ├── src/                     # npm-installable backup layer (hooks, tiers, restore, CLI, side panel)
-├── prompts.md               # prompts for the checker, backup subagent and self-improvement
 ├── experiences/             # bundled backup experiences for MCP servers (postgres, playwright, k8s, email)
 ├── commands/                # slash commands installed into Claude Code
 ├── claude-plugin/           # Claude Code plugin that draws the side panel (/backupper-panel)

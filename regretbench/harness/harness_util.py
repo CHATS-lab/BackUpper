@@ -298,7 +298,7 @@ def tool_surface_protocol_main(argv=None):
 
 One section per prompt (the harness judges), starting at a `<!-- prompt: <name> -->` line
 and running to the next one or the end of the file. The plugin's prompts use the same
-format, in the top-level prompts.md, compiled into the plugin by `scripts/build.mjs prompts`.
+format, in src/prompts.md, compiled into the plugin by `scripts/build.mjs prompts`.
 A prompt reads:
 
     ---

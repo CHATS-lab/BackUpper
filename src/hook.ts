@@ -894,7 +894,7 @@ function openPanelOnce(sandboxDir: string, sessionKey: string): void {
   } catch { /* never fail the hook */ }
 }
 
-/** The briefing text comes from prompts.md (briefing-checker) via prompts.generated.ts. */
+/** The briefing text comes from src/prompts.md (briefing-checker) via prompts.generated.ts. */
 
 /**
  * Workspace path substituted for {{WORKSPACE}} in the briefing: process.cwd()
