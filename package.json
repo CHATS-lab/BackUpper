@@ -9,6 +9,9 @@
   "files": [
     "dist/",
     "commands/",
+    "claude-plugin/",
+    "!claude-plugin/tests/",
+    ".claude-plugin/",
     "experiences/*.json",
     "README.md",
     "LICENSE"

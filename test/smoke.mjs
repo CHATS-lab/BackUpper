@@ -19,7 +19,8 @@ const BIN = process.env.BACKUPPER_BIN ? [process.env.BACKUPPER_BIN] : [process.e
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "backupper-smoke-")));
 const HOME = path.join(tmp, "home");
 fs.mkdirSync(HOME);
-const ENV = { ...process.env, HOME, BACKUPPER_READONLY_CHECKER: "0" };
+// BACKUPPER_SKIP_CLAUDE_PLUGIN: `install claude-code` would otherwise run `claude plugin install`.
+const ENV = { ...process.env, HOME, BACKUPPER_READONLY_CHECKER: "0", BACKUPPER_SKIP_CLAUDE_PLUGIN: "1" };
 delete ENV.BACKUPPER_STORE_DIR;
 delete ENV.BACKUPPER_NO_HOOK;
 
@@ -198,12 +199,18 @@ await test("doctor reports and exits non-zero on a missing install", () => {
   assert.match(hooks.fix, /backupper install claude-code/);
 });
 
-await test("/backupper-panel is answered by the prompt hook and never reaches the model", () => {
+await test("/backupper-panel is answered by the prompt hook (Codex) and left to the plugin (Claude Code)", () => {
   const p = project("panel");
   cli(p, "install", "claude-code");
-  assert.ok(fs.existsSync(path.join(p, ".claude", "commands", "backupper-panel.md")));
+  assert.ok(!fs.existsSync(path.join(p, ".claude", "commands", "backupper-panel.md")), "the plugin owns /backupper-panel");
   const settings = JSON.parse(fs.readFileSync(path.join(p, ".claude", "settings.local.json"), "utf-8"));
-  const cmd = settings.hooks.UserPromptSubmit[0].hooks[0].command;
+  const ccCmd = settings.hooks.UserPromptSubmit[0].hooks[0].command;
+  const cc = spawnSync("sh", ["-c", ccCmd], {
+    cwd: p, env: ENV, encoding: "utf-8", input: JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "/backupper-panel", session_id: "s", cwd: p }),
+  });
+  assert.ok(!/"decision"/.test(cc.stdout), "Claude Code's prompt hook leaves /backupper-panel to the plugin");
+  fs.rmSync(path.join(p, ".backupper", "current-instruction.txt"), { force: true });
+  const cmd = ccCmd.replace("--agent claude-code", "--agent codex");
   const env = { ...ENV };
   for (const k of ["TMUX", "ZELLIJ", "TERM_PROGRAM", "WEZTERM_PANE", "KITTY_WINDOW_ID", "ITERM_SESSION_ID"]) delete env[k];
   const send = (prompt) => spawnSync("sh", ["-c", cmd], {

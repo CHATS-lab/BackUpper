@@ -24,12 +24,14 @@ function manifest(): string {
 
 function pluginSource(pkgRoot: string): string {
   const hook = (name: string) => JSON.stringify(path.join(pkgRoot, "hooks", `${name}.js`));
+  const cli = JSON.stringify(path.join(pkgRoot, "cli.js"));
   return `${MARKER}
 """BackUpper plugin for Hermes, written by \`backupper install hermes\` (regenerated on install).
 
 Each tool call is sent to the BackUpper Node hooks as Claude Code hook JSON. A tier-1 rewrite is
 applied to the live args dict; a deny rewrites a terminal command into a failing no-op. Messages
-the pre-tool hook addresses to the agent are delivered at the next model call.
+the pre-tool hook addresses to the agent are delivered at the next model call. The
+/backupper-panel slash command toggles the side panel without a model turn.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ logger = logging.getLogger(__name__)
 _PRE_TOOL = ${hook("pre-tool")}
 _POST_TOOL = ${hook("post-tool")}
 _USER_PROMPT = ${hook("user-prompt")}
+_CLI = ${cli}
 _NO_HOOK_ENV = "BACKUPPER_NO_HOOK"
 # Above the tier-4 subagent timeout, so a capture in progress is never cut off here.
 _TIMEOUT_SEC = 600.0
@@ -181,10 +184,37 @@ def _pre_llm(session_id: str = "", user_message: object = None, **_: object) -> 
     return {"context": "\\n\\n".join(parts)} if parts else None
 
 
+_PANEL_ACTIONS = ("on", "off", "toggle", "status")
+
+
+def _panel(raw_args: str = "") -> str:
+    """/backupper-panel [on|off|toggle|status]: runs \`backupper panel\` here, never the model."""
+    action = (raw_args or "").strip().lower() or "toggle"
+    if action not in _PANEL_ACTIONS:
+        return "Usage: /backupper-panel [on|off|toggle|status]"
+    try:
+        proc = subprocess.run(
+            ["node", _CLI, "panel", action],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=30, check=False, cwd=os.getcwd(),
+        )
+        return (proc.stdout or b"").decode("utf-8", "replace").strip() or f"backupper panel {action}: done"
+    except Exception as e:
+        return f"BackUpper panel: {e}"
+
+
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", _pre_tool)
     ctx.register_hook("post_tool_call", _post_tool)
     ctx.register_hook("pre_llm_call", _pre_llm)
+    # Older Hermes builds have no plugin slash commands; the CLI toggle still works there.
+    if callable(getattr(ctx, "register_command", None)):
+        ctx.register_command(
+            "backupper-panel",
+            handler=_panel,
+            description="Toggle the BackUpper side panel",
+            args_hint="[on|off|toggle|status]",
+        )
 `;
 }
 

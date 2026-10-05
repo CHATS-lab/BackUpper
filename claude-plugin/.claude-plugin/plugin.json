@@ -1,0 +1,7 @@
+{
+  "name": "backupper",
+  "version": "0.1.0",
+  "description": "BackUpper side panel: what each tool call captured, with one-key restore",
+  "author": { "name": "CHATS-lab" },
+  "homepage": "https://back-up-before-you-regret.github.io"
+}

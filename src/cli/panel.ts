@@ -115,47 +115,6 @@ export function closeCommand(term: TerminalKind, paneId: string | undefined): La
   }
 }
 
-// ── VS Code ──────────────────────────────────────────────────────────
-
-export const VSCODE_TASK_LABEL = "BackUpper: watch";
-
-/** The tasks.json entry; a dedicated panel in its own group so re-running reuses it. */
-export function vscodeTask(watch: string[]): Record<string, unknown> {
-  return {
-    label: VSCODE_TASK_LABEL,
-    type: "process",
-    command: watch[0],
-    args: watch.slice(1),
-    options: { cwd: "${workspaceFolder}" },
-    isBackground: true,
-    problemMatcher: [],
-    presentation: { reveal: "always", panel: "dedicated", group: "backupper", focus: false, close: true },
-  };
-}
-
-/**
- * Add our task to a tasks.json document without touching the user's tasks. Returns the new text,
- * or null when it cannot be merged safely (comments or other non-JSON content) or is already there.
- */
-export function mergeVscodeTasks(existing: string | null, watch: string[]): { text: string | null; reason: string } {
-  let doc: { version?: string; tasks?: unknown[] } = { version: "2.0.0", tasks: [] };
-  if (existing !== null && existing.trim()) {
-    try {
-      doc = JSON.parse(existing);
-    } catch {
-      return { text: null, reason: "tasks.json has comments or is not plain JSON; left untouched" };
-    }
-    if (!doc || typeof doc !== "object" || Array.isArray(doc)) return { text: null, reason: "tasks.json is not an object; left untouched" };
-  }
-  const tasks = Array.isArray(doc.tasks) ? doc.tasks : [];
-  const task = vscodeTask(watch);
-  const i = tasks.findIndex((t) => (t as { label?: string })?.label === VSCODE_TASK_LABEL);
-  if (i >= 0 && JSON.stringify(tasks[i]) === JSON.stringify(task)) return { text: null, reason: "task already present" };
-  if (i >= 0) tasks[i] = task;
-  else tasks.push(task);
-  return { text: JSON.stringify({ ...doc, version: doc.version ?? "2.0.0", tasks }, null, 2) + "\n", reason: i >= 0 ? "task updated" : "task added" };
-}
-
 // ── State ────────────────────────────────────────────────────────────
 
 export function panelFile(projectRoot: string): string {
@@ -231,9 +190,12 @@ export function panelOn(o: PanelEnv): PanelResult {
   const env = o.env ?? process.env;
   if (panelOpen(o.projectRoot)) return { ok: true, lines: ["BackUpper panel is already open."] };
   const term = detectTerminal(env);
-  if (term === "vscode") return vscodeOn(o);
+  if (term === "vscode") {
+    const keys = process.platform === "darwin" ? "Cmd+\\" : "Ctrl+Shift+5";
+    return { ok: false, lines: [`VS Code cannot split its terminal from a script: press ${keys} and run \`backupper watch\` in the new pane.`] };
+  }
   const launch = splitCommand(term, o.projectRoot, o.watch);
-  if (!launch) return { ok: false, lines: [`No scriptable terminal split detected (tmux, Zellij, WezTerm, kitty, iTerm2, VS Code). ${MANUAL}`] };
+  if (!launch) return { ok: false, lines: [`No scriptable terminal split detected (tmux, Zellij, WezTerm, kitty, iTerm2). ${MANUAL}`] };
   let out: string;
   try {
     out = run(launch);
@@ -244,32 +206,6 @@ export function panelOn(o: PanelEnv): PanelResult {
   }
   writePanel(o.projectRoot, { terminal: term, paneId: launch.printsPaneId && out ? out.split("\n").pop() : undefined, openedAt: new Date().toISOString() });
   return { ok: true, lines: [`BackUpper panel opened on the right (${term}). Turn it off with \`backupper panel off\`.`] };
-}
-
-function vscodeOn(o: PanelEnv): PanelResult {
-  const file = path.join(o.projectRoot, ".vscode", "tasks.json");
-  let existing: string | null = null;
-  try { existing = fs.readFileSync(file, "utf-8"); } catch { /* none yet */ }
-  const merged = mergeVscodeTasks(existing, o.watch);
-  const lines: string[] = [];
-  if (merged.text !== null) {
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, merged.text);
-      lines.push(`VS Code: ${merged.reason} "${VSCODE_TASK_LABEL}" in .vscode/tasks.json.`);
-    } catch (e) {
-      lines.push(`VS Code: could not write .vscode/tasks.json (${(e as Error).message}).`);
-    }
-  } else if (merged.reason !== "task already present") {
-    lines.push(`VS Code: ${merged.reason}.`);
-  }
-  const mac = process.platform === "darwin";
-  lines.push(
-    "VS Code cannot split a terminal from inside it, so one keystroke is left to you:",
-    `  ${mac ? "Cmd+\\" : "Ctrl+Shift+5"} splits this terminal; run \`backupper watch\` in the new pane.`,
-    `  or ${mac ? "Cmd" : "Ctrl"}+Shift+P → "Tasks: Run Task" → "${VSCODE_TASK_LABEL}" (drag its tab beside the agent).`,
-  );
-  return { ok: true, lines };
 }
 
 export function panelOff(o: PanelEnv): PanelResult {

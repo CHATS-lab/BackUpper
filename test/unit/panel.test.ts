@@ -5,7 +5,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { closeCommand, detectTerminal, mergeVscodeTasks, parsePanelPrompt, splitCommand, VSCODE_TASK_LABEL } from "../../src/cli/panel.js";
+import { closeCommand, detectTerminal, parsePanelPrompt, splitCommand } from "../../src/cli/panel.js";
 
 const W = ["/usr/bin/node", "/opt/bu/dist/cli.js", "watch"];
 
@@ -54,30 +54,6 @@ describe("splitCommand", () => {
     assert.deepEqual(closeCommand("kitty", "4")!.args, ["@", "close-window", "--match=id:4"]);
     assert.equal(closeCommand("tmux", undefined), null);
     assert.equal(closeCommand("zellij", "1"), null);
-  });
-});
-
-describe("VS Code tasks.json merge", () => {
-  it("creates the file when absent", () => {
-    const r = mergeVscodeTasks(null, W);
-    const doc = JSON.parse(r.text!);
-    assert.equal(doc.version, "2.0.0");
-    assert.equal(doc.tasks[0].label, VSCODE_TASK_LABEL);
-    assert.equal(doc.tasks[0].command, W[0]);
-    assert.equal(doc.tasks[0].presentation.group, "backupper");
-  });
-  it("keeps the user's tasks and is idempotent", () => {
-    const mine = JSON.stringify({ version: "2.0.0", tasks: [{ label: "build", type: "shell", command: "make" }], inputs: [] });
-    const once = mergeVscodeTasks(mine, W);
-    const doc = JSON.parse(once.text!);
-    assert.deepEqual(doc.tasks.map((t: { label: string }) => t.label), ["build", VSCODE_TASK_LABEL]);
-    assert.deepEqual(doc.inputs, []);
-    assert.equal(mergeVscodeTasks(once.text, W).text, null);
-  });
-  it("never rewrites a tasks.json it cannot parse (JSONC comments)", () => {
-    const r = mergeVscodeTasks('{\n  // my tasks\n  "version": "2.0.0", "tasks": []\n}', W);
-    assert.equal(r.text, null);
-    assert.match(r.reason, /left untouched/);
   });
 });
 

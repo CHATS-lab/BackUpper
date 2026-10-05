@@ -1,0 +1,11 @@
+{
+  "name": "backupper",
+  "owner": { "name": "CHATS-lab" },
+  "plugins": [
+    {
+      "name": "backupper",
+      "source": "./claude-plugin",
+      "description": "BackUpper side panel: what each tool call captured, with one-key restore"
+    }
+  ]
+}

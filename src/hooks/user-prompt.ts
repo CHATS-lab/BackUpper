@@ -4,9 +4,10 @@
  * user's prompt, truncated to one line, to .backupper/current-instruction.txt
  * so action folders can record what was asked.
  *
- * A prompt that is only `/backupper-panel [on|off|toggle|status]` is answered here and blocked,
- * so toggling the side panel never reaches the model. With `panel: true` the panel is opened
- * once per session, in a detached process the hook does not wait for.
+ * For Codex and Hermes, a prompt that is only `/backupper-panel [on|off|toggle|status]` is
+ * answered here and blocked, so toggling the side panel never reaches the model. With
+ * `panel: true` the panel is opened once per session, in a detached process the hook does not
+ * wait for. Claude Code gets both from the plugin in claude-plugin/, which draws the pane itself.
  */
 
 import * as fs from "node:fs";
@@ -49,7 +50,8 @@ async function main(): Promise<void> {
   }
 
   // ── Side panel toggle: handled here, never sent to the model ───────
-  const panelAction = parsePanelPrompt(String(ctx.prompt ?? ctx.user_prompt ?? ctx.message ?? ""));
+  const ownPanel = process.env.BACKUPPER_HOST_AGENT === "claude-code";
+  const panelAction = ownPanel ? null : parsePanelPrompt(String(ctx.prompt ?? ctx.user_prompt ?? ctx.message ?? ""));
   if (panelAction) {
     let lines: string[];
     try {
@@ -68,7 +70,7 @@ async function main(): Promise<void> {
 
   const sandboxDir = path.dirname(path.resolve(config.backupDir));
 
-  if (config.panel) openPanelOnce(sandboxDir, String(ctx.session_id ?? "default"));
+  if (config.panel && !ownPanel) openPanelOnce(sandboxDir, String(ctx.session_id ?? "default"));
 
   // ── One-time session briefing ──────────────────────────────────────
   // Emitted on the first prompt of each session, tracked by a session-id

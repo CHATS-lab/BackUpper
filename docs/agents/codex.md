@@ -12,4 +12,4 @@ The backup subagent runs `codex exec` with your existing Codex login. It uses `g
 
 ## Side panel
 
-Run `backupper panel` from a shell, or type `/backupper-panel` as the whole prompt. The UserPromptSubmit hook follows the Claude Code contract and blocks the prompt before the model sees it. This needs the hook to be trusted, and it has not been verified on every Codex version. If the TUI rejects the slash command, run `backupper panel` in another terminal.
+Type `!backupper panel` (or `!backupper panel on|off`) in Codex. Codex runs a `!`-prefixed line as a local shell command without starting a turn. Codex has no plugin slash commands: it answers `/backupper-panel` with "Unrecognized command" before any hook runs. You can also run `backupper panel` in another terminal.

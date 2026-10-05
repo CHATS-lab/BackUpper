@@ -96,7 +96,11 @@ Or keep a live side panel next to your agent. It is off by default; toggle it wh
 backupper panel                 # toggle; also: panel on | off | status
 ```
 
-In Claude Code, type `/backupper-panel`. The prompt hook handles it, so it costs no model turn. The panel opens to the right of your terminal (tmux, Zellij, WezTerm, kitty, iTerm2), lists each action as `#N <tool call> → Tier K <artifact>`, and restores the selected one when you press `r` and confirm. In VS Code, press `Cmd+\` (`Ctrl+Shift+5`) to split the terminal and run `backupper watch` in the new pane.
+In Claude Code, type `/backupper-panel`. `backupper install claude-code` adds it as a Claude Code plugin, so the pane sits beside the transcript inside Claude Code itself, in any terminal including VS Code's, and costs no model turn. It lists each action as `#N Tier K <artifact>` under its tool call and updates after every tool call. Press `ctrl+x tab` to reach its keys: `j`/`k` select, `r` restores the selected action after you confirm, `d` shows the diff. For Codex and Hermes, `backupper panel` opens the same view to the right of your terminal (tmux, Zellij, WezTerm, kitty, iTerm2). In VS Code's terminal, press `Cmd+\` (`Ctrl+Shift+5`) and run `backupper watch` in the new pane.
+
+<p align="center">
+  <img src="assets/panel.png" alt="BackUpper side panel" width="85%">
+</p>
 
 ### Customize What Gets Backed Up
 
@@ -154,6 +158,7 @@ BackUpper/
 ├── prompts/                 # prompts for the checker, backup subagent and self-improvement
 ├── experiences/             # bundled backup experiences for MCP servers (postgres, playwright, k8s, email)
 ├── commands/                # slash commands installed into Claude Code
+├── claude-plugin/           # Claude Code plugin that draws the side panel (/backupper-panel)
 ├── regretbench/             # RegretBench evaluation framework (see regretbench/README.md)
 ├── docs/                    # per-agent setup, how it works, storage layout, development
 └── test/                    # unit and end-to-end tests

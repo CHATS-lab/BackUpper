@@ -1,11 +1,13 @@
 /**
  * Claude Code adapter: registers hooks and deny rules in `.claude/settings.local.json` (the
- * per-user, uncommitted settings file, since hook commands carry absolute paths) and copies the
- * slash commands into `.claude/commands/`.
+ * per-user, uncommitted settings file, since hook commands carry absolute paths), copies the
+ * slash commands into `.claude/commands/`, and installs the side-panel plugin (claude-plugin/)
+ * at local scope, which adds `/backupper-panel`.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import { CAN_REWRITE } from "./capabilities.js";
 import type { AgentAdapter, AgentInstallResult, HookStatus } from "./index.js";
 import { hookCommand, isOurCommand, readJsonObject, removeEmptyDirs, scriptOf, writeJson } from "./index.js";
@@ -33,6 +35,18 @@ const DENY_RULES = [
 
 type HookGroup = { matcher?: string; hooks?: Array<{ type?: string; command?: string }> };
 
+/** The side-panel plugin and the marketplace (this package's folder) it is installed from. */
+const PLUGIN_MARKETPLACE = "backupper";
+const PLUGIN_ID = `backupper@${PLUGIN_MARKETPLACE}`;
+
+/** `claude plugin <args>` in the project; null when `claude` cannot run. */
+function claudePlugin(projectRoot: string, args: string[]): { ok: boolean; out: string } | null {
+  if (process.env.BACKUPPER_SKIP_CLAUDE_PLUGIN === "1") return null;
+  const r = spawnSync("claude", ["plugin", ...args], { cwd: projectRoot, encoding: "utf-8", timeout: 60_000 });
+  if (r.error) return null;
+  return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
 function groupIsOurs(g: unknown): boolean {
   const hooks = (g as HookGroup | null)?.hooks;
   return Array.isArray(hooks) && hooks.some((h) => isOurCommand(h?.command));
@@ -59,6 +73,13 @@ function stripSettings(settings: Record<string, unknown>): boolean {
     if (kept.length) perms.deny = kept;
     else delete perms.deny;
     if (Object.keys(perms).length === 0) delete settings.permissions;
+  }
+  // The side-panel plugin's local-scope entries, in case `claude plugin uninstall` could not run.
+  for (const [key, id] of [["enabledPlugins", PLUGIN_ID], ["extraKnownMarketplaces", PLUGIN_MARKETPLACE]] as const) {
+    const map = settings[key] as Record<string, unknown> | undefined;
+    if (!map || typeof map !== "object") continue;
+    if (id in map) { delete map[id]; changed = true; }
+    if (Object.keys(map).length === 0) { delete settings[key]; changed = true; }
   }
   return changed;
 }
@@ -122,14 +143,31 @@ export const claudeCodeAdapter: AgentAdapter = {
     if (cmds.length) {
       const dest = path.join(projectRoot, COMMANDS_DIR);
       fs.mkdirSync(dest, { recursive: true });
+      // Drop commands an older version shipped (backupper-panel.md is now the plugin's).
+      for (const f of fs.readdirSync(dest)) if (/^backupper-.*\.md$/.test(f) && !cmds.includes(f)) fs.rmSync(path.join(dest, f), { force: true });
       for (const f of cmds) fs.copyFileSync(path.join(pkgRoot, "..", "commands", f), path.join(dest, f));
       log.push(`Slash commands copied to ${COMMANDS_DIR}/: ${cmds.map((f) => "/" + f.replace(/\.md$/, "")).join(" ")}`);
+    }
+
+    // Side panel: a Claude Code plugin that draws the pane beside the transcript.
+    const pkgDir = path.resolve(pkgRoot, "..");
+    const add = claudePlugin(projectRoot, ["marketplace", "add", pkgDir, "--scope", "local"]);
+    const inst = add?.ok ? claudePlugin(projectRoot, ["install", PLUGIN_ID, "--scope", "local"]) : add;
+    if (inst?.ok) {
+      log.push(`Side panel plugin ${PLUGIN_ID} installed for this project: type /backupper-panel in Claude Code`);
+    } else {
+      log.push(
+        `Side panel plugin not installed${inst ? ` (${inst.out.split("\n").pop()})` : ""}. To add /backupper-panel, run here:`,
+        `  claude plugin marketplace add "${pkgDir}" --scope local && claude plugin install ${PLUGIN_ID} --scope local`,
+      );
     }
     return { log };
   },
 
   uninstall(projectRoot: string): AgentInstallResult {
     const log: string[] = [];
+    if (claudePlugin(projectRoot, ["uninstall", PLUGIN_ID, "--scope", "local"])?.ok) log.push(`Uninstalled the side panel plugin ${PLUGIN_ID}`);
+    claudePlugin(projectRoot, ["marketplace", "remove", PLUGIN_MARKETPLACE, "--scope", "local"]);
     for (const rel of [SETTINGS, SHARED_SETTINGS]) {
       const file = path.join(projectRoot, rel);
       let settings: Record<string, unknown>;

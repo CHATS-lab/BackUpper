@@ -11,7 +11,7 @@ import { getConfigDir, loadConfig } from "../config/load.js";
 import { dirSize } from "../backup/strategies.js";
 import type { SandboxConfig } from "../types.js";
 import { actionDetail, actionNames, backupRoot, snapshotDiff, summarizeAction, type ActionSummary } from "../view/actions.js";
-import { emptyState, renderWatch, type WatchState } from "../view/watch.js";
+import { artifactLabel, detailLines, emptyState, headlineTier, renderWatch, TIER_NAME, type WatchState } from "../view/watch.js";
 import { registerWatchPid } from "./panel.js";
 
 /** Summaries are cached per action folder and recomputed only when its metadata changes. */
@@ -64,6 +64,35 @@ function snapshot(projectRoot: string): void {
   const s = new Store(projectRoot).load(emptyState());
   const width = Math.max(process.stdout.columns || 100, 60);
   console.log(renderWatch(s, width, undefined, false).slice(0, -1).join("\n"));
+}
+
+/**
+ * `backupper watch --json [--select N]`: the panel's content as data, for a host that draws it
+ * itself (the Claude Code mod in claude-plugin/). The detail is for action N, else the newest.
+ */
+export function watchJson(projectRoot: string, select?: number, width = 60): unknown {
+  let s = new Store(projectRoot).load(emptyState());
+  const i = select === undefined ? -1 : s.actions.findIndex((a) => a.seq === select);
+  if (i >= 0) s = new Store(projectRoot).withDetail({ ...s, selected: i });
+  const a = s.actions[s.selected];
+  return {
+    project: s.project,
+    mode: s.mode,
+    scope: s.personalization ? `personalized (${s.personalization})` : "Full",
+    storeBytes: s.storeBytes,
+    actions: s.actions.map((x) => {
+      const head = headlineTier(x);
+      return {
+        seq: x.seq,
+        call: x.originalAction || x.toolName || "(unknown call)",
+        tier: head?.tier ?? null,
+        tierName: head ? TIER_NAME[head.tier] : null,
+        artifact: head ? artifactLabel(x, head.strategy) : null,
+      };
+    }),
+    selected: a?.seq ?? null,
+    detail: a ? detailLines(s.detail ?? a, s.actions.length - 1 - s.selected, width, false) : [],
+  };
 }
 
 export async function watch(projectRoot: string): Promise<void> {

@@ -491,7 +491,7 @@ Inspect
 Side panel
   panel [on|off|toggle|status]  Live view of captures in a pane to the right (default: toggle)
   split                         Same as panel on
-  watch                         The panel itself: live action list, r restores, d diffs
+  watch [--json]                The panel itself: live action list, r restores, d diffs
 
 Undo
   restore <N|last>              Undo action N and every action after it
@@ -539,8 +539,14 @@ async function main(): Promise<void> {
     case "status": statusCommand(projectRoot); break;
     case "config": configCommand(projectRoot, rest); break;
     case "watch": {
-      const { watch } = require("./cli/watch.js") as typeof import("./cli/watch.js");
-      await watch(projectRoot);
+      const { watch, watchJson } = require("./cli/watch.js") as typeof import("./cli/watch.js");
+      if (JSON_OUT) {
+        const sel = flagValue(rest, "--select");
+        const width = flagValue(rest, "--width");
+        console.log(JSON.stringify(watchJson(projectRoot, sel ? Number(sel) : undefined, width ? Number(width) : undefined)));
+      } else {
+        await watch(projectRoot);
+      }
       break;
     }
     case "panel": panelCli(projectRoot, positionals(rest)[0] ?? "toggle"); break;
