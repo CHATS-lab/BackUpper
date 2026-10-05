@@ -11,8 +11,8 @@
 <a href="docs/agents.md#claude-code"><img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=anthropic&logoColor=white" alt="Claude Code"></a>
 <a href="docs/agents.md#codex"><img src="https://img.shields.io/badge/Codex-000000?style=flat-square&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABm0lEQVR42rVSK6jCYBj9f7FoG75A0KRNWbDKQAQxGuRHYWCRgWYRLBo0DCwqBrUJLojY7C74aGPJMNGyMIQN8QEKv7pbLj7GhcsN97SP7xy+7xwO1HUd/AUm8EeYDfP9fud5fr/fRyIRm832ywWMMU3T6/UaABCNRlOpVCaTEUXxQ6G/odVqTSaTxWKBEOr3+8fjUVXVZDK5Wq2enJeAYRiSJGVZTiQSmqaVy+VYLMYwzGw2q1QqT9q3h+l06vP5XC4XhFBV1VwudzqdstlsIBCoVqt2u91oervdhkIhnufP57PX6+U47vF4hMNht9vNsmy9Xpdl2ePxvExTFMVxHE3TtVpNURSMMcaYIIhSqTQcDuPx+HK5/Ljg9/vNZnOxWGRZdrPZUBTldDoPh4PFYgEACIKAEDLGShBEoVDodrudTiedTrfbbavVquv6aDSCEAaDQWOskiQhhDRNu16vzWYTISRJ0mAwGI/H79HD9y6Jotjr9W63myAI+Xx+t9spitJoNEym1yPwx/JdLpf5fO5wOEiSNKzgv7f1C7WV+mn4U8OsAAAAAElFTkSuQmCC&logoColor=white" alt="Codex"></a>
 <a href="docs/agents.md#hermes"><img src="https://img.shields.io/badge/%E2%9A%95%EF%B8%8F_Hermes-6B4FBB?style=flat-square" alt="Hermes"></a>
-<a href="docs/agents.md#openhands"><img src="https://img.shields.io/badge/OpenHands-E4C74E?style=flat-square" alt="OpenHands"></a>
-<a href="docs/agents.md#deepseek-harness"><img src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?style=flat-square" alt="DeepSeek Harness"></a>
+<a href="docs/agents.md#openhands"><img src="https://img.shields.io/badge/%F0%9F%99%8C_OpenHands-E4C74E?style=flat-square" alt="OpenHands"></a>
+<a href="docs/agents.md#deepseek-harness"><img src="https://img.shields.io/badge/%F0%9F%90%8B_DeepSeek_Harness-4D6BFE?style=flat-square" alt="DeepSeek Harness"></a>
 <a href="docs/agents.md#openclaw"><img src="https://img.shields.io/badge/%F0%9F%A6%9E_OpenClaw-E5533D?style=flat-square" alt="OpenClaw"></a>
 </div>
 
@@ -54,10 +54,10 @@ Run these in the project you want to protect, with plug-and-play support for **6
   <img src="https://img.shields.io/badge/%E2%9A%95%EF%B8%8F_Hermes-6B4FBB?style=flat-square" alt="Hermes" />
 </a>
 <a href="docs/agents.md#openhands">
-  <img src="https://img.shields.io/badge/OpenHands-E4C74E?style=flat-square" alt="OpenHands" />
+  <img src="https://img.shields.io/badge/%F0%9F%99%8C_OpenHands-E4C74E?style=flat-square" alt="OpenHands" />
 </a>
 <a href="docs/agents.md#deepseek-harness">
-  <img src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?style=flat-square" alt="DeepSeek Harness" />
+  <img src="https://img.shields.io/badge/%F0%9F%90%8B_DeepSeek_Harness-4D6BFE?style=flat-square" alt="DeepSeek Harness" />
 </a>
 <a href="docs/agents.md#openclaw">
   <img src="https://img.shields.io/badge/%F0%9F%A6%9E_OpenClaw-E5533D?style=flat-square" alt="OpenClaw" />
