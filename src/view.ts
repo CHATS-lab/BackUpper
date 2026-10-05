@@ -23,12 +23,14 @@ import { actionDirs, backupRoot, readActionArtifacts, storeRoot, readJson } from
 /** Tier that produces each artifact strategy. */
 export const STRATEGY_TIER: Record<string, number> = {
   policy_rewrite: 1,
+  command_pairing: 2,
   pip_freeze: 2,
   npm_list: 2,
   env_snapshot: 2,
   git_tag: 2,
   git_snapshot: 3,
   file_copy: 3,
+  rule_copy: 3,
   subagent: 4,
   learned_rule: 4,
 };
@@ -351,6 +353,8 @@ export function artifactLabel(a: ActionSummary, strategy: string): string {
   const stored = a.storage.find((s) => s.strategy === strategy);
   switch (strategy) {
     case "policy_rewrite": return stored?.path ? path.basename(stored.path) : "reversible form";
+    case "command_pairing": return "saved state";
+    case "rule_copy": return "copies";
     case "pip_freeze": return "pip freeze";
     case "npm_list": return "npm list";
     case "env_snapshot": return "env dump";

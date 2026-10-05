@@ -151,7 +151,7 @@ BackUpper sits on the agent's pre-tool-call hook. Read-only calls pass straight 
 
 Tiers 1–3 run locally with no model call. Every backup is logged with how to restore it. Details: [`docs/how-it-works.md`](docs/how-it-works.md).
 
-The behaviour reported in the paper uses bypass permission mode. In other modes, BackUpper rewrites the command to back up the target first and then run the original command unchanged, so the agent's permission checks still apply. [Details](docs/how-it-works.md#permission-modes).
+The behaviour reported in the paper uses bypass permission mode. In other modes, BackUpper does not rewrite the command: it backs up the target first and the original command runs unchanged, so the agent's permission checks still apply. [Details](docs/how-it-works.md#permission-modes).
 
 ## RegretBench Benchmark
 

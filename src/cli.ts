@@ -1125,6 +1125,8 @@ function listCommand(projectRoot: string, args: string[]): void {
 
 const STRATEGY_TEXT: Record<string, string> = {
   policy_rewrite: "command rewritten into a reversible form",
+  command_pairing: "state saved before the command ran unmodified",
+  rule_copy: "copies the workspace snapshot does not hold",
   pip_freeze: "package manifest (pip freeze)",
   npm_list: "package manifest (npm list)",
   env_snapshot: "environment dump",

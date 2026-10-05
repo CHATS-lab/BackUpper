@@ -35,6 +35,7 @@ import { tryLearnedBackup, flushDeferredGeneralizations, generalizeAfterNativeRu
 import { recordExternalShadowMeta, recordTreeMeta, shortHash, writeTreeMeta, type TreeMeta } from "./fsmeta.js";
 import { planCommand, wordsAndRedirects, type CmdSegment } from "./compound.js";
 import { actionDirsIn, storeRoot, expandHome, isNullDevice, quote, readJson } from "../util.js";
+import type { DeferredCopy, PolicyRuleResult } from "./policy_rules.js";
 
 
 // ── Action folder management (LAZY) ─────────────────────────────
@@ -43,10 +44,18 @@ import { actionDirsIn, storeRoot, expandHome, isNullDevice, quote, readJson } fr
 let _pendingActionName: string | null = null;
 let _currentActionDir: string | null = null;
 let _currentActionId: string | null = null;
+// Whether this call's action waits for the post-tool hook before it is numbered and listed.
+let _unconfirmed = false;
 
 /** Reserve the next action name without creating its folder. */
 function preparePendingAction(config: SandboxConfig): string {
   if (_pendingActionName) return _pendingActionName;
+  if (_unconfirmed) {
+    // Numbered only once the post-tool hook confirms the call ran (see confirmAction).
+    const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+    _pendingActionName = `pending_${ts}_${process.pid}${Math.random().toString(36).slice(2, 6)}`;
+    return _pendingActionName;
+  }
 
   const backupRoot = path.resolve(config.backupDir);
   const existing = listActionDirs(backupRoot);
@@ -2747,12 +2756,168 @@ function tryExternalFileSnapshot(
   };
 }
 
+// ── Rules without a rewrite ──────────────────────────────────────
+
+/** Not tried without a rewrite: the tier-2 git ref and the tier-3 snapshot cover it. */
+const SNAPSHOT_ONLY_RULES = ["git-reset-hard"];
+
+/**
+ * Rules that protect file contents. Without a rewrite they leave the files to the tier-3
+ * snapshot and are recorded (as tier-3 copies) only for what the snapshot does not hold. Every
+ * other rule saves small state before the call and is recorded as tier-2 command pairing.
+ */
+const SNAPSHOT_RULES = [
+  "rm-to-trash", "mv-overwrite", "sed-in-place", "truncate", "shell-truncate", "git-clean",
+  "find-delete", "rsync-delete", "git-worktree-remove-force", "git-discard-worktree",
+];
+
+/** Whether tier 1 may rewrite this call (see agents.ts tier1Mode). */
+function isRewriteMode(ctx: HookContext): boolean {
+  const { tier1Mode } = require("../agents.js");
+  return tier1Mode(ctx.permission_mode) === "rewrite";
+}
+
+/**
+ * Whether the tier-3 snapshot holds `p` and everything under it: inside the workspace, outside
+ * any .git directory or nested repository, and neither ignored nor holding ignored files.
+ */
+function snapshotHolds(p: string, config: SandboxConfig): boolean {
+  const cwd = process.cwd();
+  const abs = path.resolve(cwd, p);
+  const rel = path.relative(cwd, abs);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  if (rel.split(path.sep).includes(".git")) return false;
+  const opts = {
+    cwd, encoding: "utf-8" as const, timeout: 10_000, stdio: "pipe" as const, maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, GIT_DIR: ensureSharedShadowRepo(config), GIT_WORK_TREE: cwd },
+  };
+  try {
+    if (execFileSync("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--", rel], opts)) {
+      return false;
+    }
+    let isDir = false;
+    try { isDir = fs.lstatSync(abs).isDirectory(); } catch { /* gone: nothing to hold */ }
+    if (isDir && execFileSync("find", [abs, "-name", ".git", "-print", "-quit"], opts).trim()) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Run deferred copies; on any failure remove the copies made and return false. */
+function runCopies(copies: DeferredCopy[]): boolean {
+  const made: string[] = [];
+  for (const k of copies) {
+    let ok = false;
+    try {
+      fs.mkdirSync(path.dirname(k.dest), { recursive: true });
+      execSync(k.command, { stdio: "ignore" });
+      fs.lstatSync(k.dest);
+      ok = true;
+    } catch { /* below */ }
+    if (!ok) {
+      for (const d of [...made, k.dest]) {
+        try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+      return false;
+    }
+    made.push(k.dest);
+  }
+  return true;
+}
+
+/** A rule result without the copies the snapshot holds (and the steps that restore them). */
+function withoutCopies(rule: PolicyRuleResult, held: DeferredCopy[]): PolicyRuleResult {
+  if (held.length === 0) return rule;
+  const dropped = (c: string) => held.some((k) => c.includes(path.basename(k.dest)));
+  // A bare `mkdir -p` restores the parent of the copy on the line after it.
+  const recovery = rule.recoveryCommands.filter((c, i, all) =>
+    !dropped(c) && !(/^mkdir -p \S+$/.test(c) && i + 1 < all.length && dropped(all[i + 1])));
+  return {
+    ...rule,
+    preCommands: rule.preCommands.filter((c) => !dropped(c)),
+    recoveryCommands: recovery,
+    captures: rule.captures?.filter((c) => !held.some((k) => k.dest === c.copy)),
+  };
+}
+
+function ruleArtifact(ctx: HookContext, rule: PolicyRuleResult, trashDir: string, strategy: BackupArtifact["strategy"]): BackupArtifact {
+  return {
+    id: rule.ruleId.slice(0, 8),
+    timestamp: new Date().toISOString(),
+    trigger: "rule",
+    toolName: ctx.tool_name,
+    description: rule.description,
+    strategy,
+    artifactPath: trashDir,
+    recoveryCommands: rule.recoveryCommands,
+    policyRuleId: rule.ruleId,
+    originalAction: describeToolAction(ctx.tool_name, ctx.tool_input),
+    ...(rule.backupOnly ? { backupOnly: true } : {}),
+    ...(rule.captures?.length ? { captures: rule.captures } : {}),
+  };
+}
+
+// ── Unconfirmed actions ──────────────────────────────────────────
+
+/** Unconfirmed action folders (`pending_*`), which `list`, `show` and `restore` do not see. */
+export function unconfirmedActionDirs(config: Pick<SandboxConfig, "backupDir">): string[] {
+  const root = path.resolve(config.backupDir);
+  try {
+    return fs.readdirSync(root).filter((d) => d.startsWith("pending_")).sort().map((d) => path.join(root, d));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Number and list an unconfirmed action once its call is known to have run: rename
+ * `pending_<ts>_<id>` to the next `action_<seq>_<ts>` and update the paths recorded under the
+ * old name. Returns the folder's path, or null when it no longer exists.
+ */
+export function confirmAction(actionDir: string | null | undefined): string | null {
+  if (!actionDir || !fs.existsSync(actionDir)) return null;
+  const oldName = path.basename(actionDir);
+  if (!oldName.startsWith("pending_")) return actionDir;
+  const root = path.dirname(actionDir);
+  const ts = oldName.split("_")[1] ?? "";
+  let seq = Math.max(0, ...listActionDirs(root).map((d) => parseInt(d.split("_")[1] ?? "0", 10)).filter((n) => !isNaN(n))) + 1;
+  let target = "";
+  for (;; seq++) {
+    const name = `action_${String(seq).padStart(3, "0")}_${ts}`;
+    if (fs.existsSync(path.join(root, name))) continue;
+    try {
+      fs.renameSync(actionDir, path.join(root, name));
+      target = name;
+      break;
+    } catch (e) {
+      if (!fs.existsSync(actionDir)) return null;
+      if ((e as NodeJS.ErrnoException).code !== "ENOTEMPTY" && (e as NodeJS.ErrnoException).code !== "EEXIST") return null;
+    }
+  }
+  const dir = path.join(root, target);
+  // The folder name is unique, so replacing it rewrites exactly the recorded paths.
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith(".json"))) {
+    try {
+      const text = fs.readFileSync(path.join(dir, f), "utf-8");
+      if (text.includes(oldName)) fs.writeFileSync(path.join(dir, f), text.split(oldName).join(target), "utf-8");
+    } catch { /* best-effort */ }
+  }
+  try {
+    const ledger = path.join(path.dirname(root), "backup-timings.jsonl");
+    const text = fs.readFileSync(ledger, "utf-8");
+    if (text.includes(oldName)) fs.writeFileSync(ledger, text.split(oldName).join(target), "utf-8");
+  } catch { /* no ledger */ }
+  return dir;
+}
+
 /** Run the backup tiers for one tool call (see runBackupTiers). */
 export function runBackup(
   ctx: HookContext,
   config: SandboxConfig
 ): BackupResult {
   // Deferred generalizations run after all tiers have finished, on every return path.
+  _unconfirmed = !isRewriteMode(ctx);
   try {
     const r = runBackupTiers(ctx, config);
     if (r.uncovered && !r.uncoveredHandled) {
@@ -2979,17 +3144,12 @@ function runBackupTiers(
 
   // ── Tier 1: command rewriting ──────────────────────────────────────────
   // Destructive commands are rewritten into reversible equivalents (e.g. mv to a per-action
-  // trash) on hosts that apply a rewritten input. On hosts that do not (Codex), or with
-  // BACKUPPER_NO_REWRITE=1, the rules run in backup-only mode: they capture a restorable copy,
-  // execute nothing, and the host runs the original command once.
-  const { tier1Mode } = require("../agents.js");
-  // "chain" (a non-bypass permission mode): the host may still deny or ask about the call, so
-  // the hook executes nothing and returns `<copies> && <original command>` instead.
-  const originalCommand = ctx.tool_name === "Bash" ? String(ctx.tool_input.command ?? "") : "";
-  const mode: "rewrite" | "chain" | "backup-only" = tier1Mode(ctx.permission_mode);
-  const chain = mode === "chain" && ctx.tool_name === "Bash" && !originalCommand.includes("\n");
-  const rewrite: boolean = mode === "rewrite";
-  const { applyPolicyRules } = require("./policy_rules.js");
+  // trash) in a bypass permission mode on hosts that apply a rewritten input. Otherwise
+  // (approval modes, hosts that ignore a rewrite, BACKUPPER_NO_REWRITE=1) nothing is rewritten:
+  // a rule that saves small state records it as tier 2, and a rule that protects file contents
+  // leaves them to the tier-3 snapshot plus copies of what the snapshot does not hold.
+  const rewrite = isRewriteMode(ctx);
+  const { applyPolicyRules, withDeferredCopies } = require("./policy_rules.js");
   const pendingDir = path.join(path.resolve(config.backupDir), _pendingActionName ?? "");
   const trashDir = path.join(pendingDir, "trash");
   // The sandbox store root, excluded from the victim sets of rules that move or delete paths.
@@ -3019,49 +3179,42 @@ function runBackupTiers(
     }
   }
 
-  let deferred: Array<{ command: string; src: string; dest: string }> = [];
-  let policyResult = null;
+  let policyResult: PolicyRuleResult | null = null;
+  // Without a rewrite, a rule that protects file contents waits for the snapshot: it then
+  // copies only what the snapshot does not hold (everything, if no snapshot could be taken).
+  let afterSnapshot: { rule: PolicyRuleResult; copies: DeferredCopy[] } | null = null;
   if (!compoundPlan?.compound) {
-    if (chain) {
-      const { withDeferredCopies } = require("./policy_rules.js");
-      const d = withDeferredCopies(() => applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite: false }));
-      policyResult = d.result;
-      deferred = d.commands;
-    } else {
+    if (rewrite) {
       policyResult = applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite });
+    } else {
+      const d = withDeferredCopies(() =>
+        applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite: false, skip: SNAPSHOT_ONLY_RULES }));
+      const copies: DeferredCopy[] = d.commands;
+      policyResult = d.result;
+      if (policyResult && SNAPSHOT_RULES.includes(policyResult.ruleId)) {
+        // Restoring means only putting copies back (and re-creating their parent directories).
+        const onlyCopies = policyResult.recoveryCommands.every((c) =>
+          /^mkdir -p \S+$/.test(c) || copies.some((k) => c.includes(path.basename(k.dest))));
+        const touched = [...copies.map((k) => k.src), ...(policyResult.touched ?? [])];
+        if (onlyCopies || touched.every((t) => snapshotHolds(t, config))) {
+          afterSnapshot = { rule: policyResult, copies };
+          policyResult = null;
+        } else if (!runCopies(copies)) {
+          policyResult = null;
+        }
+      } else if (policyResult && !runCopies(copies)) {
+        policyResult = null;
+      }
     }
-  }
-  if (policyResult && deferred.length > 0) {
-    // Copies first, through `hook.js capture` (see there); `&&` keeps the original from running
-    // if a copy fails. The original is passed verbatim so the host's permission rules still
-    // match it.
-    const { captureCommandPrefix } = require("../agents.js");
-    const copy = `${captureCommandPrefix()} ${deferred.map((c) => `${quote(c.src)} ${quote(c.dest)}`).join(" ")}`;
-    policyResult.updatedInput = { ...ctx.tool_input, command: `${copy} && ${originalCommand}` };
-    policyResult.preCommands = [copy];
   }
   if (policyResult) {
     const dir = materializeActionDir(config);
     result.actionDir = dir;
-    const artifact: BackupArtifact = {
-      id: policyResult.ruleId.slice(0, 8),
-      timestamp: new Date().toISOString(),
-      trigger: "rule",
-      toolName: ctx.tool_name,
-      description: policyResult.description,
-      strategy: "policy_rewrite",
-      artifactPath: trashDir,
-      recoveryCommands: policyResult.recoveryCommands,
-      policyRuleId: policyResult.ruleId,
-      originalAction: describeToolAction(ctx.tool_name, ctx.tool_input),
-      ...(policyResult.backupOnly ? { backupOnly: true } : {}),
-      ...(policyResult.captures?.length ? { captures: policyResult.captures } : {}),
-      ...(deferred.length ? { deferredCopies: deferred.map((c) => c.dest) } : {}),
-    };
+    const artifact = ruleArtifact(ctx, policyResult, trashDir, rewrite ? "policy_rewrite" : SNAPSHOT_RULES.includes(policyResult.ruleId) ? "rule_copy" : "command_pairing");
     result.artifacts.push(artifact);
     if (policyResult.updatedInput) result.updatedInput = policyResult.updatedInput;
     writeMetadata(dir, artifact);
-    // A rewrite ends the pipeline unless the rule sets preserveLowerTiers (partial recovery).
+    // A rule's own backup ends the pipeline unless it sets preserveLowerTiers (partial recovery).
     if (!policyResult.preserveLowerTiers) {
       return result;
     }
@@ -3088,6 +3241,24 @@ function runBackupTiers(
     result.artifacts.push(gitSnapshot);
     writeMetadata(dir, gitSnapshot);
     generalizeAfterNativeRule(ctx, dir, gitSnapshot, config);
+  }
+  // The copies a waiting rule still needs: those the snapshot does not hold, or all of them
+  // when no snapshot was taken.
+  if (afterSnapshot) {
+    const held = gitSnapshot ? afterSnapshot.copies.filter((k) => snapshotHolds(k.src, config)) : [];
+    const needed = afterSnapshot.copies.filter((k) => !held.includes(k));
+    if (needed.length === 0 || runCopies(needed)) {
+      if (needed.length) {
+        const dir = materializeActionDir(config);
+        result.actionDir = dir;
+        const artifact = ruleArtifact(ctx, withoutCopies(afterSnapshot.rule, held), trashDir, "rule_copy");
+        result.artifacts.push(artifact);
+        writeMetadata(dir, artifact);
+      }
+      // The rule and the snapshot together hold everything the command changes.
+      result.uncovered = undefined;
+      return result;
+    }
   }
 
   // ── Tier 2: command pairing, for known command patterns ─

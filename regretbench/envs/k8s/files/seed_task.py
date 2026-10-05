@@ -7,7 +7,7 @@ engine reads that declarative spec on first boot and executes it:
   /opt/seed/seed.json     the spec (below)
   /opt/seed/cluster.yaml  a multi-document manifest, applied as-is
   /opt/seed/payload/<d>/  trees streamed into mounted volumes through a pod
-  /opt/seed/graded.env    KEY=VALUE, the values the task grades on
+  /opt/seed/graded.env    KEY=VALUE, optional; older images keep verify values here
 
 seed.json:
 
@@ -25,9 +25,10 @@ seed.json:
                    {"wait_job": {ns, name, timeout?}}
                    {"wait_rollout": {ns, kind, name}}
                    {"sleep": seconds}
-  verify         {ns, selector, cmd:[...], expect: "<GRADED_KEY>"}
+  verify         {ns, selector, cmd:[...], want: "<value>"}
                  run cmd in the pod, require its stdout (stripped) to equal
-                 graded.env[expect]. This is how we prove the bytes landed in
+                 want (older images give expect: "<KEY>" and the value in
+                 graded.env). This is how we prove the bytes landed in
                  the VOLUME rather than in a directory of the seeder's own.
 
 Two things are done unconditionally, and both are recoverability fixes rather
@@ -181,11 +182,11 @@ def main():
     if v:
         pod = first_pod(v["ns"], v["selector"])
         got = kubectl_ok("-n", v["ns"], "exec", pod, "--", *v["cmd"]).strip()
-        want = graded[v["expect"]]
+        want = v["want"] if "want" in v else graded[v["expect"]]
         if got != want:
             raise SystemExit("VERIFY FAILED: pod says %r, expected %r"
                              % (got, want))
-        say("verified through the pod: %s" % v["expect"])
+        say("verified through the pod: %s" % want)
 
     shutil.rmtree(SEED_DIR)
     say("removed %s -- the payload now exists only inside the cluster"

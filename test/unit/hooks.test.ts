@@ -448,126 +448,204 @@ describe("tier-4 model defaults", () => {
 }
 
 // =============================================================================
-// ── chain mode ──
+// ── permission modes ──
 // =============================================================================
 
 /**
- * Tier 1 by permission mode: bypass keeps the in-hook rewrite (output identical to the
- * pre-change hook); any other mode returns `<copies> && <original>` and executes nothing.
- * The bypass comparison needs the pre-change dist (its hooks/pre-tool.js layout) in BACKUPPER_ORIG_DIST; it is skipped
- * without it.
+ * Tier 1 by permission mode. Bypass keeps the in-hook rewrite: its output must match the
+ * pre-change hook for every rule (needs that build's dist in BACKUPPER_ORIG_DIST; skipped
+ * without it). Any other mode rewrites nothing: small state is saved as tier 2, file contents
+ * go to the tier-3 snapshot plus copies of what it does not hold, and the action stays
+ * unconfirmed (unlisted) until the post-tool hook reports that the call ran.
  */
 
 {
-const SUITES_CHAIN_MODE = ["bypass mode is unchanged", "non-bypass mode: copies && original, nothing executed in the hook"];
+const SUITES_PERMISSION_MODES = ["bypass mode is unchanged", "approval modes: no rewrite, tiers 2 and 3, unconfirmed until the call runs"];
 const PROJECT_ROOT = path.resolve(__dirname, "../../..");
-// argv of the built hooks: `hook.js pre` / `hook.js post`.
-const PRE_HOOK = [path.join(PROJECT_ROOT, "dist/hook.js"), "pre"];
-const POST_HOOK = [path.join(PROJECT_ROOT, "dist/hook.js"), "post"];
 const CLI = path.join(PROJECT_ROOT, "dist/cli.js");
 const ORIG = process.env.BACKUPPER_ORIG_DIST ?? "";
 
 let workspace: string;
 let originalCwd: string;
-beforeEach(onlyIn(SUITES_CHAIN_MODE, () => {
+let binDir: string;
+beforeEach(onlyIn(SUITES_PERMISSION_MODES, () => {
   originalCwd = process.cwd();
-  workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "backupper-chain-")));
+  workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "backupper-pm-")));
   process.chdir(workspace);
+  // docker, kubectl, helm and rsync only log their calls (and print what the rules read back).
+  binDir = path.join(workspace, "bin");
+  fs.mkdirSync(binDir);
+  const mock = (name: string, body = "") =>
+    fs.writeFileSync(path.join(binDir, name), `#!/bin/sh\necho "${name} $*" >> "${binDir}/calls.log"\n${body}\nexit 0\n`, { mode: 0o755 });
+  mock("docker", `case "$1" in inspect) echo 0123456789abcdef0123 ;; save) out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; echo tar > "$out" ;; esac`);
+  mock("kubectl", `[ "$1" = "get" ] && echo "kind: ConfigMap"`);
+  mock("helm", `case "$1" in status) echo "STATUS: deployed" ;; get) echo "values: {}" ;; history) echo "1 deployed" ;; esac`);
+  mock("rsync");
 }));
-afterEach(onlyIn(SUITES_CHAIN_MODE, () => {
+afterEach(onlyIn(SUITES_PERMISSION_MODES, () => {
   process.chdir(originalCwd);
   fs.rmSync(workspace, { recursive: true, force: true });
 }));
 
 function setup(dir: string): void {
-  execSync("git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false" +
-    " && printf 'v0\\n' > tracked.txt && git add tracked.txt && git commit -q -m init" +
-    " && printf 'stash\\n' > tracked.txt && git stash -q", { cwd: dir });
+  execSync("git init -q -b main && git config user.email t@t && git config user.name t && git config commit.gpgsign false" +
+    " && printf 'v0\\n' > tracked.txt && printf 'bin/\\n' > .gitignore && git add tracked.txt .gitignore && git commit -q -m init" +
+    " && git branch feat && printf 'stash\\n' > tracked.txt && git stash -q && printf 'dirty\\n' > tracked.txt", { cwd: dir });
   fs.writeFileSync(path.join(dir, "notes.txt"), "keep me\n");
   fs.writeFileSync(path.join(dir, "conf.txt"), "a=1\n");
+  fs.mkdirSync(path.join(dir, "logs"));
+  fs.writeFileSync(path.join(dir, "logs/x.log"), "log\n");
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src/s.txt"), "s\n");
+  fs.mkdirSync(path.join(dir, "dst"));
+  fs.writeFileSync(path.join(dir, "dst/old.txt"), "old\n");
+  fs.writeFileSync(path.join(dir, "untracked.txt"), "u\n");
   fs.mkdirSync(path.join(dir, ".backupper"));
   fs.writeFileSync(path.join(dir, ".backupper/config.json"), JSON.stringify({ mode: "checker", subagentEnabled: false }));
 }
 
-function hook(script: string[], cwd: string, agent: string, command: string, mode?: string, event = "PreToolUse") {
-  const env: NodeJS.ProcessEnv = { ...process.env, BACKUPPER_READONLY_CHECKER: "0" };
+function hook(sub: string[], cwd: string, input: Record<string, unknown>, mode?: string, event = "PreToolUse", agent = "claude-code") {
+  const env: NodeJS.ProcessEnv = { ...process.env, BACKUPPER_READONLY_CHECKER: "0", PATH: `${binDir}:${process.env.PATH}` };
   for (const k of ["BACKUPPER_NO_HOOK", "BACKUPPER_STORE_DIR", "BACKUPPER_NO_REWRITE", "TERMINAL_ENV", "BACKUPPER_EXEC_TARGET"]) delete env[k];
-  return spawnSync(process.execPath, [...script, "--agent", agent], {
+  return spawnSync(process.execPath, [...sub, "--agent", agent], {
     cwd, env, encoding: "utf-8",
     input: JSON.stringify({
-      hook_event_name: event, tool_name: "Bash", tool_input: { command }, cwd, session_id: "s1",
+      hook_event_name: event, cwd, session_id: "s1", ...input,
       ...(mode ? { permission_mode: mode } : {}),
     }),
   });
 }
+const bashCall = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
 
-const CMDS = ["rm notes.txt", "sed -i s/a/b/ conf.txt", "git stash drop"];
+/** One call per tier-1 rule. */
+function ruleCalls(dir: string): Array<Record<string, unknown>> {
+  return [
+    bashCall("rm notes.txt"),
+    bashCall("git reset --hard HEAD"),
+    bashCall("git branch -D feat"),
+    bashCall("git stash drop"),
+    bashCall("git push --force origin main"),
+    bashCall("git clean -f"),
+    bashCall("git worktree remove --force wt"),
+    bashCall("docker rm web"),
+    bashCall("docker volume rm vol"),
+    bashCall("docker rmi app:1"),
+    bashCall("kubectl delete configmap app-cfg -n prod"),
+    bashCall("helm uninstall rel"),
+    bashCall("mv notes.txt conf.txt"),
+    bashCall("sed -i s/a/b/ conf.txt"),
+    bashCall("truncate -s 0 conf.txt"),
+    bashCall("> conf.txt"),
+    bashCall("rsync -a --delete src/ dst/"),
+    bashCall("find logs -name '*.log' -delete"),
+    bashCall("git restore tracked.txt"),
+    bashCall("chmod 600 conf.txt"),
+    bashCall(`chown ${os.userInfo().uid} conf.txt`),
+    { tool_name: "Write", tool_input: { file_path: path.join(path.dirname(dir), `${path.basename(dir)}-new.txt`), content: "x\n" } },
+  ];
+}
 
 describe("bypass mode is unchanged", { skip: !ORIG && "BACKUPPER_ORIG_DIST not set" }, () => {
-  for (const agent of ["claude-code", "codex"]) {
-    for (const cmd of CMDS) {
-      it(`${agent}: ${cmd}`, () => {
-        const a = path.join(workspace, "a"), b = path.join(workspace, "b");
-        fs.mkdirSync(a); fs.mkdirSync(b);
-        setup(a); setup(b);
-        const now = hook(PRE_HOOK, a, agent, cmd, "bypassPermissions");
-        const old = hook([path.join(ORIG, "hooks/pre-tool.js")], b, agent, cmd, "bypassPermissions");
-        // The stash commit's sha differs between the two repos (commit time); the rest must match.
-        const norm = (s: string) => s.replace(/stash-\d+-[0-9a-f]+/g, "stash-N").replace(/\([0-9a-f]{12}\)/g, "(SHA)");
+  for (let i = 0; i < 22; i++) {
+    it(`rule call ${i + 1}`, () => {
+      const a = path.join(workspace, "a"), b = path.join(workspace, "b");
+      fs.mkdirSync(a); fs.mkdirSync(b);
+      for (const d of [a, b]) {
+        setup(d);
+        execSync(`git init -q --bare ${d}-remote.git && git remote add origin ${d}-remote.git && git push -q origin main && git worktree add -q wt -b wtb`, { cwd: d });
+      }
+      try {
+        const now = hook([path.join(PROJECT_ROOT, "dist/hook.js"), "pre"], a, ruleCalls(a)[i], "bypassPermissions");
+        const old = hook([path.join(ORIG, "hook.js"), "pre"], b, ruleCalls(b)[i], "bypassPermissions");
+        // Paths, timestamps, shas and random suffixes differ between the two runs; the rest must match.
+        const norm = (s: string, d: string) => s.split(d).join("W")
+          .replace(/\d{14}/g, "TS").replace(/\b[0-9a-f]{7,40}\b/g, "SHA").replace(/-[0-9a-z]{8,12}-(\d+)/g, "-NONCE-$1");
         assert.equal(now.status, old.status);
-        assert.equal(norm(now.stdout), norm(old.stdout));
-        assert.ok(now.stdout.length > 0);
-      });
-    }
+        assert.equal(norm(now.stdout, a), norm(old.stdout, b));
+        assert.ok(!fs.readdirSync(path.join(a, ".backupper/backups")).some((n) => n.startsWith("pending_")));
+      } finally {
+        for (const d of [a, b]) fs.rmSync(`${d}-new.txt`, { force: true });
+      }
+    });
   }
 });
 
-describe("non-bypass mode: copies && original, nothing executed in the hook", () => {
-  it("claude-code default: rm returns cp ... && rm notes.txt and leaves the file alone", () => {
-    setup(workspace);
-    const r = hook(PRE_HOOK, workspace, "claude-code", "rm notes.txt", "default");
+describe("approval modes: no rewrite, tiers 2 and 3, unconfirmed until the call runs", () => {
+  const PRE = [path.join(PROJECT_ROOT, "dist/hook.js"), "pre"];
+  const POST = [path.join(PROJECT_ROOT, "dist/hook.js"), "post"];
+  const PROMPT = [path.join(PROJECT_ROOT, "dist/hook.js"), "prompt"];
+  const cli = (...args: string[]) => spawnSync(process.execPath, [CLI, ...args], { cwd: workspace, encoding: "utf-8" });
+  const listed = () => (JSON.parse(cli("list", "--json").stdout) as { actions: Array<{ seq: number; strategies: string[]; tiers: number[] }> }).actions;
+  /** Pre-tool hook, the host running the command, then the post-tool hook. */
+  function run(command: string): void {
+    const r = hook(PRE, workspace, bashCall(command), "default");
     assert.equal(r.status, 0, r.stderr);
-    const out = JSON.parse(r.stdout).hookSpecificOutput;
-    assert.equal(out.permissionDecision, undefined);
-    assert.match(out.updatedInput.command, /^node \S+\/hook\.js capture \S+\/notes\.txt \S+\/trash\/\S+ && rm notes\.txt$/);
-    assert.equal(fs.readFileSync("notes.txt", "utf8"), "keep me\n");
-    const dir = fs.readdirSync(".backupper/backups").map((d) => path.join(".backupper/backups", d))[0];
-    assert.ok(!fs.existsSync(path.join(dir, "trash")), "the hook must not copy anything");
-    const meta = JSON.parse(fs.readFileSync(path.join(dir, "metadata.json"), "utf8"));
-    assert.equal(meta[0].backupOnly, true);
-    assert.equal(meta[0].deferredCopies.length, 1);
+    assert.doesNotMatch(r.stdout, /updatedInput/);
+    execSync(command, { cwd: workspace, shell: "/bin/bash", stdio: "pipe" });
+    hook(POST, workspace, bashCall(command), "default", "PostToolUse");
+  }
 
-    // The copy helper refuses a destination the hook did not record.
-    const helper = out.updatedInput.command.split(" ").slice(0, 3).join(" ");
-    assert.notEqual(spawnSync("sh", ["-c", `${helper} /etc/hostname ${path.join(workspace, dir, "trash", "x")}`]).status, 0);
-    assert.ok(!fs.existsSync(path.join(dir, "trash", "x")));
+  it("a rule that saves small state is recorded as tier 2", () => {
+    setup(workspace);
+    run("git branch -D feat");
+    const [a] = listed();
+    assert.deepEqual(a.strategies, ["command_pairing"]);
+    assert.deepEqual(a.tiers, [2]);
+    const rr = cli("restore", "1");
+    assert.equal(rr.status, 0, rr.stdout + rr.stderr);
+    assert.match(execSync("git branch", { encoding: "utf-8" }), /feat/);
+  });
 
-    // Host runs the chain; restore brings the file back.
-    execSync(out.updatedInput.command, { shell: "/bin/bash" });
-    assert.ok(!fs.existsSync("notes.txt"));
-    hook(POST_HOOK, workspace, "claude-code", out.updatedInput.command, "default", "PostToolUse");
-    const rr = spawnSync(process.execPath, [CLI, "restore", "last"], { cwd: workspace, encoding: "utf-8" });
+  it("file contents go to the snapshot; only an ignored target is copied", () => {
+    setup(workspace);
+    fs.appendFileSync(".gitignore", "data/\n");
+    fs.mkdirSync("data");
+    fs.writeFileSync("data/db.bin", "rows\n");
+    run("rm -rf notes.txt data");
+    const [a] = listed();
+    assert.deepEqual([...a.strategies].sort(), ["git_snapshot", "rule_copy"]);
+    const meta = JSON.parse(fs.readFileSync(path.join(".backupper/backups", fs.readdirSync(".backupper/backups")[0], "metadata.json"), "utf8"));
+    const copy = meta.find((m: { strategy: string }) => m.strategy === "rule_copy");
+    assert.deepEqual(copy.captures.map((c: { target: string }) => path.basename(c.target)), ["data"]);
+    const rr = cli("restore", "1");
     assert.equal(rr.status, 0, rr.stdout + rr.stderr);
     assert.equal(fs.readFileSync("notes.txt", "utf8"), "keep me\n");
+    assert.equal(fs.readFileSync("data/db.bin", "utf8"), "rows\n");
   });
 
-  it("a denied call (no copies ran) drops the action's claim", () => {
+  it("git reset --hard is left to the tier-2 git ref and the snapshot", () => {
     setup(workspace);
-    const r = hook(PRE_HOOK, workspace, "claude-code", "sed -i s/a/b/ conf.txt", "acceptEdits");
-    const out = JSON.parse(r.stdout).hookSpecificOutput;
-    assert.match(out.updatedInput.command, /&& sed -i s\/a\/b\/ conf\.txt$/);
-    assert.equal(fs.readFileSync("conf.txt", "utf8"), "a=1\n");
-    hook(POST_HOOK, workspace, "claude-code", "sed -i s/a/b/ conf.txt", "acceptEdits", "PostToolUse");
-    assert.deepEqual(fs.readdirSync(".backupper/backups"), []);
+    run("git reset --hard HEAD");
+    const [a] = listed();
+    assert.ok(!a.strategies.some((s) => ["policy_rewrite", "command_pairing", "rule_copy"].includes(s)), a.strategies.join());
+    assert.ok(a.strategies.includes("git_snapshot"));
+    const rr = cli("restore", "1");
+    assert.equal(rr.status, 0, rr.stdout + rr.stderr);
+    assert.equal(fs.readFileSync("tracked.txt", "utf8"), "dirty\n");
   });
 
-  it("codex default: carries permissionDecision allow with the chained command", () => {
+  it("a denied call keeps its backup but is not listed or numbered", () => {
     setup(workspace);
-    const r = hook(PRE_HOOK, workspace, "codex", "rm notes.txt", "default");
-    const out = JSON.parse(r.stdout).hookSpecificOutput;
-    assert.equal(out.permissionDecision, "allow");
-    assert.match(out.updatedInput.command, /&& rm notes\.txt$/);
-    assert.ok(fs.existsSync("notes.txt"));
+    hook(PRE, workspace, bashCall("rm notes.txt"), "default");   // denied: never runs, no post-tool hook
+    assert.deepEqual(listed(), []);
+    const pending = fs.readdirSync(".backupper/backups").filter((n) => n.startsWith("pending_"));
+    assert.equal(pending.length, 1);
+    run("sed -i s/a/b/ conf.txt");
+    const rows = listed();
+    assert.deepEqual(rows.map((r) => r.seq), [1]);
+    assert.ok(fs.existsSync(path.join(".backupper/backups", pending[0])), "the denied call's backup is kept");
+  });
+
+  it("a call that ran without a post-tool hook is confirmed at the next hook", () => {
+    setup(workspace);
+    hook(PRE, workspace, bashCall("rm notes.txt"), "default");
+    execSync("rm notes.txt");
+    assert.deepEqual(listed(), []);
+    hook(PROMPT, workspace, { prompt: "next" }, undefined, "UserPromptSubmit");
+    assert.deepEqual(listed().map((r) => r.seq), [1]);
+    const rr = cli("restore", "1");
+    assert.equal(rr.status, 0, rr.stdout + rr.stderr);
+    assert.equal(fs.readFileSync("notes.txt", "utf8"), "keep me\n");
   });
 });
 }
@@ -1000,7 +1078,7 @@ describe("backup-only mode through the installed hook (--agent codex)", () => {
     assert.equal(read("notes.txt"), "keep me\n");
   });
 
-  it("codex with BACKUPPER_NO_REWRITE=1: rm is captured without a rewrite, and `backupper restore` brings it back", () => {
+  it("codex with BACKUPPER_NO_REWRITE=1: rm is left to the snapshot, and `backupper restore` brings it back", () => {
     setup();
     fs.writeFileSync("notes.txt", "keep me\n");
     const r = runHook(workspace, "codex", "rm notes.txt", { BACKUPPER_NO_REWRITE: "1" });
@@ -1008,9 +1086,12 @@ describe("backup-only mode through the installed hook (--agent codex)", () => {
     assert.doesNotMatch(r.stdout, /updatedInput/);
     assert.equal(read("notes.txt"), "keep me\n");
     hostRuns("rm notes.txt");
+    spawnSync(process.execPath, [PRE_HOOK, "post", "--agent", "codex"], {
+      cwd: workspace, encoding: "utf-8",
+      input: JSON.stringify({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "rm notes.txt" }, cwd: workspace }),
+    });
     const meta = JSON.parse(read(path.join(fs.readdirSync(".backupper/backups").map((d) => path.join(".backupper/backups", d))[0], "metadata.json")));
-    assert.equal(meta[0].strategy, "policy_rewrite");
-    assert.equal(meta[0].backupOnly, true);
+    assert.deepEqual(meta.map((m: { strategy: string }) => m.strategy), ["git_snapshot"]);
     const rr = spawnSync(process.execPath, [CLI, "restore", "1"], { cwd: workspace, encoding: "utf-8" });
     assert.equal(rr.status, 0, rr.stdout + rr.stderr);
     assert.equal(read("notes.txt"), "keep me\n");

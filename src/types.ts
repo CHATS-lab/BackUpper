@@ -32,8 +32,8 @@ export interface HookContext {
   cwd?: string;
   /**
    * The host's permission mode for this call (`bypassPermissions`, `default`, `acceptEdits`,
-   * ...), when the host reports one. Selects how tier 1 hands its rewrite back (see
-   * agents.ts tier1Mode).
+   * ...), when the host reports one. Tier 1 rewrites only in a bypass mode (see agents.ts
+   * tier1Mode).
    */
   permission_mode?: string;
 }
@@ -352,6 +352,8 @@ export interface BackupArtifact {
     | "git_snapshot"
     | "subagent"
     | "policy_rewrite"
+    | "command_pairing"
+    | "rule_copy"
     | "learned_rule";
   /** Where the backup artifact lives */
   artifactPath: string;
@@ -373,28 +375,25 @@ export interface BackupArtifact {
    * on restore. `server` defaults to the action's own server.
    */
   recoveryMcpCalls?: Array<{ server?: string; tool: string; args: Record<string, unknown> }>;
-  /** policy_rewrite only: commands that reverse the rewrite, run on restore. */
+  /**
+   * A rule's artifact (policy_rewrite, command_pairing, rule_copy): commands that reverse the
+   * call, run on restore.
+   */
   recoveryCommands?: string[];
-  /** policy_rewrite only: id of the rule that fired. */
+  /** A rule's artifact: id of the rule that fired. */
   policyRuleId?: string;
   /**
-   * policy_rewrite only: the rule captured pre-state and executed nothing; the host ran the
-   * original command (backup-only mode, or a record-and-pass rule).
+   * A rule's artifact: the rule captured pre-state and executed nothing; the host ran the
+   * original command (no rewrite, or a record-and-pass rule).
    */
   backupOnly?: boolean;
-  /**
-   * policy_rewrite only (chain mode): the copies the hook prepended to the original command
-   * with `&&` instead of taking them itself. They exist only if the host ran the command; the
-   * hooks drop the artifact when any is missing (the call was denied or never ran).
-   */
-  deferredCopies?: string[];
   /** file_copy only: the absolute path the copy was taken from, i.e. where restore writes it. */
   targetPath?: string;
   /** file_copy only: the container the file lives in, when it was copied out of one. */
   containerId?: string;
   /** Subagent only: the pre-state could not be confirmed; reported to the agent. */
   unverified?: boolean;
-  /** policy_rewrite (copy-only) only: each target and the copy taken of it before the call. */
+  /** A rule's copy-only artifact: each target and the copy taken of it before the call. */
   captures?: Array<{ target: string; copy: string }>;
   /**
    * git_snapshot: file holding the modes, owners, empty directories and stash list recorded
@@ -402,7 +401,7 @@ export interface BackupArtifact {
    * external-shadow commit holds.
    */
   metaPath?: string;
-  /** policy_rewrite only: captured from one segment of a compound command (copy-only). */
+  /** A rule's artifact: captured from one segment of a compound command (copy-only). */
   segment?: string;
 }
 

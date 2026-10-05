@@ -16,10 +16,10 @@ BackUpper sits on the agent's pre-tool-call hook. Each call is checked before it
 
 ## Permission modes
 
-A pre-tool-call hook runs before the agent checks its own permissions, so a capture made inside the hook would happen even for a call that is later denied. BackUpper therefore picks how Tier 1 acts from the agent's permission mode:
+A pre-tool-call hook runs before the agent checks its own permissions, so a call may still be denied after the hook has run. BackUpper therefore picks how Tier 1 acts from the agent's permission mode:
 
-- **Bypass** (Claude Code `bypassPermissions`, or an equivalent no-approval mode): Tier 1 acts inside the hook and the agent receives the rewritten call, as in the table above. This is the setting used in the paper.
-- **Any other mode:** BackUpper performs nothing itself. It rewrites the command to `<copy the target> && <original command>`, so the copy happens only once the call is allowed, the agent's allow and deny rules still match the original command, and a denied call runs neither part. The copy is made by a small helper that `backupper install` allows in the agent's permission settings; it can only write the files recorded for that action. Targets over the size limit fall back to Tiers 3 and 4.
+- **Bypass** (Claude Code `bypassPermissions`, or an equivalent no-approval mode), on an agent that applies a rewritten call: Tier 1 acts inside the hook and the agent receives the rewritten call, as in the table above. This is the setting used in the paper.
+- **Any other mode**, or an agent that ignores a rewritten call (OpenHands, DeepSeek Harness, or `BACKUPPER_NO_REWRITE=1`): nothing is rewritten, and the original command runs once, under the agent's own permission checks. A rule that saves small state before the call (a branch or stash ref, a container or cluster object, a file mode) is recorded as Tier 2. File contents are left to the Tier-3 snapshot, plus copies of targets the snapshot does not hold (ignored files, paths outside the workspace, nested repositories). Such an action is listed and numbered only once the post-tool hook reports that the call ran; a denied call keeps its backup on disk, out of `list` and `restore`, until `backupper clear`. A call that ran without a post-tool hook (for example, the tool errored) is listed at the next hook, once its backup no longer matches the files.
 
 ## When Tier 4 runs
 

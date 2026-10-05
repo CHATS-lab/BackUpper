@@ -183,9 +183,8 @@ function runSilent(cmd: string): boolean {
 }
 
 /**
- * Chain mode (see agents.ts tier1Mode): while set, the copy-only captures below
- * record their copy commands here instead of running them, and the hook prepends them to the
- * original command with `&&`. Nothing is copied, moved or created inside the hook.
+ * While set, the copy-only captures below record their copy commands here instead of running
+ * them, so the caller can run only the copies the tier-3 snapshot does not already hold.
  */
 let deferredCopies: DeferredCopy[] | null = null;
 
@@ -1424,6 +1423,7 @@ const mvRule: PolicyRule = {
         ? `mv with clobber: snapshotted ${path.basename(landed)}; inverse mv recorded.`
         : `mv: recorded inverse mv ${path.basename(landed)} → ${path.basename(absSrc)}.`,
       ruleId: "mv-overwrite",
+      touched: [absSrc, landed],
     });
   },
 };
@@ -2370,6 +2370,8 @@ export interface PolicyRuleResult {
    * used by rules whose own recovery is partial (e.g. `git reset --hard`).
    */
   preserveLowerTiers?: boolean;
+  /** Paths the command changes besides the ones it copies (e.g. the source of a `mv`). */
+  touched?: string[];
 }
 
 export interface PolicyRule {
@@ -2408,6 +2410,8 @@ export interface PolicyApplyOptions {
    * Defaults to true.
    */
   rewrite?: boolean;
+  /** Rule ids that are not tried. */
+  skip?: readonly string[];
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -2682,6 +2686,7 @@ export function applyPolicyRules(
 
   for (const rule of POLICY_RULES) {
     if (rule.toolName !== ctx.tool_name) continue;
+    if (opts.skip?.includes(rule.id)) continue;
     if (rule.exclude && rule.exclude.test(commandOrJson)) continue;
     const m = commandOrJson.match(rule.pattern);
     if (!m) continue;

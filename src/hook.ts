@@ -6,7 +6,6 @@
  *                         hook response (exit 0 allows the call, 2 denies it)
  *   node hook.js post     PostToolUse / PostToolUseFailure: record what the call changed
  *   node hook.js prompt   UserPromptSubmit: the session briefing and the panel toggle
- *   node hook.js capture <src> <dest> [...]   chain-mode copy helper
  *
  * Every installed hook command also carries `--agent <name>` (see adoptHostAgent).
  */
@@ -21,7 +20,7 @@ import { readRestoreHistory } from "./restore/restore.js";
 import { execFileSync, spawn } from "node:child_process";
 import { configWarnings, getConfigPath, loadConfig } from "./config/load.js";
 import { evaluateFailOpen, captureEffect, logEffect } from "./engine.js";
-import { runBackup } from "./backup/strategies.js";
+import { confirmAction, runBackup, unconfirmedActionDirs } from "./backup/strategies.js";
 import { BRIEFING_CHECKER, render } from "./prompts.generated.js";
 import { panelCommand, parsePanelPrompt } from "./cli.js";
 
@@ -56,40 +55,35 @@ export function timingFilePath(ctx: HookContext): string {
 }
 
 // =============================================================================
-// ── deferred ──
+// ── unconfirmed actions ──
 // =============================================================================
 
 /**
- * Chain-mode bookkeeping: a tier-1 artifact whose copies were prepended to the command
- * (`deferredCopies`) is only real if the host ran the command. When any copy is missing (the
- * call was denied, or never ran), the artifact is dropped from the action's metadata; an
- * action left with no artifacts is removed together with its timing-ledger line.
+ * Without a rewrite the host may still deny the call after the pre-tool hook, so its action is
+ * kept unconfirmed (out of `list` and `restore`) until the post-tool hook confirms it ran.
+ * A call that ran without a post-tool hook (e.g. the tool errored) is confirmed at the next
+ * hook once its captures no longer match the live state; one that did not run stays
+ * unconfirmed, and `backupper clear` removes it.
  */
 
-export function settleDeferredCopies(actionDir: string | null | undefined): void {
-  if (!actionDir) return;
-  const metaPath = path.join(actionDir, "metadata.json");
-  const artifacts = readJson<BackupArtifact[] | null>(metaPath, null);
-  if (!Array.isArray(artifacts)) return;
-  const kept = artifacts.filter((a) => !a.deferredCopies?.length || a.deferredCopies.every((p) => fs.existsSync(p)));
-  if (kept.length === artifacts.length) return;
-  if (kept.length > 0) {
-    fs.writeFileSync(metaPath, JSON.stringify(kept, null, 2) + "\n", "utf-8");
-    return;
+/** True when something an unconfirmed action captured has demonstrably changed since. */
+function provablyChanged(actionDir: string): boolean {
+  const artifacts = readJson<BackupArtifact[] | null>(path.join(actionDir, "metadata.json"), null);
+  if (!Array.isArray(artifacts)) return false;
+  return artifacts.some((a) => {
+    if (a.strategy === "git_snapshot") return !workspaceMatchesSnapshot(a);
+    if (a.strategy === "file_copy") return typeof a.targetPath === "string" && !a.containerId && !sameTree(a.artifactPath, a.targetPath);
+    return (a.captures ?? []).some((c) => !sameTree(c.copy, c.target));
+  });
+}
+
+/** Confirm the unconfirmed actions whose call evidently ran. */
+export function settleUnconfirmed(config: SandboxConfig): void {
+  for (const dir of unconfirmedActionDirs(config)) {
+    try {
+      if (provablyChanged(dir)) confirmAction(dir);
+    } catch { /* never block the call */ }
   }
-  const actionName = path.basename(actionDir);
-  try { fs.rmSync(actionDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  try {
-    const ledger = path.join(path.dirname(path.dirname(actionDir)), "backup-timings.jsonl");
-    if (fs.existsSync(ledger)) {
-      const lines = fs.readFileSync(ledger, "utf-8").split("\n").filter((line) => {
-        if (!line.trim()) return false;
-        try { return (JSON.parse(line) as { action?: string }).action !== actionName; }
-        catch { return true; }
-      });
-      fs.writeFileSync(ledger, lines.length ? lines.join("\n") + "\n" : "");
-    }
-  } catch { /* ignore */ }
 }
 
 // =============================================================================
@@ -132,51 +126,6 @@ export function pendingRecoveryNotice(config: SandboxConfig): string | null {
       `Re-read open files before editing — their contents may have changed.`;
   } catch {
     return null;
-  }
-}
-
-// =============================================================================
-// ── capture ──
-// =============================================================================
-
-/**
- * Chain-mode copy helper: `node hook.js capture <src> <dest> [<src> <dest> ...]`.
- *
- * In a non-bypass permission mode the pre-tool hook executes nothing and hands the host
- * `node hook.js capture ... && <original command>`. Claude Code checks each `&&` segment on its own
- * and path-checks `cp`/`mkdir` against its deny rules (BackUpper denies file tools under
- * .backupper/), so the copies run through this subcommand, which `backupper install claude-code`
- * allows. It copies only into a trash folder the hook has just recorded: every <dest> must be
- * listed in the `deferredCopies` of that action's metadata.json and must not exist yet.
- * Exit 1 on any refusal or failure, so `&&` keeps the original command from running.
- */
-
-function fail(msg: string): never {
-  process.stderr.write(`[BackUpper] capture: ${msg}\n`);
-  process.exit(1);
-}
-
-/** `hook.js capture <src> <dest> [...]`. */
-function captureMain(): void {
-  const args = process.argv.slice(3);
-  if (args.length === 0 || args.length % 2 !== 0) fail("expected <src> <dest> pairs");
-  for (let i = 0; i < args.length; i += 2) {
-    const src = args[i];
-    const dest = args[i + 1];
-    if (!path.isAbsolute(dest) || path.resolve(dest) !== dest) fail(`not a normalized absolute path: ${dest}`);
-    const trash = path.dirname(dest);
-    if (path.basename(trash) !== "trash") fail(`not a trash folder: ${trash}`);
-    let listed = false;
-    const meta = readJson<unknown>(path.join(path.dirname(trash), "metadata.json"), null);
-    listed = Array.isArray(meta) && meta.some((a) => Array.isArray(a?.deferredCopies) && a.deferredCopies.includes(dest));
-    if (!listed) fail(`${dest} is not a copy the hook recorded`);
-    if (fs.existsSync(dest)) fail(`${dest} already exists`);
-    try {
-      fs.mkdirSync(trash, { recursive: true });
-      execFileSync("cp", ["-a", "--", src, dest], { stdio: ["ignore", "ignore", "inherit"] });
-    } catch (e) {
-      fail(`copy of ${src} failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
   }
 }
 
@@ -311,12 +260,7 @@ async function preToolMain(): Promise<void> {
 
   // ── BACKUP ───────────────────────────────────────────────────────
   if (result.decision === "backup") {
-    // A timing file no post-tool hook consumed belongs to a call that never ran (e.g. the user
-    // denied it); drop any chain-mode copies it claimed before this call replaces the file.
-    try {
-      const stale = JSON.parse(fs.readFileSync(timingFilePath(ctx), "utf-8")) as { actionDir?: string | null };
-      settleDeferredCopies(stale.actionDir);
-    } catch { /* no leftover */ }
+    settleUnconfirmed(config);
 
     const backupResult = runBackup(ctx, config);
 
@@ -490,8 +434,11 @@ async function postToolMain(): Promise<void> {
     // timing-ledger entry. A failed command may still have changed files (`printf x > f;
     // false`, `rm a missing`), so the backup is kept unless every capture still matches the
     // live state. Runs even when effect logging is off; never throws.
-    // Chain mode: drop the claim of copies the host never ran (the call was denied).
-    try { settleDeferredCopies(loadTimingFile(ctx)?.actionDir); } catch { /* non-fatal */ }
+    // The call ran: number and list its action.
+    try {
+      const timing = loadTimingFile(ctx);
+      if (timing?.actionDir) timing.actionDir = confirmAction(timing.actionDir);
+    } catch { /* non-fatal */ }
 
     try {
       const actionDir = loadTimingFile(ctx)?.actionDir;
@@ -675,6 +622,7 @@ function provablyUnchanged(actionDir: string): boolean {
         break;
       }
       case "policy_rewrite":
+      case "rule_copy":
         // A rewrite already moved things itself; a copy-only capture is unchanged only when
         // every target still matches its copy.
         if (!a.backupOnly || !a.captures?.length) return false;
@@ -778,6 +726,7 @@ async function userPromptMain(): Promise<void> {
   }
 
   const sandboxDir = storeRoot(config);
+  settleUnconfirmed(config);
 
   if (config.panel && !ownPanel) openPanelOnce(sandboxDir, String(ctx.session_id ?? "default"));
 
@@ -913,11 +862,8 @@ switch (process.argv[2]) {
       process.exit(0); // never block on internal errors
     });
     break;
-  case "capture":
-    captureMain();
-    break;
   default:
     // Exit 1, not 2: a host reads 2 from a PreToolUse hook as "deny the call".
-    process.stderr.write(`[BackUpper] usage: hook.js pre|post|prompt|capture [--agent <name>]\n`);
+    process.stderr.write(`[BackUpper] usage: hook.js pre|post|prompt [--agent <name>]\n`);
     process.exit(1);
 }

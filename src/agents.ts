@@ -24,8 +24,8 @@ import { readJsonObject, writeJson } from "./util.js";
  * Codex does when the same output also carries `permissionDecision: "allow"` (the pre-tool hook
  * adds it for Codex only; Codex still applies its approval policy and sandbox to the rewritten
  * command). OpenHands and DeepSeek Harness never apply a rewritten input. On a host that cannot
- * rewrite, tier 1 runs in backup-only mode: it captures a restorable copy and executes nothing
- * itself, so the host's own run of the command is the only one.
+ * rewrite, tier 1 runs in backup-only mode (see tier1Mode): the host's own run of the command
+ * is the only one.
  */
 
 export const CAN_REWRITE: Readonly<Record<string, boolean>> = {
@@ -54,14 +54,13 @@ export function tier1CanRewrite(env: NodeJS.ProcessEnv = process.env): boolean {
  * How tier 1 treats a matching call:
  * - "rewrite": run the backup (and, for most rules, the effect) inside the hook and hand the
  *   agent a no-op. Only safe when the host runs no approval step after the hook, i.e. in a
- *   bypass / full-auto permission mode, or when the host does not report a mode at all
- *   (older hosts and plugins; unchanged behaviour).
- * - "chain": the hook executes nothing; it returns `<copy commands> && <original command>`, so
- *   the host's own deny rules, exec policy and approval dialog still see (and can stop) the
- *   original command, and a failed copy stops it via `&&`.
- * - "backup-only": capture in the hook, never rewrite (BACKUPPER_NO_REWRITE=1, unknown host).
+ *   bypass / full-auto permission mode, or when the host does not report a mode at all.
+ * - "backup-only": nothing is rewritten and the host runs the original command. Rules that
+ *   save small state (refs, manifests, modes) record it as tier 2; rules that protect file
+ *   contents leave them to the tier-3 snapshot, plus copies of what the snapshot does not
+ *   hold. The action is recorded as pending until the post-tool hook confirms the call ran.
  */
-export type Tier1Mode = "rewrite" | "chain" | "backup-only";
+export type Tier1Mode = "rewrite" | "backup-only";
 
 export function tier1Mode(
   permissionMode: string | undefined,
@@ -70,18 +69,7 @@ export function tier1Mode(
   if (!tier1CanRewrite(env)) return "backup-only";
   if (env.BACKUPPER_NO_REWRITE === "0") return "rewrite";
   if (!permissionMode || permissionMode === "bypassPermissions") return "rewrite";
-  return "chain";
-}
-
-/**
- * The command that runs chain-mode copies: `node <dist>/hook.js capture`, with the path
- * double-quoted only when it needs quoting. `backupper install claude-code` allows exactly this
- * prefix (`Bash(<prefix>:*)`), so the copies need no approval of their own.
- */
-export function captureCommandPrefix(): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const p = require("node:path").join(__dirname, "hook.js") as string;
-  return /^[\w\/.@+-]+$/.test(p) ? `node ${p} capture` : `node "${p}" capture`;
+  return "backup-only";
 }
 
 // =============================================================================
@@ -116,16 +104,9 @@ const DENY_RULES = [
   "Grep(.backupper/**)",
 ];
 
-/**
- * Chain mode (a non-bypass permission mode) prepends `node <dist>/hook.js capture <copies> &&`
- * to a destructive command. Claude Code checks that segment on its own; this rule lets it run
- * without a prompt. The script only copies into a trash folder the hook has just recorded.
- */
-function captureAllowRule(): string {
-  return `Bash(${captureCommandPrefix()}:*)`;
-}
+/** The allow rule older installs added for their copy helper; removed on install and uninstall. */
 function isCaptureAllowRule(r: unknown): boolean {
-  // The current form (hook.js capture), and the hooks/capture.js form of older installs.
+  // The hook.js capture form and the hooks/capture.js form.
   return typeof r === "string" &&
     (/^Bash\(node (?:"[^"]*[\\/]hook\.js"|[^"\s]*[\\/]hook\.js) capture:\*\)$/.test(r) ||
       /^Bash\(node "?[^"]*[\\/]hooks[\\/]capture\.js"?:\*\)$/.test(r));
@@ -239,9 +220,6 @@ export const claudeCodeAdapter: AgentAdapter = {
     const deny = Array.isArray(perms.deny) ? (perms.deny as string[]) : [];
     for (const r of DENY_RULES) if (!deny.includes(r)) deny.push(r);
     perms.deny = deny;
-    const allow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
-    if (!allow.includes(captureAllowRule())) allow.push(captureAllowRule());
-    perms.allow = allow;
     settings.permissions = perms;
     writeJson(file, settings);
     log.push(`Hooks written to ${SETTINGS} (PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit)`);

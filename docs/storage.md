@@ -26,7 +26,7 @@ shadow-repo/                  Tier 3 git repository, shared by all actions
 backups/action_<N>_<time>/    one folder per backed-up action:
   metadata.json                 what each tier produced (the source of truth for restore)
   instruction.txt               the user prompt in effect
-  trash/                        Tier 1 files: moved-aside or copied victims, pre-images, saved shas
+  trash/                        rule files: moved-aside or copied victims, pre-images, saved shas
   pip_freeze_*.txt, ...         Tier 2 manifests
   <path>.pre-action             Tier 3 exact copy of a file edited outside the workspace
   pre/                          files the Tier 4 subagent copied before the action
@@ -35,6 +35,8 @@ backups/action_<N>_<time>/    one folder per backed-up action:
   subagent_<id>.run.json        the run's envelope: outcome, timing, runner, output sizes
   subagent_<id>.std{out,err}.txt  raw output, kept when a run fails
   subagent_<id>.transcript.*    the subagent's step transcript, or a .MISSING.txt note on why none
+backups/pending_<time>_<id>/  an action whose call has not been confirmed to run (outside bypass mode);
+                                renamed to the next action_<N>_<time> once it has, kept if it was denied
 current-instruction.txt       the latest user prompt, copied into each action folder
 announced-sessions.json       sessions already briefed about the [BACKUP NEEDED] marker
 panel.json                    the open side panel: terminal, pane id, `watch` pid

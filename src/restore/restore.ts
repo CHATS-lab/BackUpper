@@ -602,6 +602,8 @@ export async function restoreArtifact(
     case "subagent":
       return restoreSubagent(artifact, config);
     case "policy_rewrite":
+    case "command_pairing":
+    case "rule_copy":
       return restorePolicyRewrite(artifact);
     case "file_copy":
       return restoreFileCopy(artifact);
@@ -669,7 +671,7 @@ function restorePolicyRewrite(artifact: BackupArtifact): RestoreResult {
   if (commands.length === 0) {
     return {
       success: false,
-      description: `policy_rewrite artifact ${artifact.id} has no recovery commands`,
+      description: `${artifact.strategy} artifact ${artifact.id} has no recovery commands`,
     };
   }
   const cwd = process.cwd();
@@ -981,6 +983,11 @@ function changedBetween(shadowDir: string, from: string, to: string): string[] |
 const RESTORE_HINT = (seq: string) =>
   `To bring it back anyway, undo the whole action: \`backupper restore ${seq} --direct\` (only this action) or \`backupper restore ${seq}\` (this and every later action).`;
 
+/** An artifact recorded by a tier-1 rule, whether it rewrote the call or not. */
+function isRuleArtifact(a: BackupArtifact): boolean {
+  return a.strategy === "policy_rewrite" || a.strategy === "command_pairing" || a.strategy === "rule_copy";
+}
+
 /** Recovery pairs (captured copy → original path) recorded by tier-1 rules that copy or trash. */
 function trashPairs(a: BackupArtifact, actionDir: string): Array<{ from: string; to: string }> {
   const out: Array<{ from: string; to: string }> = [];
@@ -1012,7 +1019,7 @@ function restoreOneFile(actionName: string, artifacts: BackupArtifact[], wanted:
   if (copy) return restoreFileCopy(copy);
 
   // 2. A tier-1 trash or copy that holds the path (or a directory containing it).
-  for (const a of artifacts.filter((x) => x.strategy === "policy_rewrite")) {
+  for (const a of artifacts.filter(isRuleArtifact)) {
     for (const { from, to } of trashPairs(a, actionDir)) {
       let src: string | null = null;
       if (wanted === to) src = from;
@@ -1061,7 +1068,7 @@ function restoreOneFile(actionName: string, artifacts: BackupArtifact[], wanted:
   if (!inside || !snapshot) {
     const held = [
       ...artifacts.filter((a) => a.strategy === "file_copy").map((a) => fileCopyTarget(a)).filter((t): t is string => !!t),
-      ...artifacts.filter((a) => a.strategy === "policy_rewrite").flatMap((a) => trashPairs(a, actionDir).map((p) => p.to)),
+      ...artifacts.filter(isRuleArtifact).flatMap((a) => trashPairs(a, actionDir).map((p) => p.to)),
     ];
     return {
       success: false,
