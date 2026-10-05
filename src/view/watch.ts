@@ -59,12 +59,17 @@ export function clip(s: string, max: number): string {
   return one.length > max ? (max === 1 ? "…" : one.slice(0, max - 1) + "…") : one;
 }
 
-/** The headline tier of an action: its highest, i.e. the most specific capture. */
+/**
+ * The headline tier of an action: the capture most specific to this call. The Tier 3
+ * snapshot runs alongside the others as a workspace fallback, so it headlines only when
+ * nothing else captured; among the rest, Tier 4 > Tier 1 > Tier 2.
+ */
+const HEADLINE_RANK: Record<number, number> = { 4: 4, 1: 3, 2: 2, 3: 1 };
 export function headlineTier(a: ActionSummary): { tier: number; strategy: string } | null {
   let best: { tier: number; strategy: string } | null = null;
   for (const s of a.strategies) {
     const t = tierOf(s);
-    if (t !== null && (!best || t > best.tier)) best = { tier: t, strategy: s };
+    if (t !== null && (!best || (HEADLINE_RANK[t] ?? 0) > (HEADLINE_RANK[best.tier] ?? 0))) best = { tier: t, strategy: s };
   }
   return best;
 }
