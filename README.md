@@ -161,8 +161,9 @@ We also release **RegretBench**, a benchmark of 205 executable tasks grounded in
 
 ```bash
 # 1. Download benchmark tasks
-git clone https://huggingface.co/datasets/<org>/RegretBench
-cp -r RegretBench/tasks/* regretbench/tasks/
+git clone https://huggingface.co/datasets/CHATS-Lab/RegretBench
+(cd RegretBench && find workspaces -name '*.xz' -exec xz -d {} +)
+cp -r RegretBench/workspaces/* regretbench/tasks/
 
 # 2. Run a single task (requires the agent CLIs and Docker — see regretbench/README.md)
 regretbench/run_regretbench.sh --task <task> --harness codex --model gpt-5.6-sol --judge
