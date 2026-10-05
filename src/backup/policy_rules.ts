@@ -1,11 +1,11 @@
 /**
  * Tier-1 command-rewriting rules.
  *
- * Rewrite mode (hosts that apply a rewritten tool input: Claude Code, Hermes): a matching
+ * Rewrite mode (hosts that apply a rewritten tool input: Claude Code, Hermes, Codex): a matching
  * call is rewritten into a recoverable form, e.g. `rm -rf path` becomes a move into the
  * action folder's trash, and the agent runs a no-op in its place.
  *
- * Backup-only mode (hosts that ignore a rewritten input: Codex, or BACKUPPER_NO_REWRITE=1):
+ * Backup-only mode (BACKUPPER_NO_REWRITE=1, an unknown host, or a compound command segment):
  * a rule captures the pre-state (a copy, a saved sha, a dump) without executing or moving
  * anything, and the host runs the original command unchanged.
  *
@@ -26,6 +26,7 @@ import {
   stripShellComment,
 } from "./policy_rules_extra.js";
 import { foreignExecTarget, type ForeignExecTarget } from "./exec_target.js";
+import { uniqueCaptureName } from "./fsmeta.js";
 
 export interface PolicyRuleResult {
   /**
@@ -42,6 +43,11 @@ export interface PolicyRuleResult {
   deny?: string;
   /** Commands run before returning updatedInput (e.g. the move to trash). */
   preCommands: string[];
+  /**
+   * Copy-only captures: each target path and the copy taken of it. Lets the post-tool hook
+   * check whether a failed command changed anything before discarding the backup.
+   */
+  captures?: Array<{ target: string; copy: string }>;
   /** Commands that reverse the whole effect, run on restore. */
   recoveryCommands: string[];
   /** Human-readable summary for the action card. */
@@ -177,11 +183,9 @@ function parseRmArgs(command: string): { paths: string[]; flags: string } | null
   return { paths, flags: flags.join(" ") };
 }
 
-/** Encode a path for safe use as a filesystem name within trash/. */
+/** Encode a path for safe use as a filesystem name within trash/, unique per path. */
 function trashName(absPath: string, nonce: string): string {
-  // Replace / with __, strip leading underscores, cap length.
-  const enc = absPath.replace(/^\/+/, "").replace(/\//g, "__").slice(0, 200);
-  return `${nonce}_${enc}`;
+  return `${nonce}_${uniqueCaptureName("rm", absPath)}`;
 }
 
 // ── The rules ──────────────────────────────────────────────────────
@@ -231,6 +235,7 @@ export const POLICY_RULES: PolicyRule[] = [
         return {
           backupOnly: true,
           preCommands: copied.preCommands,
+          captures: copied.captures,
           recoveryCommands: copied.recoveryCommands,
           description: resolved.length === 1
             ? `rm → copied ${path.basename(resolved[0])} to trash before the rm ran (reversible)`
@@ -305,8 +310,9 @@ export const POLICY_RULES: PolicyRule[] = [
           return null;
         }
         preCommands.push(cmd);
-        // Recovery moves things back; prepend so we reverse in LIFO order.
-        recoveryCommands.unshift(`mv ${shq(trashPath)} ${shq(abs)}`);
+        // Recovery moves things back; prepend so we reverse in LIFO order. The parent is
+        // re-created first: a later snapshot restore drops directories this rm left empty.
+        recoveryCommands.unshift(`mkdir -p ${shq(path.dirname(abs))} && mv ${shq(trashPath)} ${shq(abs)}`);
       }
 
       // The deletion already happened via preCommands; the agent runs a no-op in its place.

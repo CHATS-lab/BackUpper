@@ -189,6 +189,35 @@ await test("hook capture, list/show --json, restore", () => {
   assert.equal(fs.readFileSync(path.join(p, "notes.txt"), "utf-8"), "keep me\n");
 });
 
+await test("restore brings back a file whose folder a later snapshot dropped", () => {
+  // rm empties data/ (tier 1); a later edit takes a workspace snapshot, and restoring that
+  // snapshot removes the now-empty data/ before the rm is undone.
+  const p = project("parentdir");
+  cli(p, "install", "claude-code");
+  cli(p, "config", "set", "subagentEnabled", "false");
+  fs.mkdirSync(path.join(p, "data"));
+  fs.writeFileSync(path.join(p, "data", "users.csv"), "id,name\n1,ada\n");
+  fs.writeFileSync(path.join(p, "requirements.txt"), "requests==2.0\n");
+  const settings = JSON.parse(fs.readFileSync(path.join(p, ".claude", "settings.local.json"), "utf-8"));
+  const pre = settings.hooks.PreToolUse[0].hooks[0].command;
+  const hook = (tool_name, tool_input) => {
+    const r = spawnSync("sh", ["-c", pre], {
+      cwd: p, env: ENV, encoding: "utf-8",
+      input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name, tool_input, cwd: p }),
+    });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  hook("Bash", { command: "rm data/users.csv" });
+  assert.ok(!fs.existsSync(path.join(p, "data", "users.csv")));
+  const req = path.join(p, "requirements.txt");
+  hook("Edit", { file_path: req, old_string: "requests==2.0", new_string: "requests==3.0" });
+  fs.writeFileSync(req, "requests==3.0\n");
+  const r = cli(p, "restore", "1");
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal(fs.readFileSync(path.join(p, "data", "users.csv"), "utf-8"), "id,name\n1,ada\n");
+  assert.equal(fs.readFileSync(req, "utf-8"), "requests==2.0\n");
+});
+
 await test("doctor reports and exits non-zero on a missing install", () => {
   const p = project("doctor");
   const r = cli(p, "doctor", "claude-code", "--json");

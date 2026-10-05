@@ -32,6 +32,8 @@ function version(): string {
 // ── Argument helpers ─────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
+/** The directory the CLI was started in (main() moves to the project root). */
+const CALLER_CWD = process.cwd();
 const JSON_OUT = argv.includes("--json");
 
 function flagValue(args: string[], name: string): string | undefined {
@@ -206,6 +208,7 @@ function listCommand(projectRoot: string, args: string[]): void {
   for (const a of shown) {
     const call = a.originalAction || a.toolName;
     console.log(`${String(a.seq).padStart(4)}  ${a.timeFormatted.padEnd(19)}  ${(a.tiers.join(",") || "-").padEnd(7)}  ${oneLine(call, 90)}`);
+    if (a.incomplete) console.log(`${" ".repeat(34)}INCOMPLETE: not captured: ${oneLine(a.incomplete.paths.length ? a.incomplete.paths.join(", ") : a.incomplete.segments.join(" | "), 80)}`);
     if (a.instruction) console.log(`${" ".repeat(34)}asked: "${oneLine(a.instruction, 70)}"`);
   }
   if (all.length > shown.length) console.log(`(${all.length - shown.length} older action(s) hidden; use --limit ${all.length})`);
@@ -252,6 +255,11 @@ function showCommand(projectRoot: string, args: string[]): void {
     if (undo.length > 5) console.log(`            (+${undo.length - 5} more undo commands; see --json)`);
     if (a.liveRestore) console.log("            restore re-derives the reversal with a fresh subagent (live restore)");
     if (a.unverified) console.log("            UNVERIFIED: the pre-state could not be confirmed");
+  }
+  if (d.incomplete) {
+    console.log(`  INCOMPLETE:  ${d.incomplete.reason}`);
+    for (const sgm of d.incomplete.segments.slice(0, 5)) console.log(`               not captured: ${oneLine(sgm, 150)}`);
+    if (d.incomplete.paths.length) console.log(`               paths a restore cannot bring back: ${oneLine(d.incomplete.paths.join(", "), 150)}`);
   }
   if (d.files.length) {
     console.log(`  Snapshot:    ${d.files.slice(0, 8).join(", ")}${d.files.length > 8 ? `, +${d.files.length - 8} more` : ""}`);
@@ -391,7 +399,7 @@ function diffCommand(projectRoot: string, args: string[]): void {
 
 function printRestoreResults(results: RestoreResult[]): void {
   for (const r of results) {
-    console.log(`  [${r.success ? "OK" : "FAIL"}] ${r.description}`);
+    console.log(`  [${r.warning ? "WARN" : r.success ? "OK" : "FAIL"}] ${r.description}`);
     if (/UNVERIFIED/i.test(r.description)) {
       console.log("       ^ recovery was re-derived from live state, not a captured snapshot; verify the result.");
     }
@@ -415,7 +423,9 @@ async function restoreCommand(projectRoot: string, args: string[]): Promise<void
   const name = resolveAction(config, ref);
   if (!name) fail(actionNames(config).length ? `No action ${ref}.` : "No actions recorded yet.", "backupper list");
   const restore = require("./restore/restore.js") as typeof import("./restore/restore.js");
-  const file = flagValue(args, "--file");
+  const rawFile = flagValue(args, "--file");
+  // A relative --file path is relative to where the command was run, not the project root.
+  const file = rawFile ? path.resolve(CALLER_CWD, rawFile) : undefined;
   let results: RestoreResult[];
   if (file) {
     console.log(`Restoring ${file} from the snapshot taken before ${name}\n`);
@@ -428,7 +438,9 @@ async function restoreCommand(projectRoot: string, args: string[]): Promise<void
     results = await restore.restoreActionLoop(name, config);
   }
   printRestoreResults(results);
+  // 1: a step failed. 3: every step ran, but some state was never captured (see [WARN]).
   if (results.some((r) => !r.success)) process.exitCode = 1;
+  else if (results.some((r) => r.warning)) process.exitCode = 3;
 }
 
 /** Store entries `clear` keeps: configuration and learned knowledge, not recorded backups. */
@@ -495,8 +507,8 @@ Side panel
 
 Undo
   restore <N|last>              Undo action N and every action after it
-  restore <N> --file <path>     Restore one file from action N (workspace snapshot or outside-file copy)
-  restore <N> --direct          Apply only action N's own artifacts
+  restore <N> --file <path>     Restore one path as it was before action N (snapshot, trash or outside copy)
+  restore <N> --direct          Undo only action N (later actions and their backups are kept)
   clear [--yes]                 Delete recorded backups (keeps hooks and config)
 
 Read commands (list, show, diff, status, config, doctor, demo) accept --json.

@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { BackupArtifact, SandboxConfig } from "../types.js";
+import type { BackupArtifact, IncompleteCapture, SandboxConfig } from "../types.js";
 import { dirSize } from "../backup/strategies.js";
 
 /** Tier that produces each artifact strategy. */
@@ -49,6 +49,8 @@ export interface ActionSummary {
   /** Latency the hook added to the tool call (ms), from backup-timings.jsonl. */
   backupMs?: number;
   storage: Array<{ strategy: string; path: string; ref?: string; sizeBytes?: number }>;
+  /** Set when part of the call's effect was not captured (incomplete.json). */
+  incomplete?: IncompleteCapture;
   subagent?: {
     description: string;
     externalShadowFileCount: number;
@@ -182,7 +184,8 @@ export function summarizeAction(
     let captured = 0;
     try {
       captured = fs.readdirSync(dir).filter((f) =>
-        !["metadata.json", "instruction.txt"].includes(f) && !/^subagent_.*\.json$/.test(f) && f !== "trash").length;
+        !["metadata.json", "instruction.txt", "incomplete.json"].includes(f) && !/^subagent_.*\.json$/.test(f) &&
+        !/^(?:snapshot|external-shadow)-meta-.*\.json$/.test(f) && f !== "trash").length;
     } catch { /* unreadable */ }
     subagent = {
       description: String(sub.description ?? "").replace(/^Subagent backup:\s*/, ""),
@@ -191,6 +194,9 @@ export function summarizeAction(
       liveRestore: Boolean(sub.liveRestore),
     };
   }
+
+  let incomplete: IncompleteCapture | undefined;
+  try { incomplete = JSON.parse(fs.readFileSync(path.join(dir, "incomplete.json"), "utf-8")); } catch { /* complete */ }
 
   const storage = artifacts
     .filter((a) => a.strategy)
@@ -220,6 +226,7 @@ export function summarizeAction(
     backupMs: timings?.[name],
     storage,
     subagent,
+    ...(incomplete ? { incomplete } : {}),
   };
 }
 

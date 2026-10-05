@@ -30,6 +30,12 @@ export interface HookContext {
   session_id?: string;
   /** Working directory of the tool call; relative paths in the arguments resolve against it. */
   cwd?: string;
+  /**
+   * The host's permission mode for this call (`bypassPermissions`, `default`, `acceptEdits`,
+   * ...), when the host reports one. Selects how tier 1 hands its rewrite back (see
+   * agents/capabilities.ts tier1Mode).
+   */
+  permission_mode?: string;
 }
 
 /** Compact label for a tool call, e.g. "Bash(rm x)"; picks the most relevant argument per tool. */
@@ -85,6 +91,7 @@ export function normalizeHookContext(parsed: unknown): HookContext {
     tool_output: p.tool_output ?? p.tool_response,
     session_id: typeof p.session_id === "string" ? p.session_id : undefined,
     cwd: typeof p.cwd === "string" ? p.cwd : undefined,
+    ...(typeof p.permission_mode === "string" ? { permission_mode: p.permission_mode } : {}),
   };
 }
 
@@ -455,12 +462,41 @@ export interface BackupArtifact {
    * original command (backup-only mode, or a record-and-pass rule).
    */
   backupOnly?: boolean;
+  /**
+   * policy_rewrite only (chain mode): the copies the hook prepended to the original command
+   * with `&&` instead of taking them itself. They exist only if the host ran the command; the
+   * hooks drop the artifact when any is missing (the call was denied or never ran).
+   */
+  deferredCopies?: string[];
   /** file_copy only: the absolute path the copy was taken from, i.e. where restore writes it. */
   targetPath?: string;
   /** file_copy only: the container the file lives in, when it was copied out of one. */
   containerId?: string;
   /** Subagent only: the pre-state could not be confirmed; reported to the agent. */
   unverified?: boolean;
+  /** policy_rewrite (copy-only) only: each target and the copy taken of it before the call. */
+  captures?: Array<{ target: string; copy: string }>;
+  /**
+   * git_snapshot: file holding the modes, owners, empty directories and stash list recorded
+   * with this snapshot (git keeps none of them). subagent: the modes/owners of the files its
+   * external-shadow commit holds.
+   */
+  metaPath?: string;
+  /** policy_rewrite only: captured from one segment of a compound command (copy-only). */
+  segment?: string;
+}
+
+/**
+ * Written as `incomplete.json` in an action folder when part of the call's effect was not
+ * captured by any tier: `list`/`show` flag the action and `restore` names what it cannot bring back.
+ */
+export interface IncompleteCapture {
+  /** Why the capture is incomplete. */
+  reason: string;
+  /** The command segments (or tool call) whose effect was not captured. */
+  segments: string[];
+  /** Paths those segments name, resolved where possible; may be empty when unknown. */
+  paths: string[];
 }
 
 // ── Effect manifest entry ────────────────────────────────────────────

@@ -14,6 +14,13 @@ BackUpper sits on the agent's pre-tool-call hook. Each call is checked before it
 | **3** | **Snapshot.** A commit in a private shadow git repo, plus an exact copy of a single file edited outside the workspace through a native tool. | before an `Edit`, or a script that rewrites files |
 | **4** | **Backup subagent.** A one-shot agent captures state no local snapshot can reach, and writes down how to restore it. | a database row, a mailbox, a cluster object, a web page |
 
+## Permission modes
+
+A pre-tool-call hook runs before the agent checks its own permissions, so a capture made inside the hook would happen even for a call that is later denied. BackUpper therefore picks how Tier 1 acts from the agent's permission mode:
+
+- **Bypass** (Claude Code `bypassPermissions`, or an equivalent no-approval mode): Tier 1 acts inside the hook and the agent receives the rewritten call, as in the table above. This is the setting used in the paper.
+- **Any other mode:** BackUpper performs nothing itself. It rewrites the command to `<copy the target> && <original command>`, so the copy happens only once the call is allowed, the agent's allow and deny rules still match the original command, and a denied call runs neither part. The copy is made by a small helper that `backupper install` allows in the agent's permission settings; it can only write the files recorded for that action. Targets over the size limit fall back to Tiers 3 and 4.
+
 ## When Tier 4 runs
 
 Tier 4 runs only when all of these hold:
@@ -41,7 +48,7 @@ Tier 4 runs only when all of these hold:
 
 ## Restore
 
-`restore N` undoes action N and every later action, newest first, replaying each tier's inverse: trashed files move back, packages are reinstalled from their manifests, snapshots are checked out, and Tier 4 recovery commands run. `--direct` applies only action N's own backups, which is useful when later actions touched unrelated state. When a Tier 4 backup needs a live restore, `restore` prints a prompt to give your agent instead. A file edited outside the workspace is copied back from its exact pre-action copy. A restore cannot bring back something that was never backed up.
+`restore N` undoes action N and every later action, newest first, replaying each tier's inverse: trashed files move back, packages are reinstalled from their manifests, snapshots are checked out, and Tier 4 recovery commands run. `--direct` undoes only action N: its own backups are applied (its workspace snapshot only to the paths action N changed), and later actions and their backups are kept. `--file <path>` puts back one path as it was before action N, from whichever capture of action N holds it (workspace snapshot, Tier 1 trash copy, outside-workspace copy or Tier 4 external snapshot). Snapshot restores also put back file modes, owners and empty directories, which git itself does not keep. An action whose effect was only partly captured is marked INCOMPLETE in `list` and `show`, and `restore` names what it could not bring back. When a Tier 4 backup needs a live restore, `restore` prints a prompt to give your agent instead. A file edited outside the workspace is copied back from its exact pre-action copy. A restore cannot bring back something that was never backed up.
 
 ## Failure handling
 

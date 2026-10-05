@@ -17,4 +17,4 @@ Then run:
 backupper restore $ARGUMENTS
 ```
 
-`restore N` undoes action N and every action after it. `--file <path>` restores a single workspace file from action N's snapshot. If a step prints a restore prompt for state outside the workspace, carry out that prompt's instructions. Report each step's result to the user.
+`restore N` undoes action N and every action after it. `--file <path>` restores a single path as it was before action N (from its snapshot, trash copy or outside-workspace copy). `--direct` undoes only action N. A `[WARN]` line names state that was never captured and so was not restored. If a step prints a restore prompt for state outside the workspace, carry out that prompt's instructions. Report each step's result to the user.

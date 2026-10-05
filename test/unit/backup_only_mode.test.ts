@@ -78,15 +78,16 @@ function initRepo(): void {
 }
 
 describe("backup-only mode: host capability", () => {
-  it("codex cannot rewrite; claude-code and hermes can", () => {
-    assert.equal(CAN_REWRITE.codex, false);
+  it("codex, claude-code and hermes can all rewrite", () => {
+    assert.equal(CAN_REWRITE.codex, true);
     assert.equal(CAN_REWRITE["claude-code"], true);
     assert.equal(CAN_REWRITE.hermes, true);
     for (const a of ALL_ADAPTERS) assert.equal(a.canRewrite, CAN_REWRITE[a.name], a.name);
   });
 
   it("follows the host tag, with BACKUPPER_NO_REWRITE as an override", () => {
-    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "codex" }), false);
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "codex" }), true);
+    assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "codex", BACKUPPER_NO_REWRITE: "1" }), false);
     assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "claude-code" }), true);
     assert.equal(tier1CanRewrite({ BACKUPPER_HOST_AGENT: "hermes" }), true);
     assert.equal(tier1CanRewrite({}), false, "an unknown host gets the mode that is safe everywhere");
@@ -434,10 +435,28 @@ describe("backup-only mode through the installed hook (--agent codex)", () => {
     fs.writeFileSync(".backupper/config.json", JSON.stringify({ mode: "checker", subagentEnabled: false }));
   }
 
-  it("codex: rm is captured without a rewrite, and `backupper restore` brings it back", () => {
+  it("codex: rm is rewritten with permissionDecision allow (Codex applies updatedInput only then)", () => {
     setup();
     fs.writeFileSync("notes.txt", "keep me\n");
     const r = runHook(workspace, "codex", "rm notes.txt");
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout).hookSpecificOutput;
+    assert.equal(out.permissionDecision, "allow");
+    assert.equal(typeof out.updatedInput.command, "string");
+    assert.match(out.updatedInput.command, /^true/);
+    assert.ok(!fs.existsSync("notes.txt"));
+    const meta = JSON.parse(read(path.join(fs.readdirSync(".backupper/backups").map((d) => path.join(".backupper/backups", d))[0], "metadata.json")));
+    assert.equal(meta[0].strategy, "policy_rewrite");
+    assert.notEqual(meta[0].backupOnly, true);
+    const rr = spawnSync(process.execPath, [CLI, "restore", "1"], { cwd: workspace, encoding: "utf-8" });
+    assert.equal(rr.status, 0, rr.stdout + rr.stderr);
+    assert.equal(read("notes.txt"), "keep me\n");
+  });
+
+  it("codex with BACKUPPER_NO_REWRITE=1: rm is captured without a rewrite, and `backupper restore` brings it back", () => {
+    setup();
+    fs.writeFileSync("notes.txt", "keep me\n");
+    const r = runHook(workspace, "codex", "rm notes.txt", { BACKUPPER_NO_REWRITE: "1" });
     assert.equal(r.status, 0, r.stderr);
     assert.doesNotMatch(r.stdout, /updatedInput/);
     assert.equal(read("notes.txt"), "keep me\n");
@@ -456,6 +475,8 @@ describe("backup-only mode through the installed hook (--agent codex)", () => {
     const r = runHook(workspace, "claude-code", "rm notes.txt");
     assert.equal(r.status, 0, r.stderr);
     assert.match(JSON.parse(r.stdout).hookSpecificOutput.updatedInput.command, /^true/);
+    // Claude Code is never told "allow": that would skip its own permission check.
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, undefined);
     assert.ok(!fs.existsSync("notes.txt"));
   });
 
@@ -471,7 +492,7 @@ describe("backup-only mode through the installed hook (--agent codex)", () => {
   it("codex: a command whose victims include the store is denied", () => {
     setup();
     fs.mkdirSync("sub");
-    const r = runHook(workspace, "codex", "find . -name config.json -delete");
+    const r = runHook(workspace, "codex", "find . -name config.json -delete", { BACKUPPER_NO_REWRITE: "1" });
     assert.equal(r.status, 2, r.stdout + r.stderr);
     assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
     assert.ok(fs.existsSync(".backupper/config.json"));

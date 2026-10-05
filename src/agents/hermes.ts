@@ -125,6 +125,26 @@ def _tool_input(tool_name: str, args: dict) -> dict:
     return payload
 
 
+def _permission_mode() -> str:
+    """Hermes asks for approval inside the terminal tool, after this hook. Report
+    "bypassPermissions" exactly when its guard approves without asking (mirrors
+    tools.approval.check_all_command_guards): --yolo, approvals.mode=off, or a
+    non-interactive run. Otherwise "default": BackUpper then executes nothing in the hook and
+    prepends its copies to the command, so a denied command changes nothing."""
+    if os.getenv("HERMES_YOLO_MODE"):
+        return "bypassPermissions"
+    try:
+        from tools.approval import _get_approval_mode
+        if _get_approval_mode() == "off":
+            return "bypassPermissions"
+    except Exception:
+        pass
+    if not (os.getenv("HERMES_INTERACTIVE") or os.getenv("HERMES_GATEWAY_SESSION")
+            or os.getenv("HERMES_EXEC_ASK")):
+        return "bypassPermissions"
+    return "default"
+
+
 def _pre_tool(tool_name: str = "", args: dict | None = None, session_id: str = "",
               tool_call_id: str = "", **_: object) -> None:
     if args is None:
@@ -137,6 +157,7 @@ def _pre_tool(tool_name: str = "", args: dict | None = None, session_id: str = "
         "session_id": session_id,
         "tool_use_id": tool_call_id,
         "cwd": os.getcwd(),
+        "permission_mode": _permission_mode(),
     }) or {}
     hso = out.get("hookSpecificOutput") or {}
     update = hso.get("updatedInput")

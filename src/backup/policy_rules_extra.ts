@@ -5,6 +5,7 @@ import { join } from "node:path";
 import * as path from "node:path";
 import type { HookContext } from "../types.js";
 import type { PolicyApplyOptions, PolicyRule, PolicyRuleResult } from "./policy_rules.js";
+import { uniqueCaptureName } from "./fsmeta.js";
 
 /*
  * EXTRA_RULES: tier-1 command-rewriting rules beyond the core `rm` rule in policy_rules.ts.
@@ -84,6 +85,28 @@ function runSilent(cmd: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Chain mode (see agents/capabilities.ts tier1Mode): while set, the copy-only captures below
+ * record their copy commands here instead of running them, and the hook prepends them to the
+ * original command with `&&`. Nothing is copied, moved or created inside the hook.
+ */
+let deferredCopies: DeferredCopy[] | null = null;
+
+/** One deferred copy: the command and the path it creates. */
+export interface DeferredCopy { command: string; src: string; dest: string }
+
+/** Run `fn` with copy commands deferred; returns its result and the copies it deferred. */
+export function withDeferredCopies<T>(fn: () => T): { result: T; commands: DeferredCopy[] } {
+  const prev = deferredCopies;
+  const commands: DeferredCopy[] = [];
+  deferredCopies = commands;
+  try {
+    return { result: fn(), commands };
+  } finally {
+    deferredCopies = prev;
   }
 }
 
@@ -242,27 +265,32 @@ function snapshotAndRun(
   describe: (n: number) => string,
   opts?: PolicyApplyOptions,
 ): PolicyRuleResult | null {
-  try {
-    fs.mkdirSync(trashDir, { recursive: true });
-  } catch {
-    return null;
+  if (!deferredCopies) {
+    try {
+      fs.mkdirSync(trashDir, { recursive: true });
+    } catch {
+      return null;
+    }
   }
-  const nonce = Date.now();
   const preCommands: string[] = [];
   const recoveryCommands: string[] = [];
+  const captures: Array<{ target: string; copy: string }> = [];
   for (const abs of absPaths) {
-    const trashFile = join(trashDir, `${ruleId}-${trashName(abs)}-${nonce}.bak`);
+    // Unique per target: sanitising or truncating two different paths can not collide.
+    const trashFile = join(trashDir, `${uniqueCaptureName(ruleId, abs)}.bak`);
     const cpCmd = `cp -a ${shq(abs)} ${shq(trashFile)}`;
-    if (!runSilent(cpCmd)) return null;
-    if (!existsSync(trashFile)) return null;
+    if (deferredCopies) deferredCopies.push({ command: cpCmd, src: abs, dest: trashFile });
+    else if (!runSilent(cpCmd) || !existsSync(trashFile)) return null;
     preCommands.push(cpCmd);
-    recoveryCommands.push(`cp -a ${shq(trashFile)} ${shq(abs)}`);
+    captures.push({ target: abs, copy: trashFile });
+    recoveryCommands.push(`mkdir -p ${shq(path.dirname(abs))} && cp -a ${shq(trashFile)} ${shq(abs)}`);
   }
   return finishRule(ctx, command, opts, {
     preCommands,
     recoveryCommands,
     description: describe(absPaths.length),
     ruleId,
+    captures,
   });
 }
 
@@ -440,7 +468,7 @@ function moveVictimsToTrash(
       logTier1Note(trashDir, ruleId, `stood down: cannot stat victim ${abs}. Moves unwound.`, storeRoot);
       return null;
     }
-    const dest = join(trashDir, `${ruleId}-${nonce}-${idx++}-${trashName(abs)}`);
+    const dest = join(trashDir, `${uniqueCaptureName(ruleId, abs)}-${nonce}-${idx++}`);
     const mv = `mv ${shq(abs)} ${shq(dest)}`;
     if (!runSilent(mv)) {
       unwind();
@@ -504,7 +532,7 @@ export function copyVictimsToTrash(
   trashDir: string,
   ruleId: string,
   storeRoot?: string,
-): { preCommands: string[]; recoveryCommands: string[] } | null {
+): { preCommands: string[]; recoveryCommands: string[]; captures: Array<{ target: string; copy: string }> } | null {
   const store = absPaths.filter((p) => isSandboxStorePath(p, trashDir, storeRoot));
   if (store.length > 0 || absPaths.length === 0) return null;
   let entries = 0;
@@ -522,20 +550,25 @@ export function copyVictimsToTrash(
       return null;
     }
   }
-  try {
-    fs.mkdirSync(trashDir, { recursive: true });
-  } catch {
-    return null;
+  if (!deferredCopies) {
+    try {
+      fs.mkdirSync(trashDir, { recursive: true });
+    } catch {
+      return null;
+    }
   }
   const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const preCommands: string[] = [];
   const copied: string[] = [];
   const recoveryPairs: string[][] = [];
+  const captures: Array<{ target: string; copy: string }> = [];
   let idx = 0;
   for (const abs of absPaths) {
-    const dest = join(trashDir, `${ruleId}-${nonce}-${idx++}-${trashName(abs)}`);
+    const dest = join(trashDir, `${uniqueCaptureName(ruleId, abs)}-${nonce}-${idx++}`);
     const cp = `cp -a ${shq(abs)} ${shq(dest)}`;
-    if (!runSilent(cp) || !existsSync(dest)) {
+    if (deferredCopies) {
+      deferredCopies.push({ command: cp, src: abs, dest });
+    } else if (!runSilent(cp) || !existsSync(dest)) {
       // Remove the partial copies; the originals were never touched.
       for (const d of [...copied, dest]) {
         try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
@@ -545,15 +578,16 @@ export function copyVictimsToTrash(
     }
     preCommands.push(cp);
     copied.push(dest);
+    captures.push({ target: abs, copy: dest });
     let isDir = false;
-    try { isDir = fs.lstatSync(dest).isDirectory(); } catch { /* treat as file */ }
+    try { isDir = fs.lstatSync(deferredCopies ? abs : dest).isDirectory(); } catch { /* treat as file */ }
     // A directory is copied back into place (merging if the path was re-created);
     // a file or symlink is copied over whatever now holds its path.
     recoveryPairs.push(isDir
       ? [`mkdir -p ${shq(abs)}`, `cp -a ${shq(dest + "/.")} ${shq(abs + "/")}`]
       : [`mkdir -p ${shq(path.dirname(abs))}`, `cp -a ${shq(dest)} ${shq(abs)}`]);
   }
-  return { preCommands, recoveryCommands: recoveryPairs.reverse().flat() };
+  return { preCommands, recoveryCommands: recoveryPairs.reverse().flat(), captures };
 }
 
 /**
@@ -692,6 +726,8 @@ const gitStashDrop: PolicyRule = {
     const sha = runCaptured(`git rev-parse --verify ${shq(stashRef)}`);
     if (sha === null || !/^[0-9a-f]{7,64}$/.test(sha)) return null;
 
+    // The stash's own message (its commit subject), so a restore recreates the same entry.
+    const message = runCaptured(`git log -1 --format=%s ${shq(sha)}`) || "backupper recovered stash";
     const backupRef = `refs/backupper/stash-${Date.now()}-${sha.slice(0, 8)}`;
     const backupCmd = `git update-ref ${shq(backupRef)} ${sha}`;
     if (!runSilent(backupCmd)) return null;
@@ -699,7 +735,7 @@ const gitStashDrop: PolicyRule = {
     return finishRule(ctx, command, opts, {
       preCommands: [backupCmd],
       recoveryCommands: [
-        `git stash store -m ${shq("backupper recovered stash")} ${sha}`,
+        `git stash store -m ${shq(message)} ${sha}`,
         `git update-ref -d ${shq(backupRef)}`,
       ],
       description: `Backed up ${stashRef} (${sha.slice(0, 12)}) under ${backupRef} before drop.`,
@@ -1100,7 +1136,7 @@ function recordSubtreeAttrs(
   }
   const scriptFile = join(
     trashDir,
-    `${ruleId}-recursive-${trashName(path.basename(absPaths[0]))}-${Date.now()}.sh`,
+    `${uniqueCaptureName(`${ruleId}-recursive`, absPaths.join("\0"))}.sh`,
   );
   try {
     fs.writeFileSync(
@@ -1170,8 +1206,10 @@ const chmodRule: PolicyRule = {
     const preCommands: string[] = [];
     const recoveryCommands: string[] = [];
     for (const a of abs) {
-      let mode = runCaptured(`stat -c %a ${shq(a)}`);
-      if (!mode) mode = runCaptured(`stat -f %Lp ${shq(a)}`);
+      // chmod follows symlinks, so the mode to record is the target's (stat -L), not the
+      // link's own 0777; recording the link's mode would chmod the target to 777 on restore.
+      let mode = runCaptured(`stat -L -c %a ${shq(a)}`);
+      if (!mode) mode = runCaptured(`stat -L -f %Lp ${shq(a)}`);
       if (!mode || !/^[0-7]{3,4}$/.test(mode)) return null;
       preCommands.push(`# recorded mode ${mode} for ${a}`);
       recoveryCommands.push(`chmod ${mode} ${shq(a)}`);
@@ -1328,10 +1366,12 @@ const mvRule: PolicyRule = {
     }
     if (landed === absSrc) return null; // no-op / self move
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
+    if (!deferredCopies) {
+      try {
+        fs.mkdirSync(trashDir, { recursive: true });
+      } catch {
+        return null;
+      }
     }
 
     const preCommands: string[] = [];
@@ -1343,16 +1383,17 @@ const mvRule: PolicyRule = {
       return null;
     }
     if (clobbered) {
-      backupFile = join(trashDir, `mv-clobbered-${trashName(landed)}-${Date.now()}.bak`);
+      backupFile = join(trashDir, `${uniqueCaptureName("mv-clobbered", landed)}.bak`);
       const cpCmd = `cp -a ${shq(landed)} ${shq(backupFile)}`;
-      if (!runSilent(cpCmd)) return null;
-      if (!existsSync(backupFile)) return null;
+      if (deferredCopies) deferredCopies.push({ command: cpCmd, src: landed, dest: backupFile });
+      else if (!runSilent(cpCmd) || !existsSync(backupFile)) return null;
       preCommands.push(cpCmd);
     }
 
-    const recoveryCommands: string[] = [`mv ${shq(landed)} ${shq(absSrc)}`];
+    // Parents are re-created first: a later snapshot restore drops directories left empty.
+    const recoveryCommands: string[] = [`mkdir -p ${shq(path.dirname(absSrc))} && mv ${shq(landed)} ${shq(absSrc)}`];
     if (clobbered && backupFile) {
-      recoveryCommands.push(`cp -a ${shq(backupFile)} ${shq(landed)}`);
+      recoveryCommands.push(`mkdir -p ${shq(path.dirname(landed))} && cp -a ${shq(backupFile)} ${shq(landed)}`);
     }
 
     return finishRule(ctx, command, opts, {
@@ -1385,6 +1426,7 @@ const sedInPlace: PolicyRule = {
     if (tokens[0] !== "sed") return null;
 
     let inPlace = false;
+    let suffix = "";
     const positional: string[] = [];
     for (let i = 1; i < tokens.length; i++) {
       const t = tokens[i];
@@ -1395,6 +1437,8 @@ const sedInPlace: PolicyRule = {
         t.startsWith("--in-place=")
       ) {
         inPlace = true;
+        if (t.startsWith("-i.")) suffix = t.slice(2);
+        else if (t.startsWith("--in-place=")) suffix = t.slice("--in-place=".length);
         continue;
       }
       // Script-supplying flags make file identification ambiguous: bail.
@@ -1416,7 +1460,11 @@ const sedInPlace: PolicyRule = {
       if (a === null) return null;
       abs.push(a);
     }
-    return snapshotAndRun(
+    // `sed -i.bak` also creates FILE.bak; a restore removes the ones that did not exist before.
+    const createdBackups = suffix && /^[A-Za-z0-9._~-]+$/.test(suffix)
+      ? abs.map((a) => a + suffix).filter((c) => !existsSync(c))
+      : [];
+    const r = snapshotAndRun(
       ctx,
       command,
       abs,
@@ -1425,6 +1473,8 @@ const sedInPlace: PolicyRule = {
       (n) => `Snapshotted ${n} file${n === 1 ? "" : "s"} before sed -i.`,
       opts,
     );
+    if (r) for (const c of createdBackups) r.recoveryCommands.push(`rm -f ${shq(c)}`);
+    return r;
   },
 };
 
@@ -1685,6 +1735,7 @@ const gitClean: PolicyRule = {
       return {
         backupOnly: true,
         preCommands: copied.preCommands,
+        captures: copied.captures,
         recoveryCommands: copied.recoveryCommands,
         description: `git clean → copied ${roots.length} untracked path(s) to trash before the clean ran (reversible).`,
         ruleId: "git-clean",
@@ -1830,7 +1881,7 @@ const gitWorktreeRemove: PolicyRule = {
 
     const base = join(
       trashDir,
-      `git-worktree-${trashName(path.basename(absWt))}-${Date.now()}`,
+      uniqueCaptureName("git-worktree", absWt),
     );
     try {
       fs.mkdirSync(base, { recursive: true });
@@ -1915,18 +1966,20 @@ const rsyncDelete: PolicyRule = {
     const entries = countTreeEntries(absDest);
     if (entries === null || entries > MAX_TREE_ENTRIES) return null;
 
-    try {
-      fs.mkdirSync(trashDir, { recursive: true });
-    } catch {
-      return null;
+    if (!deferredCopies) {
+      try {
+        fs.mkdirSync(trashDir, { recursive: true });
+      } catch {
+        return null;
+      }
     }
     const snap = join(
       trashDir,
-      `rsync-dest-${trashName(path.basename(absDest))}-${Date.now()}`,
+      uniqueCaptureName("rsync-dest", absDest),
     );
     const cpCmd = `cp -a ${shq(absDest)} ${shq(snap)}`;
-    if (!runSilent(cpCmd)) return null;
-    if (!existsSync(snap)) return null;
+    if (deferredCopies) deferredCopies.push({ command: cpCmd, src: absDest, dest: snap });
+    else if (!runSilent(cpCmd) || !existsSync(snap)) return null;
 
     return finishRule(ctx, command, opts, {
       preCommands: [cpCmd],
@@ -2057,6 +2110,7 @@ const findDelete: PolicyRule = {
       return {
         backupOnly: true,
         preCommands: copied.preCommands,
+        captures: copied.captures,
         recoveryCommands: copied.recoveryCommands,
         description: `find → copied ${roots.length} matched path(s) to trash before the delete ran (reversible).`,
         ruleId: "find-delete",

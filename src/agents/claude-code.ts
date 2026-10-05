@@ -8,7 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
-import { CAN_REWRITE } from "./capabilities.js";
+import { CAN_REWRITE, captureCommandPrefix } from "./capabilities.js";
 import type { AgentAdapter, AgentInstallResult, HookStatus } from "./index.js";
 import { hookCommand, isOurCommand, readJsonObject, removeEmptyDirs, scriptOf, writeJson } from "./index.js";
 
@@ -32,6 +32,18 @@ const DENY_RULES = [
   "Glob(.backupper/**)",
   "Grep(.backupper/**)",
 ];
+
+/**
+ * Chain mode (a non-bypass permission mode) prepends `node <dist>/hooks/capture.js <copies> &&`
+ * to a destructive command. Claude Code checks that segment on its own; this rule lets it run
+ * without a prompt. The script only copies into a trash folder the hook has just recorded.
+ */
+function captureAllowRule(): string {
+  return `Bash(${captureCommandPrefix()}:*)`;
+}
+function isCaptureAllowRule(r: unknown): boolean {
+  return typeof r === "string" && /^Bash\(node "?[^"]*[\\/]hooks[\\/]capture\.js"?:\*\)$/.test(r);
+}
 
 type HookGroup = { matcher?: string; hooks?: Array<{ type?: string; command?: string }> };
 
@@ -67,6 +79,12 @@ function stripSettings(settings: Record<string, unknown>): boolean {
     if (Object.keys(hooks).length === 0) delete settings.hooks;
   }
   const perms = settings.permissions as Record<string, unknown> | undefined;
+  if (perms && Array.isArray(perms.allow)) {
+    const kept = (perms.allow as string[]).filter((r) => !isCaptureAllowRule(r));
+    if (kept.length !== perms.allow.length) changed = true;
+    if (kept.length) perms.allow = kept;
+    else delete perms.allow;
+  }
   if (perms && Array.isArray(perms.deny)) {
     const kept = (perms.deny as string[]).filter((r) => !DENY_RULES.includes(r));
     if (kept.length !== perms.deny.length) changed = true;
@@ -135,6 +153,9 @@ export const claudeCodeAdapter: AgentAdapter = {
     const deny = Array.isArray(perms.deny) ? (perms.deny as string[]) : [];
     for (const r of DENY_RULES) if (!deny.includes(r)) deny.push(r);
     perms.deny = deny;
+    const allow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
+    if (!allow.includes(captureAllowRule())) allow.push(captureAllowRule());
+    perms.allow = allow;
     settings.permissions = perms;
     writeJson(file, settings);
     log.push(`Hooks written to ${SETTINGS} (PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit)`);

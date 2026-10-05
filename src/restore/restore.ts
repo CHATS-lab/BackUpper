@@ -9,11 +9,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
-import type { BackupArtifact, SandboxConfig } from "../types.js";
+import type { BackupArtifact, IncompleteCapture, SandboxConfig } from "../types.js";
 import { listActions } from "../backup/manifest.js";
 import { invokeRestoreSubagent } from "../backup/subagent.js";
 import { serverFromToolName } from "../explore/experiences.js";
 import { callMcpTool, callMcpToolHttp } from "../explore/list_mcp_tools.js";
+import { applyTreeMeta, currentExternalShadowMeta, externalShadowFiles, externalShadowSpecs, readTreeMeta, type TreeMeta } from "../backup/fsmeta.js";
+import { wordsAndRedirects } from "../backup/compound.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -26,6 +28,8 @@ export interface RestoreResult {
   /** Restore ran but its outcome cannot be verified (e.g. remote state);
    *  such a result blocks pruning of the backup. */
   unverified?: boolean;
+  /** Not a failure of a step, but something the user must know (e.g. state never captured). */
+  warning?: boolean;
 }
 
 // ── Shell helper ─────────────────────────────────────────────────────
@@ -218,7 +222,56 @@ function restoreGitTag(artifact: BackupArtifact): RestoreResult {
   return { success: false, description: `git reset failed: ${resetResult.stdout.slice(0, 200)}` };
 }
 
-function restoreGitSnapshot(artifact: BackupArtifact): RestoreResult {
+/** Options for a snapshot restore. */
+interface SnapshotRestoreOptions {
+  /**
+   * Restore only these workspace paths (relative): the ones the action changed, for
+   * `restore N --direct`. Undefined restores the whole tree.
+   */
+  scope?: { paths: string[]; nextMeta: TreeMeta | null };
+}
+
+/** `git` in the real project (never the shadow repo). */
+function projectGit(args: string[], cwd: string): { ok: boolean; out: string } {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  try {
+    return { ok: true, out: execFileSync("git", args, { cwd, env, encoding: "utf-8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] }).trim() };
+  } catch (e: unknown) {
+    return { ok: false, out: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Drop stash entries that are not in `keep` (they were created after the snapshot). Returns
+ * the number dropped. Entries are dropped highest index first so indexes stay valid.
+ */
+function dropStashesNotIn(cwd: string, keep: Set<string>, only?: Set<string>): number {
+  if (!fs.existsSync(path.join(cwd, ".git"))) return 0;
+  const list = projectGit(["stash", "list", "--format=%H"], cwd);
+  if (!list.ok) return 0;
+  const shas = list.out.split("\n").filter(Boolean);
+  let dropped = 0;
+  for (let i = shas.length - 1; i >= 0; i--) {
+    if (keep.has(shas[i])) continue;
+    if (only && !only.has(shas[i])) continue;
+    if (projectGit(["stash", "drop", "-q", `stash@{${i}}`], cwd).ok) dropped++;
+  }
+  return dropped;
+}
+
+/** Reapply a snapshot's recorded modes/owners/empty dirs; returns a note for the result. */
+function applySnapshotMeta(meta: TreeMeta | null, only?: (rel: string) => boolean): string {
+  if (!meta) return "";
+  const r = applyTreeMeta(meta, only);
+  return r.failed.length
+    ? `; could not reapply mode/owner of ${r.failed.length} path(s): ${r.failed.slice(0, 5).join(", ")}`
+    : "";
+}
+
+function restoreGitSnapshot(artifact: BackupArtifact, sopts: SnapshotRestoreOptions = {}): RestoreResult {
   const shadowDir = artifact.artifactPath;
   if (!fs.existsSync(shadowDir)) {
     return { success: false, description: `Shadow repo not found: ${shadowDir}` };
@@ -255,16 +308,68 @@ function restoreGitSnapshot(artifact: BackupArtifact): RestoreResult {
 
   const opts = { encoding: "utf-8" as const, timeout: 30_000, env, cwd, stdio: "pipe" as const };
 
+  const meta = readTreeMeta(artifact.metaPath);
   try {
+    if (sopts.scope) {
+      // Only the paths this action changed: each is checked out from the commit, or removed
+      // when the commit did not have it.
+      const restored: string[] = [];
+      for (const rel of sopts.scope.paths) {
+        const inCommit = (() => {
+          try { execFileSync("git", ["cat-file", "-e", `${commit}:${rel}`], { ...opts, stdio: "pipe" } as never); return true; }
+          catch { return false; }
+        })();
+        if (inCommit) {
+          execFileSync("git", ["checkout", commit, "--", rel], { ...opts, stdio: "pipe" } as never);
+        } else {
+          fs.rmSync(path.join(cwd, rel), { recursive: true, force: true });
+          // Directories the action's file was the last entry of go with it.
+          let d = path.dirname(path.join(cwd, rel));
+          while (d.startsWith(cwd + path.sep)) {
+            try { if (fs.readdirSync(d).length) break; fs.rmdirSync(d); } catch { break; }
+            d = path.dirname(d);
+          }
+        }
+        restored.push(rel);
+      }
+      // Modes the action changed, and empty directories it removed.
+      const next = sopts.scope.nextMeta;
+      let note = "";
+      if (meta) {
+        const nextBy = new Map((next?.entries ?? []).map((e) => [e.p, e]));
+        const changedMode = new Set(meta.entries
+          .filter((e) => { const n = nextBy.get(e.p); return !n || n.mode !== e.mode || n.uid !== e.uid || n.gid !== e.gid; })
+          .map((e) => e.p));
+        const nextEmpty = new Set(next?.emptyDirs ?? []);
+        const scopeSet = new Set(restored);
+        note = applySnapshotMeta(meta, (rel) =>
+          scopeSet.has(rel) || [...scopeSet].some((p) => rel.startsWith(p + "/")) ||
+          (next ? changedMode.has(rel) || (meta.emptyDirs.includes(rel) && !nextEmpty.has(rel)) : false));
+        if (next) {
+          const created = new Set((next.stash ?? []).filter((h) => !(meta.stash ?? []).includes(h)));
+          if (created.size) dropStashesNotIn(cwd, new Set(meta.stash ?? []), created);
+        }
+      }
+      return {
+        success: true,
+        description: `Restored the ${restored.length} path(s) this action changed from git snapshot (${commit.slice(0, 8)})${note}`,
+      };
+    }
     // read-tree + checkout-index + clean makes the workspace match the
     // commit exactly, including removing files added after it.
     execSync(`git read-tree ${commit}`, opts);
     execSync("git checkout-index -f -a", opts);
     execSync("git clean -fd", opts);
+    // git keeps neither modes beyond the executable bit, nor owners, nor empty directories.
+    let note = applySnapshotMeta(meta);
+    if (meta?.stash) {
+      const n = dropStashesNotIn(cwd, new Set(meta.stash));
+      if (n) note += `; dropped ${n} stash entr${n === 1 ? "y" : "ies"} created after the snapshot`;
+    }
 
     return {
       success: true,
-      description: `Restored workspace from git snapshot (${commit.slice(0, 8)})`,
+      description: `Restored workspace from git snapshot (${commit.slice(0, 8)})${note}`,
     };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -332,6 +437,7 @@ async function restoreSubagent(
   if (recoveryCommands.length > 0) {
     const cwd = process.cwd();
     const ran: string[] = [];
+    const modesBefore = readTreeMeta(artifact.metaPath) ?? currentExternalShadowMeta(recoveryCommands);
     for (const cmd of recoveryCommands) {
       if (isDangerousRecoveryCommand(cmd)) {
         return {
@@ -353,6 +459,7 @@ async function restoreSubagent(
         };
       }
     }
+    if (modesBefore) applyTreeMeta(modesBefore);
     return {
       success: true,
       description: `Subagent restore: ran ${ran.length} deterministic shell reverter command(s) — ${artifact.description}`,
@@ -381,6 +488,9 @@ async function restoreSubagent(
   // Local reversal: run each command in order, stopping on the first failure.
   const cwd = process.cwd();
   const executed: string[] = [];
+  // An external-shadow checkout writes files back as 0644/0755: reapply the modes recorded at
+  // capture time, or else the ones the files have right now (an edit keeps a file's mode).
+  const modesBefore = readTreeMeta(artifact.metaPath) ?? currentExternalShadowMeta(commands);
   for (const cmd of commands) {
     if (isDangerousRecoveryCommand(cmd)) {
       return {
@@ -408,6 +518,7 @@ async function restoreSubagent(
     }
   }
 
+  if (modesBefore) applyTreeMeta(modesBefore);
   return {
     success: true,
     description: `Subagent restore: executed ${executed.length} recovery command(s) — ${artifact.description}`,
@@ -475,6 +586,7 @@ export function buildSubagentRestorePrompt(artifact: BackupArtifact): string {
 export async function restoreArtifact(
   artifact: BackupArtifact,
   config?: SandboxConfig,
+  snapshotOpts?: SnapshotRestoreOptions,
 ): Promise<RestoreResult> {
   switch (artifact.strategy) {
     case "pip_freeze":
@@ -486,7 +598,7 @@ export async function restoreArtifact(
     case "git_tag":
       return restoreGitTag(artifact);
     case "git_snapshot":
-      return restoreGitSnapshot(artifact);
+      return restoreGitSnapshot(artifact, snapshotOpts);
     case "subagent":
       return restoreSubagent(artifact, config);
     case "policy_rewrite":
@@ -548,7 +660,9 @@ function restoreFileCopy(artifact: BackupArtifact): RestoreResult {
 
 /**
  * Reverse a tier-1 command rewrite (e.g. rm → move-to-trash) by running its
- * recorded recovery commands.
+ * recorded recovery commands. The shapes tier 1 records (`mkdir -p`, `mv TRASH PATH`,
+ * `cp -a TRASH PATH`) are carried out here rather than by a shell, so a path that now exists
+ * as a directory is merged into instead of having the trashed item nested inside it.
  */
 function restorePolicyRewrite(artifact: BackupArtifact): RestoreResult {
   const commands = artifact.recoveryCommands ?? [];
@@ -560,7 +674,22 @@ function restorePolicyRewrite(artifact: BackupArtifact): RestoreResult {
   }
   const cwd = process.cwd();
   const executed: string[] = [];
+  const notes: string[] = [];
   for (const cmd of commands) {
+    const steps = parseRecoverySteps(cmd);
+    if (steps) {
+      const r = runRecoverySteps(steps, cwd);
+      notes.push(...r.notes);
+      if (!r.ok) {
+        return {
+          success: false,
+          description:
+            `Policy restore partially ran (${executed.length}/${commands.length}): ${r.error}`,
+        };
+      }
+      executed.push(cmd);
+      continue;
+    }
     try {
       execSync(cmd, { encoding: "utf-8", timeout: 30_000, cwd, stdio: ["pipe", "pipe", "pipe"] });
       executed.push(cmd);
@@ -576,8 +705,144 @@ function restorePolicyRewrite(artifact: BackupArtifact): RestoreResult {
   }
   return {
     success: true,
-    description: `Policy restore (${artifact.policyRuleId}): ran ${executed.length} recovery command(s) — ${artifact.description}`,
+    description: `Policy restore (${artifact.policyRuleId}): ran ${executed.length} recovery command(s) — ${artifact.description}` +
+      (notes.length ? `; ${notes.join("; ")}` : ""),
   };
+}
+
+type RecoveryStep =
+  | { op: "mkdir"; path: string }
+  | { op: "mv"; from: string; to: string }
+  | { op: "cp"; from: string; to: string; contents: boolean };
+
+/** Parse a recovery command built only of `mkdir -p X`, `mv A B` and `cp -a A B` joined by `&&`. */
+export function parseRecoverySteps(cmd: string): RecoveryStep[] | null {
+  const parsed = wordsAndRedirects(cmd);
+  if (!parsed || parsed.redirects.length) return null;
+  const parts: string[][] = [[]];
+  for (const w of parsed.words) {
+    if (w === "&&") parts.push([]);
+    else parts[parts.length - 1].push(w);
+  }
+  const steps: RecoveryStep[] = [];
+  for (const p of parts) {
+    if (p.length === 3 && p[0] === "mkdir" && p[1] === "-p") steps.push({ op: "mkdir", path: p[2] });
+    else if (p.length === 3 && p[0] === "mv" && !p[1].startsWith("-") && !p[2].startsWith("-")) steps.push({ op: "mv", from: p[1], to: p[2] });
+    else if (p.length === 4 && p[0] === "cp" && p[1] === "-a" && !p[2].startsWith("-") && !p[3].startsWith("-")) {
+      const contents = p[2].endsWith("/.") && p[3].endsWith("/");
+      steps.push({
+        op: "cp",
+        from: contents ? p[2].slice(0, -2) : p[2],
+        to: contents ? p[3].replace(/\/+$/, "") : p[3],
+        contents,
+      });
+    } else return null;
+  }
+  return steps.length ? steps : null;
+}
+
+function lstatOrNull(p: string): fs.Stats | null {
+  try { return fs.lstatSync(p); } catch { return null; }
+}
+
+/** rename, falling back to copy + remove across filesystems. */
+function moveEntry(from: string, to: string): void {
+  try {
+    fs.renameSync(from, to);
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+    execFileSync("cp", ["-a", from, to], { stdio: "pipe" });
+    fs.rmSync(from, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Move the contents of directory `from` into the existing directory `to`. An entry present on
+ * both sides takes the captured version; the newer one it displaces is kept inside `from`
+ * (which then stays in the trash) so nothing is lost. Returns the number of displaced entries.
+ */
+function mergeDirInto(from: string, to: string, stamp: string): number {
+  let displaced = 0;
+  for (const name of fs.readdirSync(from)) {
+    const src = path.join(from, name);
+    const dst = path.join(to, name);
+    const ss = lstatOrNull(src);
+    const ds = lstatOrNull(dst);
+    if (!ss) continue;
+    if (!ds) { moveEntry(src, dst); continue; }
+    if (ss.isDirectory() && ds.isDirectory()) { displaced += mergeDirInto(src, dst, stamp); continue; }
+    moveEntry(dst, `${src}.newer-${stamp}`);
+    moveEntry(src, dst);
+    displaced++;
+  }
+  // Remove what is now empty; keep anything displaced.
+  try { if (fs.readdirSync(from).length === 0) fs.rmdirSync(from); } catch { /* kept */ }
+  return displaced;
+}
+
+/** Copy the contents of `from` into the existing directory `to` (cp -a semantics, merged). */
+function copyDirInto(from: string, to: string): void {
+  execFileSync("cp", ["-a", `${from}/.`, `${to}/`], { stdio: "pipe" });
+}
+
+function runRecoverySteps(steps: RecoveryStep[], cwd: string): { ok: boolean; notes: string[]; error?: string } {
+  const notes: string[] = [];
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+  const abs = (p: string) => path.resolve(cwd, p);
+  try {
+    for (const st of steps) {
+      if (st.op === "mkdir") {
+        const p = abs(st.path);
+        const s = lstatOrNull(p);
+        if (s && !s.isDirectory()) {
+          return { ok: false, notes, error: `${p} now exists as a file, so its directory cannot be re-created; nothing was moved` };
+        }
+        fs.mkdirSync(p, { recursive: true });
+        continue;
+      }
+      const from = abs(st.from);
+      const to = abs(st.to);
+      const fs0 = lstatOrNull(from);
+      if (!fs0) return { ok: false, notes, error: `the captured copy ${from} is missing` };
+      const ts = lstatOrNull(to);
+      const fromDir = fs0.isDirectory();
+      const toDir = !!ts && ts.isDirectory();
+      if (st.op === "mv") {
+        if (!ts) { moveEntry(from, to); continue; }
+        if (fromDir && toDir) {
+          const displaced = mergeDirInto(from, to, stamp);
+          notes.push(`${to} existed again as a directory: merged the captured contents into it` +
+            (displaced ? ` (${displaced} newer entr${displaced === 1 ? "y" : "ies"} it replaced kept at ${from})` : ""));
+          continue;
+        }
+        if (toDir) {
+          return { ok: false, notes, error: `${to} is now a directory, so the captured file was NOT moved into it; it is still at ${from}` };
+        }
+        if (fromDir) {
+          return { ok: false, notes, error: `${to} now exists as a file, so the captured directory was NOT moved over it; it is still at ${from}` };
+        }
+        // A file over a file (or a link): the captured version replaces it.
+        moveEntry(from, to);
+        continue;
+      }
+      // cp -a
+      if (fromDir) {
+        if (ts && !toDir) return { ok: false, notes, error: `${to} now exists as a file, so the captured directory was NOT copied over it; it is still at ${from}` };
+        if (!ts) fs.mkdirSync(to, { recursive: true });
+        else if (!st.contents) notes.push(`${to} existed again as a directory: merged the captured contents into it`);
+        copyDirInto(from, to);
+        continue;
+      }
+      if (toDir) {
+        return { ok: false, notes, error: `${to} is now a directory, so the captured file was NOT copied into it; it is still at ${from}` };
+      }
+      execFileSync("cp", ["-a", "--remove-destination", from, to], { stdio: "pipe" });
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, notes, error: msg.slice(0, 200) };
+  }
+  return { ok: true, notes };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -634,9 +899,203 @@ function collapseGitSnapshots(artifacts: BackupArtifact[]): BackupArtifact[] {
   });
 }
 
+/** Artifacts that move the project's branch (`git reset --hard` to a saved sha or tag). */
+function movesBranch(a: BackupArtifact): boolean {
+  return a.strategy === "git_tag" || (a.strategy === "policy_rewrite" && a.policyRuleId === "git-reset-hard");
+}
+
 /**
- * Direct restore: apply action N's artifacts in one step, then prune later
- * folders after a successful full (non --file) restore.
+ * The order an action's artifacts are applied in: branch moves first (a `git reset --hard`
+ * resets the worktree), then the snapshot (which puts saved uncommitted changes back on top),
+ * then everything else in recorded order.
+ */
+function restoreOrder(artifacts: BackupArtifact[]): BackupArtifact[] {
+  const list = collapseGitSnapshots(artifacts);
+  return [...list.filter(movesBranch), ...list.filter((a) => !movesBranch(a))];
+}
+
+/** After an action's artifacts all restored, delete the git tags it created (backupper/pre-*). */
+function removeActionTags(artifacts: BackupArtifact[]): void {
+  for (const a of artifacts) {
+    if (a.strategy !== "git_tag") continue;
+    const tag = String(a.artifactPath ?? "");
+    if (!/^backupper\/pre-[A-Za-z0-9._-]+$/.test(tag)) continue;
+    projectGit(["tag", "-d", tag], process.cwd());
+  }
+}
+
+/** Restore every artifact of one action in restoreOrder; removes its tags when all succeeded. */
+async function restoreOneAction(
+  artifacts: BackupArtifact[],
+  config: SandboxConfig,
+  snapshotOpts?: SnapshotRestoreOptions,
+): Promise<RestoreResult[]> {
+  const results: RestoreResult[] = [];
+  for (const a of restoreOrder(artifacts)) {
+    results.push(await restoreArtifact(a, config, a.strategy === "git_snapshot" ? snapshotOpts : undefined));
+  }
+  if (allSucceeded(results)) removeActionTags(artifacts);
+  return results;
+}
+
+/** Warnings for an action recorded as incompletely captured (incomplete.json). */
+function incompleteWarnings(actionName: string, config: SandboxConfig): RestoreResult[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(path.resolve(config.backupDir), actionName, "incomplete.json"), "utf-8")) as IncompleteCapture;
+    const what = raw.paths?.length ? raw.paths.join(", ") : (raw.segments ?? []).join(" | ");
+    return [{
+      success: true,
+      warning: true,
+      description:
+        `${actionName} was INCOMPLETELY captured (${raw.reason}). NOT restored, because no backup of it exists: ` +
+        `${what.slice(0, 600)}` + (raw.paths?.length && raw.segments?.length ? ` (from: ${raw.segments.join(" | ").slice(0, 300)})` : ""),
+    }];
+  } catch {
+    return [];
+  }
+}
+
+/** The first git_snapshot taken after `actionName` (by a later action), with its manifest. */
+function nextSnapshotAfter(actionName: string, config: SandboxConfig): BackupArtifact | null {
+  const actions = listRestorableActions(config);
+  const idx = actions.findIndex((a) => a.name === actionName);
+  for (let i = idx + 1; i >= 1 && i < actions.length; i++) {
+    const snap = actions[i].artifacts.find((a) => a.strategy === "git_snapshot");
+    if (snap) return snap;
+  }
+  return null;
+}
+
+/** Paths that differ between two shadow commits (what the actions between them changed). */
+function changedBetween(shadowDir: string, from: string, to: string): string[] | null {
+  try {
+    return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", from, to], {
+      encoding: "utf-8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_DIR: shadowDir },
+    }).split("\0").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+const RESTORE_HINT = (seq: string) =>
+  `To bring it back anyway, undo the whole action: \`backupper restore ${seq} --direct\` (only this action) or \`backupper restore ${seq}\` (this and every later action).`;
+
+/** Recovery pairs (captured copy → original path) recorded by tier-1 rules that copy or trash. */
+function trashPairs(a: BackupArtifact, actionDir: string): Array<{ from: string; to: string }> {
+  const out: Array<{ from: string; to: string }> = [];
+  for (const c of a.captures ?? []) out.push({ from: c.copy, to: c.target });
+  for (const cmd of a.recoveryCommands ?? []) {
+    for (const st of parseRecoverySteps(cmd) ?? []) {
+      if (st.op === "mkdir") continue;
+      const from = path.resolve(st.from);
+      // Only copies held in this action's store, never the inverse `mv` of a rename.
+      if (!from.startsWith(actionDir + path.sep)) continue;
+      out.push({ from, to: path.resolve(st.to) });
+    }
+  }
+  return out;
+}
+
+/**
+ * `restore N --file PATH`: put back one path as it was right before action N, from whichever
+ * capture of action N holds it: an outside-workspace copy, a tier-1 trash copy, a tier-4
+ * external-shadow commit, or the workspace snapshot.
+ */
+function restoreOneFile(actionName: string, artifacts: BackupArtifact[], wanted: string, config: SandboxConfig): RestoreResult {
+  const cwd = process.cwd();
+  const seq = String(parseInt(actionName.split("_")[1] ?? "0", 10));
+  const actionDir = path.join(path.resolve(config.backupDir), actionName);
+
+  // 1. Exact pre-image copy of a file outside the workspace.
+  const copy = artifacts.find((a) => a.strategy === "file_copy" && fileCopyTarget(a) === wanted);
+  if (copy) return restoreFileCopy(copy);
+
+  // 2. A tier-1 trash or copy that holds the path (or a directory containing it).
+  for (const a of artifacts.filter((x) => x.strategy === "policy_rewrite")) {
+    for (const { from, to } of trashPairs(a, actionDir)) {
+      let src: string | null = null;
+      if (wanted === to) src = from;
+      else if (wanted.startsWith(to + path.sep)) {
+        const inner = path.join(from, path.relative(to, wanted));
+        if (lstatOrNull(inner)) src = inner;
+      }
+      if (!src || !lstatOrNull(src)) continue;
+      const r = runRecoverySteps([
+        { op: "mkdir", path: path.dirname(wanted) },
+        { op: "cp", from: src, to: wanted, contents: false },
+      ], cwd);
+      return r.ok
+        ? { success: true, description: `Restored ${wanted} from the copy action ${seq} captured (${path.basename(src)})${r.notes.length ? "; " + r.notes.join("; ") : ""}` }
+        : { success: false, description: `Restoring ${wanted} from ${src} failed: ${r.error}. ${RESTORE_HINT(seq)}` };
+    }
+  }
+
+  // 3. A tier-4 external-shadow commit that holds the file.
+  for (const a of artifacts.filter((x) => x.strategy === "subagent")) {
+    const cmds = [...(a.subagentCommands ?? []), ...(a.recoveryCommands ?? [])];
+    for (const spec of externalShadowSpecs(cmds)) {
+      const root = path.resolve(spec.workTree);
+      if (!(wanted === root || wanted.startsWith(root + path.sep))) continue;
+      const rel = path.relative(root, wanted);
+      if (!externalShadowFiles(spec).some((f) => f === rel || f.startsWith(rel + "/"))) continue;
+      const before = readTreeMeta(a.metaPath) ?? currentExternalShadowMeta(cmds);
+      try {
+        execFileSync("git", ["checkout", spec.commit, "--", rel], {
+          cwd: root, encoding: "utf-8", timeout: 30_000, stdio: "pipe",
+          env: { ...process.env, GIT_DIR: spec.gitDir, GIT_WORK_TREE: root },
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { success: false, description: `Restoring ${wanted} from the external snapshot failed: ${msg.slice(0, 200)}. ${RESTORE_HINT(seq)}` };
+      }
+      if (before) applyTreeMeta({ ...before, entries: before.entries.filter((e) => e.p === wanted || e.p.startsWith(wanted + "/")) });
+      return { success: true, description: `Restored ${wanted} from action ${seq}'s external snapshot (${spec.commit.slice(0, 8)})` };
+    }
+  }
+
+  // 4. The workspace snapshot.
+  const rel = path.relative(cwd, wanted);
+  const inside = !(rel.startsWith("..") || path.isAbsolute(rel));
+  const snapshot = artifacts.find((a) => a.strategy === "git_snapshot");
+  if (!inside || !snapshot) {
+    const held = [
+      ...artifacts.filter((a) => a.strategy === "file_copy").map((a) => fileCopyTarget(a)).filter((t): t is string => !!t),
+      ...artifacts.filter((a) => a.strategy === "policy_rewrite").flatMap((a) => trashPairs(a, actionDir).map((p) => p.to)),
+    ];
+    return {
+      success: false,
+      description: `${actionName} holds no copy of ${wanted}` +
+        (held.length ? ` (it captured: ${[...new Set(held)].slice(0, 10).join(", ")})` : "") +
+        `. ${RESTORE_HINT(seq)}`,
+    };
+  }
+  const shadowDir = snapshot.artifactPath;
+  const commit = snapshot.commitHash ?? snapshot.id;
+  const env = { ...process.env, GIT_DIR: shadowDir, GIT_WORK_TREE: cwd };
+  try {
+    execFileSync("git", ["cat-file", "-e", `${commit}:${rel.split(path.sep).join("/")}`], { env, cwd, stdio: "pipe" });
+  } catch {
+    return {
+      success: false,
+      description: `${wanted} was not in the workspace snapshot taken before ${actionName} (it did not exist then, or is excluded from snapshots). ${RESTORE_HINT(seq)}`,
+    };
+  }
+  try {
+    execFileSync("git", ["checkout", commit, "--", rel], { encoding: "utf-8", timeout: 30_000, env, cwd, stdio: "pipe" });
+    const relPosix = rel.split(path.sep).join("/");
+    const note = applySnapshotMeta(readTreeMeta(snapshot.metaPath), (p) => p === relPosix || p.startsWith(relPosix + "/"));
+    return { success: true, description: `Restored ${rel} from ${actionName} snapshot${note}` };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { success: false, description: `File restore failed: ${msg.slice(0, 200)}. ${RESTORE_HINT(seq)}` };
+  }
+}
+
+/**
+ * Direct restore: apply only action N's own artifacts. Its workspace snapshot is limited to the
+ * paths action N changed (the difference to the next snapshot), and no action folder is pruned,
+ * since later actions were not undone and their backups are still needed.
  */
 async function restoreActionDirectInner(
   actionName: string,
@@ -659,70 +1118,21 @@ async function restoreActionDirectInner(
   }
 
   if (options?.fileOnly) {
-    const cwd = process.cwd();
-    const wanted = path.resolve(cwd, options.fileOnly);
-    // A file outside the workspace comes back from its exact pre-image copy (tier 3 file_copy).
-    const copy = artifacts.find((a) => a.strategy === "file_copy" && fileCopyTarget(a) === wanted);
-    if (copy) return [restoreFileCopy(copy)];
-    const rel = path.relative(cwd, wanted);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) {
-      const copied = artifacts
-        .filter((a) => a.strategy === "file_copy")
-        .map((a) => fileCopyTarget(a))
-        .filter((t): t is string => !!t);
-      return [{
-        success: false,
-        description: `${wanted} is outside the workspace and ${actionName} holds no copy of it` +
-          (copied.length ? ` (it copied: ${copied.join(", ")})` : ""),
-      }];
-    }
-    const snapshot = artifacts.find((a) => a.strategy === "git_snapshot");
-    if (!snapshot) {
-      return [{ success: false, description: `No git snapshot found in ${actionName}` }];
-    }
-
-    const shadowDir = snapshot.artifactPath;
-    // Use this action's commit, not HEAD.
-    const commit = snapshot.commitHash ?? snapshot.id;
-    if (!commit) {
-      return [{ success: false, description: "Snapshot is missing commit hash" }];
-    }
-
-    try {
-      execFileSync("git", ["checkout", commit, "--", rel], {
-        encoding: "utf-8",
-        timeout: 30_000,
-        env: { ...process.env, GIT_DIR: shadowDir, GIT_WORK_TREE: cwd },
-        cwd,
-        stdio: "pipe",
-      });
-      // Single-file restore does not prune.
-      return [{
-        success: true,
-        description: `Restored ${options.fileOnly} from ${actionName} snapshot`,
-      }];
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return [{ success: false, description: `File restore failed: ${msg.slice(0, 200)}` }];
-    }
+    // Relative paths are resolved by the caller (the CLI uses the directory it was run from).
+    const wanted = path.resolve(process.cwd(), options.fileOnly);
+    return [restoreOneFile(actionName, artifacts, wanted, config)];
   }
 
-  // Full restore: apply artifacts, then prune intermediate folders.
-  const results: RestoreResult[] = [];
-  for (const a of collapseGitSnapshots(artifacts)) {
-    results.push(await restoreArtifact(a, config));
+  // Only this action: its snapshot covers just what it changed when a later snapshot exists.
+  let snapshotOpts: SnapshotRestoreOptions | undefined;
+  const snap = artifacts.find((a) => a.strategy === "git_snapshot");
+  const next = snap ? nextSnapshotAfter(actionName, config) : null;
+  if (snap && next && next.artifactPath === snap.artifactPath) {
+    const paths = changedBetween(snap.artifactPath, snap.commitHash ?? snap.id, next.commitHash ?? next.id);
+    if (paths) snapshotOpts = { scope: { paths, nextMeta: readTreeMeta(next.metaPath) } };
   }
-
-  if (allSucceeded(results)) {
-    const deleted = pruneIntermediateFolders(actionName, config);
-    if (deleted > 0) {
-      results.push({
-        success: true,
-        description: `Pruned ${deleted} intermediate action folder${deleted === 1 ? "" : "s"}`,
-      });
-    }
-  }
-
+  const results = await restoreOneAction(artifacts, config, snapshotOpts);
+  results.push(...incompleteWarnings(actionName, config));
   return results;
 }
 
@@ -747,6 +1157,7 @@ async function restoreActionLoopInner(
   let anyFailed = false;
   // Set when any step restored unverifiable remote state; blocks pruning.
   let anyUnverified = false;
+  const warnings: RestoreResult[] = [];
 
   // Undo actions from the latest down to targetIdx + 1.
   for (let i = actions.length - 1; i > targetIdx; i--) {
@@ -756,8 +1167,7 @@ async function restoreActionLoopInner(
       description: `--- Undoing ${inter.name} ---`,
     });
 
-    for (const artifact of collapseGitSnapshots(inter.artifacts)) {
-      const r = await restoreArtifact(artifact, config);
+    for (const r of await restoreOneAction(inter.artifacts, config)) {
       results.push(r);
       if (r.unverified) anyUnverified = true;
 
@@ -766,10 +1176,11 @@ async function restoreActionLoopInner(
         // Non-fatal: record and continue.
         results.push({
           success: false,
-          description: `Warning: failed to restore ${artifact.strategy} in ${inter.name}, continuing...`,
+          description: `Warning: a restore step failed in ${inter.name}, continuing...`,
         });
       }
     }
+    warnings.push(...incompleteWarnings(inter.name, config));
   }
 
   // Restore the target action's artifacts directly; pruning is coordinated here.
@@ -778,15 +1189,14 @@ async function restoreActionLoopInner(
     description: `--- Restoring target: ${targetActionName} ---`,
   });
   const targetAction = actions[targetIdx];
-  for (const artifact of collapseGitSnapshots(targetAction.artifacts)) {
-    // Config is required for the liveRestore branch to spawn a subagent.
-    const r = await restoreArtifact(artifact, config);
+  for (const r of await restoreOneAction(targetAction.artifacts, config)) {
     results.push(r);
     if (r.unverified) anyUnverified = true;
     if (!r.success && !r.subagentPrompt) {
       anyFailed = true;
     }
   }
+  warnings.push(...incompleteWarnings(targetActionName, config));
 
   // Prune only if every step succeeded and was verifiable.
   if (!anyFailed && !anyUnverified) {
@@ -809,7 +1219,7 @@ async function restoreActionLoopInner(
     });
   }
 
-  return results;
+  return [...results, ...warnings];
 }
 
 // ── Restore history ledger ───────────────────────────────────────────

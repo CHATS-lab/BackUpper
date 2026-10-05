@@ -15,6 +15,7 @@ import { pendingRecoveryNotice } from "./recovery-notice.js";
 import type { PreToolHookOutput } from "../types.js";
 import { type HookContext, normalizeHookContext } from "../types.js";
 import { adoptHostAgent } from "./host.js";
+import { settleDeferredCopies } from "./deferred.js";
 
 /** Append one line to .backupper/hook-errors.log (next to the backups directory). Best-effort. */
 function logHookError(config: { backupDir: string }, ctx: HookContext, message: string): void {
@@ -144,6 +145,13 @@ async function main(): Promise<void> {
 
   // ── BACKUP ───────────────────────────────────────────────────────
   if (result.decision === "backup") {
+    // A timing file no post-tool hook consumed belongs to a call that never ran (e.g. the user
+    // denied it); drop any chain-mode copies it claimed before this call replaces the file.
+    try {
+      const stale = JSON.parse(fs.readFileSync(timingFilePath(ctx), "utf-8")) as { actionDir?: string | null };
+      settleDeferredCopies(stale.actionDir);
+    } catch { /* no leftover */ }
+
     const backupResult = runBackup(ctx, config);
 
     // A backup-only tier-1 rule found the backup store in the victim set of a command it
@@ -256,9 +264,15 @@ async function main(): Promise<void> {
     if (!contextMsg && !backupResult.updatedInput) {
       process.exit(0);
     }
+    // Codex applies `updatedInput` only together with permissionDecision "allow" (otherwise it
+    // discards the output and runs the original command, executing the effect twice). In Codex,
+    // "allow" does not bypass its approval policy or sandbox, which run on the rewritten
+    // command. Claude Code is not given "allow": there it would skip the permission check.
+    const codexAllow = backupResult.updatedInput && process.env.BACKUPPER_HOST_AGENT === "codex";
     const output: PreToolHookOutput = {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
+        ...(codexAllow ? { permissionDecision: "allow" as const } : {}),
         ...(contextMsg ? { additionalContext: contextMsg } : {}),
         ...(backupResult.updatedInput ? { updatedInput: backupResult.updatedInput } : {}),
       },

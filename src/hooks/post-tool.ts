@@ -6,11 +6,14 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
+import { execFileSync } from "node:child_process";
 import { loadConfig } from "../config/load.js";
 import { captureEffect, logEffect } from "../engine/effects.js";
-import { type HookContext, normalizeHookContext } from "../types.js";
+import { type BackupArtifact, type HookContext, normalizeHookContext } from "../types.js";
 import { timingFilePath } from "./timing-path.js";
 import { adoptHostAgent } from "./host.js";
+import { settleDeferredCopies } from "./deferred.js";
 
 async function main(): Promise<void> {
   adoptHostAgent();
@@ -52,12 +55,18 @@ async function main(): Promise<void> {
       recordBrowserSnapshot(ctx, config);
     } catch { /* best-effort — never block */ }
 
-    // A failed action changed nothing, so delete its backup folder and its
-    // timing-ledger entry. Runs even when effect logging is off; never throws.
+    // A failed action that provably changed nothing: delete its backup folder and its
+    // timing-ledger entry. A failed command may still have changed files (`printf x > f;
+    // false`, `rm a missing`), so the backup is kept unless every capture still matches the
+    // live state. Runs even when effect logging is off; never throws.
+    // Chain mode: drop the claim of copies the host never ran (the call was denied).
+    try { settleDeferredCopies(loadTimingFile(ctx)?.actionDir); } catch { /* non-fatal */ }
+
     try {
       const actionDir = loadTimingFile(ctx)?.actionDir;
       const success = ctx.hook_event === "PostToolUse";
-      if (actionDir && actionFailed(ctx, success) && fs.existsSync(actionDir)) {
+      if (actionDir && actionFailed(ctx, success) && fs.existsSync(actionDir) &&
+          provablyUnchanged(actionDir)) {
         const actionName = path.basename(actionDir);
         // 1) Disk: remove the whole failed-action backup folder.
         try { fs.rmSync(actionDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -163,6 +172,89 @@ function actionFailed(ctx: HookContext, success: boolean): boolean {
     if (o.error != null && o.error !== "" && o.result == null) return true;
   }
   return false;
+}
+
+/** Byte-and-mode equality of two paths (recursively for directories); false on any doubt. */
+function sameTree(a: string, b: string, budget = { n: 20_000 }): boolean {
+  let sa: fs.Stats, sb: fs.Stats;
+  try { sa = fs.lstatSync(a); sb = fs.lstatSync(b); } catch { return false; }
+  if (--budget.n < 0) return false;
+  if ((sa.mode & 0o170000) !== (sb.mode & 0o170000)) return false;
+  if (sa.isSymbolicLink()) return fs.readlinkSync(a) === fs.readlinkSync(b);
+  if ((sa.mode & 0o7777) !== (sb.mode & 0o7777)) return false;
+  if (sa.isDirectory()) {
+    const ea = fs.readdirSync(a).sort();
+    const eb = fs.readdirSync(b).sort();
+    if (ea.length !== eb.length || ea.some((x, i) => x !== eb[i])) return false;
+    return ea.every((x) => sameTree(path.join(a, x), path.join(b, x), budget));
+  }
+  if (!sa.isFile() || sa.size !== sb.size) return false;
+  return fs.readFileSync(a).equals(fs.readFileSync(b));
+}
+
+/** True when the workspace (and modes recorded with the snapshot) still match a snapshot commit. */
+function workspaceMatchesSnapshot(a: BackupArtifact): boolean {
+  const commit = a.commitHash ?? a.id;
+  const shadow = a.artifactPath;
+  if (!commit || !shadow || !fs.existsSync(shadow)) return false;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "backupper-chk-"));
+  try {
+    const opts = {
+      cwd: process.cwd(), stdio: "pipe" as const, timeout: 30_000,
+      env: { ...process.env, GIT_DIR: shadow, GIT_WORK_TREE: process.cwd(), GIT_INDEX_FILE: path.join(tmp, "index") },
+    };
+    execFileSync("git", ["read-tree", commit], opts);
+    execFileSync("git", ["add", "-A"], opts);
+    try { execFileSync("git", ["diff", "--cached", "--quiet", commit], opts); } catch { return false; }
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  // Modes and owners git does not see.
+  try {
+    const meta = a.metaPath ? JSON.parse(fs.readFileSync(a.metaPath, "utf-8")) : null;
+    for (const e of meta?.entries ?? []) {
+      if (e.t === "l") continue;
+      const st = fs.lstatSync(path.resolve(meta.root, e.p));
+      if ((st.mode & 0o7777) !== e.mode || st.uid !== e.uid || st.gid !== e.gid) return false;
+    }
+  } catch { return false; }
+  return true;
+}
+
+/**
+ * True only when nothing the action's captures cover has changed since they were taken, so
+ * dropping the backup of a failed call loses nothing. Anything that cannot be checked counts
+ * as changed.
+ */
+function provablyUnchanged(actionDir: string): boolean {
+  let artifacts: BackupArtifact[];
+  try { artifacts = JSON.parse(fs.readFileSync(path.join(actionDir, "metadata.json"), "utf-8")); }
+  catch { return false; }
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return false;
+  if (fs.existsSync(path.join(actionDir, "incomplete.json"))) return false;
+  for (const a of artifacts) {
+    switch (a.strategy) {
+      case "git_snapshot":
+        if (!workspaceMatchesSnapshot(a)) return false;
+        break;
+      case "file_copy": {
+        const target = typeof a.targetPath === "string" ? a.targetPath : null;
+        if (!target || a.containerId || !sameTree(a.artifactPath, target)) return false;
+        break;
+      }
+      case "policy_rewrite":
+        // A rewrite already moved things itself; a copy-only capture is unchanged only when
+        // every target still matches its copy.
+        if (!a.backupOnly || !a.captures?.length) return false;
+        if (!a.captures.every((c) => sameTree(c.copy, c.target))) return false;
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
 }
 
 let _cachedTiming: TimingData | null = null;

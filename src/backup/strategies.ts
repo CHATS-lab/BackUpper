@@ -33,6 +33,9 @@ import {
 import { isDangerousRecoveryCommand } from "../restore/restore.js";
 import { tryLearnedBackup } from "../self-improving/learned_backup.js";
 import { flushDeferredGeneralizations, generalizeAfterNativeRule, reflectAfterBackup } from "../self-improving/reflection.js";
+import { recordExternalShadowMeta, recordTreeMeta, shortHash, writeTreeMeta, type TreeMeta } from "./fsmeta.js";
+import { planCommand, wordsAndRedirects, type CmdSegment } from "./compound.js";
+import type { IncompleteCapture } from "../types.js";
 
 /** Expand a leading `~` or `~/` to the home directory. */
 function expandHome(p: string): string {
@@ -464,6 +467,38 @@ function tryTargetedManifest(
 // Tier 3: snapshot in the shared shadow repo
 // =====================================================================
 
+/**
+ * Modes, owners, empty directories and the project's stash list as they stand when a snapshot
+ * is taken; git keeps none of them. Set by gitSnapshotBackup, written next to the artifact.
+ */
+let _lastSnapshotMeta: TreeMeta | null = null;
+
+function captureSnapshotMeta(execOpts: { encoding: "utf-8"; timeout: number; env: NodeJS.ProcessEnv; cwd: string }): TreeMeta | null {
+  try {
+    const files = execSync("git ls-files -z", { ...execOpts, stdio: "pipe", maxBuffer: 256 * 1024 * 1024 })
+      .split("\0").filter(Boolean);
+    let empty: string[] = [];
+    try {
+      empty = execSync("git ls-files -z -o --directory --exclude-standard", { ...execOpts, stdio: "pipe", maxBuffer: 64 * 1024 * 1024 })
+        .split("\0").filter((p) => p.endsWith("/"));
+    } catch { /* no empty directories recorded */ }
+    const meta = recordTreeMeta(execOpts.cwd, files, empty);
+    if (meta && fs.existsSync(path.join(execOpts.cwd, ".git"))) {
+      try {
+        const env = { ...process.env };
+        delete env.GIT_DIR;
+        delete env.GIT_WORK_TREE;
+        meta.stash = execFileSync("git", ["stash", "list", "--format=%H"], {
+          cwd: execOpts.cwd, env, encoding: "utf-8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"],
+        }).split("\n").filter(Boolean);
+      } catch { /* not a repository after all */ }
+    }
+    return meta;
+  } catch {
+    return null;
+  }
+}
+
 /** Commit the workspace to the shadow repo; returns null when nothing changed. */
 function gitSnapshotBackup(
   ctx: HookContext,
@@ -503,6 +538,10 @@ function gitSnapshotBackup(
     if (ctx.tool_name.startsWith("mcp__") || /(^|_)browser_[a-z]/.test(ctx.tool_name)) {
       return null;
     }
+
+    // Record what git does not keep, for this call specifically (a mode-only change leaves
+    // the commit unchanged, so the manifest belongs to the call, not to the commit).
+    _lastSnapshotMeta = captureSnapshotMeta(execOpts);
 
     if (!hasChanges) {
       // Workspace unchanged: return a pointer to HEAD, which already holds this action's pre-state.
@@ -936,6 +975,12 @@ export interface BackupResult {
    * the victim set of a command it cannot rewrite. The text is the reason shown to the agent.
    */
   deny?: string;
+  /** Effects outside what tiers 1-3 capture, which tier 4 (or tier 2) had to take. */
+  uncovered?: IncompleteCapture;
+  /** True once a lower tier captured `uncovered` or judged it read-only. */
+  uncoveredHandled?: boolean;
+  /** Set when the action was recorded as incompletely captured (incomplete.json written). */
+  incomplete?: IncompleteCapture;
 }
 
 /** Tools that never modify state and need no backup. */
@@ -2689,30 +2734,23 @@ function tryExternalFileSnapshot(
   }
 
   const dir = materializeActionDir(config);
+  // A fresh copy at every step: this action's artifact must be the file as it was right
+  // before THIS call, so `restore N` lands on the state before step N (a reused first copy
+  // would rewind to the pre-session state instead). The ledger is bookkeeping only.
   const prior = readExternalLedger(config)[abs];
-  const reused = !!(prior && fs.existsSync(prior));
-  // Name the copy after the whole path, so two files with the same basename do not collide.
-  const dest = path.join(dir, snapName(abs) + ".pre-action");
+  // Name the copy after the whole path plus its hash, so neither two files with the same
+  // basename nor two paths that sanitise to the same name collide.
+  const dest = path.join(dir, `${snapName(abs)}-${shortHash(abs)}.pre-action`);
   try {
-    if (reused) {
-      fs.writeFileSync(
-        path.join(dir, snapName(abs) + ".pre-action.reused"),
-        `The state of ${abs} as it stood before this agent touched it is held at\n` +
-        `${prior}, copied before the first edit of this session. A copy taken now\n` +
-        `would hold this agent's own intermediate work, which a restore does not want.\n`,
-        "utf-8",
-      );
+    // Copy the bytes, then restore the file mode (neither copy method preserves it);
+    // the mode is also recorded in the description.
+    if (cid) {
+      if (!containerCopyOut(cid, abs, dest)) return null;
     } else {
-      // Copy the bytes, then restore the file mode (neither copy method preserves it);
-      // the mode is also recorded in the description.
-      if (cid) {
-        if (!containerCopyOut(cid, abs, dest)) return null;
-      } else {
-        fs.copyFileSync(abs, dest);
-      }
-      try { fs.chmodSync(dest, mode & 0o7777); } catch { /* best effort */ }
-      writeExternalLedger(config, abs, dest);
+      fs.copyFileSync(abs, dest);
     }
+    try { fs.chmodSync(dest, mode & 0o7777); } catch { /* best effort */ }
+    if (!prior || !fs.existsSync(prior)) writeExternalLedger(config, abs, dest);
   } catch {
     return null;
   }
@@ -2722,13 +2760,11 @@ function tryExternalFileSnapshot(
     timestamp: new Date().toISOString(),
     trigger: "rule",
     toolName: ctx.tool_name,
-    description: reused
-      ? `external file snapshot \u2014 reusing the pre-agent copy of ${abs} at ${prior}`
-      : `external file snapshot \u2192 ${path.basename(dest)} (${abs}, ${size} bytes,`
+    description: `external file snapshot \u2192 ${path.basename(dest)} (${abs}, ${size} bytes,`
         + ` mode 0${(mode & 0o7777).toString(8)}`
         + `${cid ? ", from container " + cid : ""})`,
     strategy: "file_copy",
-    artifactPath: reused ? (prior as string) : dest,
+    artifactPath: dest,
     targetPath: abs,
     ...(cid ? { containerId: cid } : {}),
   };
@@ -2741,10 +2777,163 @@ export function runBackup(
 ): BackupResult {
   // Deferred generalizations run after all tiers have finished, on every return path.
   try {
-    return runBackupTiers(ctx, config);
+    const r = runBackupTiers(ctx, config);
+    if (r.uncovered && !r.uncoveredHandled && !r.deny) {
+      // Nothing captured these effects: say so in the action, so `list`/`show` flag it and
+      // `restore` names what it cannot bring back instead of reporting a silent [OK].
+      try {
+        const dir = materializeActionDir(config);
+        r.actionDir = dir;
+        fs.writeFileSync(path.join(dir, "incomplete.json"), JSON.stringify(r.uncovered, null, 2) + "\n", "utf-8");
+        if (!fs.existsSync(path.join(dir, "metadata.json"))) fs.writeFileSync(path.join(dir, "metadata.json"), "[]\n", "utf-8");
+        r.incomplete = r.uncovered;
+      } catch { /* best-effort */ }
+    }
+    return r;
   } finally {
     flushDeferredGeneralizations();
   }
+}
+
+/**
+ * A database client running only queries (no mutating verb, no output redirect). Such a call
+ * still escalates to tier 4 like before, but is not recorded as an uncaptured change.
+ */
+function dbQueryOnly(text: string): boolean {
+  return DB_CLIENT.test(text) && !DB_MUTATING_VERB.test(text) && !/\\copy/i.test(text) &&
+    (wordsAndRedirects(text)?.redirects ?? ["?"]).length === 0;
+}
+
+/** What a call that escalates past tiers 1-3 may change: the call itself and the paths it names. */
+function uncoveredForCall(ctx: HookContext): IncompleteCapture | undefined {
+  const input = ctx.tool_input as Record<string, unknown>;
+  if (ctx.tool_name === "Bash") {
+    const cmd = String(input.command ?? "");
+    if (dbQueryOnly(cmd)) return undefined;
+    return {
+      reason: "a command with effects outside the workspace snapshot that no rule captured",
+      segments: [cmd.slice(0, 500)],
+      paths: segmentPaths(cmd, process.cwd()),
+    };
+  }
+  const p = [input.file_path, input.path, input.target, input.destination].find((x) => typeof x === "string") as string | undefined;
+  return {
+    reason: "a tool call with effects outside the workspace snapshot that no tier captured",
+    segments: [describeToolAction(ctx.tool_name, input)],
+    paths: p ? [path.resolve(expandHome(p))] : [],
+  };
+}
+
+/** Path-like operands and redirect targets of a command, resolved against `cwd`. */
+function segmentPaths(text: string, cwd: string | null): string[] {
+  const parsed = wordsAndRedirects(text);
+  if (!parsed) return [];
+  const out: string[] = [];
+  const cand = [...parsed.words.slice(1).filter((w) => !w.startsWith("-")), ...parsed.redirects];
+  for (const w of cand) {
+    if (/[$`]/.test(w) || w === "") continue;
+    const e = expandHome(w);
+    if (path.isAbsolute(e)) out.push(path.resolve(e));
+    else if (cwd && (w.includes("/") || fs.existsSync(path.resolve(cwd, e)))) out.push(path.resolve(cwd, e));
+  }
+  return [...new Set(out)].slice(0, 50);
+}
+
+/**
+ * Capture each segment of a compound command copy-only: tier-1 rules run in backup-only mode in
+ * the segment's own directory, and write-redirect targets outside the workspace are copied.
+ * A segment is covered when a rule captured it, it is read-only, or its effects are confined to
+ * the workspace (tier 3 takes those). The rest are returned as uncovered.
+ */
+function captureCompoundSegments(
+  ctx: HookContext,
+  segments: CmdSegment[],
+  trashDir: string,
+  storeRoot: string,
+  applyPolicyRules: (c: HookContext, t: string, s?: string, o?: { rewrite?: boolean }) => import("./policy_rules.js").PolicyRuleResult | null,
+): { artifacts: BackupArtifact[]; uncovered: Array<{ text: string; paths: string[] }>; deny?: string } {
+  const workspace = path.resolve(process.cwd());
+  const artifacts: BackupArtifact[] = [];
+  const uncovered: Array<{ text: string; paths: string[] }> = [];
+  const home = process.cwd();
+  const { copyVictimsToTrash } = require("./policy_rules_extra.js") as typeof import("./policy_rules_extra.js");
+  const record = (seg: CmdSegment, r: import("./policy_rules.js").PolicyRuleResult): void => {
+    artifacts.push({
+      id: r.ruleId.slice(0, 8),
+      timestamp: new Date().toISOString(),
+      trigger: "rule",
+      toolName: ctx.tool_name,
+      description: `[segment \`${seg.text.slice(0, 80)}\`] ${r.description}`,
+      strategy: "policy_rewrite",
+      artifactPath: trashDir,
+      recoveryCommands: r.recoveryCommands,
+      policyRuleId: r.ruleId,
+      originalAction: describeToolAction(ctx.tool_name, ctx.tool_input),
+      backupOnly: true,
+      segment: seg.text.slice(0, 300),
+      ...(r.captures?.length ? { captures: r.captures } : {}),
+    });
+  };
+  try {
+    for (const seg of segments) {
+      if (seg.noop) continue;
+      if (seg.unparseable) {
+        if (!isReadOnlyBash(seg.text)) uncovered.push({ text: `${seg.text} (${seg.unparseable})`, paths: segmentPaths(seg.text, seg.cwd) });
+        continue;
+      }
+      if (seg.cwd === null) {
+        if (!isReadOnlyBash(seg.text)) uncovered.push({ text: `${seg.text} (directory unknown)`, paths: [] });
+        continue;
+      }
+      let cwdOk = false;
+      try { cwdOk = fs.statSync(seg.cwd).isDirectory(); } catch { /* created by an earlier segment */ }
+      const inWorkspace = seg.cwd === workspace || seg.cwd.startsWith(workspace + path.sep);
+      if (!cwdOk) {
+        // The directory does not exist yet, so nothing in it predates the command.
+        if (!inWorkspace && !isReadOnlyBash(seg.text)) uncovered.push({ text: `${seg.text} (in ${seg.cwd}, created by this command)`, paths: [] });
+        continue;
+      }
+      process.chdir(seg.cwd);
+      let covered = false;
+      // Write redirects onto existing files outside the workspace: copy them.
+      const outsideTargets: string[] = [];
+      let redirectsOk = true;
+      for (const t of seg.redirects) {
+        if (/[$`*?]/.test(t)) { redirectsOk = false; continue; }
+        const abs = path.resolve(seg.cwd, expandHome(t));
+        if (abs === workspace || abs.startsWith(workspace + path.sep)) continue;   // tier 3
+        if (abs.startsWith("/dev/") || abs.startsWith("/proc/")) continue;
+        try { if (fs.lstatSync(abs).isFile()) outsideTargets.push(abs); } catch { /* created by the call */ }
+      }
+      if (outsideTargets.length) {
+        const copied = copyVictimsToTrash([...new Set(outsideTargets)], trashDir, "redirect", storeRoot);
+        if (copied) {
+          record(seg, {
+            preCommands: copied.preCommands, recoveryCommands: copied.recoveryCommands, captures: copied.captures,
+            description: `copied ${outsideTargets.length} redirect target(s) before the write`, ruleId: "redirect-target",
+          });
+        } else redirectsOk = false;
+      }
+      const segCtx: HookContext = { ...ctx, tool_input: { ...ctx.tool_input, command: seg.text } };
+      const r = applyPolicyRules(segCtx, trashDir, storeRoot, { rewrite: false });
+      if (r?.deny) return { artifacts: [], uncovered: [], deny: r.deny };
+      if (r) {
+        record(seg, r);
+        covered = true;
+      } else if (isReadOnlyBash(seg.text) || dbQueryOnly(seg.text)) {
+        covered = true;
+      } else if (inWorkspace && bashIsEffectBounded(seg.text.replace(/\s*(?:\d|&)?>>?\|?\s*\S+/g, ""), workspace)) {
+        covered = true;   // the workspace snapshot holds the pre-state
+      } else if (seg.text.trim().replace(/^(?::|true)\s*/, "").startsWith(">") && outsideTargets.length) {
+        covered = true;   // a bare `> file`: the redirect copy is the capture
+      }
+      if (!redirectsOk) covered = false;
+      if (!covered) uncovered.push({ text: seg.text, paths: segmentPaths(seg.text, seg.cwd) });
+    }
+  } finally {
+    try { process.chdir(home); } catch { /* stays where it was */ }
+  }
+  return { artifacts, uncovered };
 }
 
 /**
@@ -2817,14 +3006,66 @@ function runBackupTiers(
   // trash) on hosts that apply a rewritten input. On hosts that do not (Codex), or with
   // BACKUPPER_NO_REWRITE=1, the rules run in backup-only mode: they capture a restorable copy,
   // execute nothing, and the host runs the original command once.
-  const { tier1CanRewrite } = require("../agents/capabilities.js");
-  const rewrite: boolean = tier1CanRewrite();
+  const { tier1Mode } = require("../agents/capabilities.js");
+  // "chain" (a non-bypass permission mode): the host may still deny or ask about the call, so
+  // the hook executes nothing and returns `<copies> && <original command>` instead.
+  const originalCommand = ctx.tool_name === "Bash" ? String(ctx.tool_input.command ?? "") : "";
+  const mode: "rewrite" | "chain" | "backup-only" = tier1Mode(ctx.permission_mode);
+  const chain = mode === "chain" && ctx.tool_name === "Bash" && !originalCommand.includes("\n");
+  const rewrite: boolean = mode === "rewrite";
   const { applyPolicyRules } = require("./policy_rules.js");
   const pendingDir = path.join(path.resolve(config.backupDir), _pendingActionName ?? "");
   const trashDir = path.join(pendingDir, "trash");
   // The sandbox store root, excluded from the victim sets of rules that move or delete paths.
   const sandboxStoreRoot = path.dirname(path.resolve(config.backupDir));
-  const policyResult = applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite });
+
+  // ── Compound commands: capture each segment, copy-only; the command runs unchanged ──
+  let compoundUncovered: IncompleteCapture | null = null;
+  const compoundPlan = ctx.tool_name === "Bash"
+    ? planCommand(String(ctx.tool_input.command ?? ""), process.cwd())
+    : null;
+  if (compoundPlan && compoundPlan.compound) {
+    const cap = captureCompoundSegments(ctx, compoundPlan.segments, trashDir, sandboxStoreRoot, applyPolicyRules);
+    if (cap.deny) return { artifacts: [], needsSubagent: false, deny: cap.deny };
+    if (cap.artifacts.length) {
+      const dir = materializeActionDir(config);
+      result.actionDir = dir;
+      for (const a of cap.artifacts) {
+        result.artifacts.push(a);
+        writeMetadata(dir, a);
+      }
+    }
+    if (cap.uncovered.length) {
+      compoundUncovered = {
+        reason: "segments of a compound command that no rule captured and the workspace snapshot does not cover",
+        segments: cap.uncovered.map((u) => u.text),
+        paths: [...new Set(cap.uncovered.flatMap((u) => u.paths))],
+      };
+    }
+  }
+
+  let deferred: Array<{ command: string; src: string; dest: string }> = [];
+  let policyResult = null;
+  if (!compoundPlan?.compound) {
+    if (chain) {
+      const { withDeferredCopies } = require("./policy_rules_extra.js");
+      const d = withDeferredCopies(() => applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite: false }));
+      policyResult = d.result;
+      deferred = d.commands;
+    } else {
+      policyResult = applyPolicyRules(ctx, trashDir, sandboxStoreRoot, { rewrite });
+    }
+  }
+  if (policyResult && !policyResult.deny && deferred.length > 0) {
+    // Copies first, through hooks/capture.js (see there); `&&` keeps the original from running
+    // if a copy fails. The original is passed verbatim so the host's permission rules still
+    // match it.
+    const { captureCommandPrefix } = require("../agents/capabilities.js");
+    const q = (x: string) => /^[\w\/.@+:=,-]+$/.test(x) ? x : `'${x.replace(/'/g, "'\\''")}'`;
+    const copy = `${captureCommandPrefix()} ${deferred.map((c) => `${q(c.src)} ${q(c.dest)}`).join(" ")}`;
+    policyResult.updatedInput = { ...ctx.tool_input, command: `${copy} && ${originalCommand}` };
+    policyResult.preCommands = [copy];
+  }
   if (policyResult && policyResult.deny) {
     return { artifacts: [], needsSubagent: false, deny: policyResult.deny };
   }
@@ -2843,6 +3084,8 @@ function runBackupTiers(
       policyRuleId: policyResult.ruleId,
       originalAction: describeToolAction(ctx.tool_name, ctx.tool_input),
       ...(policyResult.backupOnly ? { backupOnly: true } : {}),
+      ...(policyResult.captures?.length ? { captures: policyResult.captures } : {}),
+      ...(deferred.length ? { deferredCopies: deferred.map((c) => c.dest) } : {}),
     };
     result.artifacts.push(artifact);
     if (policyResult.updatedInput) result.updatedInput = policyResult.updatedInput;
@@ -2853,14 +3096,24 @@ function runBackupTiers(
     }
   }
 
-  // A positive personalization decision escalates like a declaration.
-  const outsideWorkspace = personalizationDecision !== null || touchesOutsideWorkspace(ctx, config);
+  // A positive personalization decision escalates like a declaration. For a compound
+  // command only the segments no rule captured escalate.
+  const outsideWorkspace = personalizationDecision !== null || (compoundPlan?.compound
+    ? compoundUncovered !== null
+    : touchesOutsideWorkspace(ctx, config));
+  // What tier 4 must capture; recorded as not captured when nothing below does.
+  result.uncovered = compoundUncovered ?? (outsideWorkspace ? uncoveredForCall(ctx) : undefined);
 
   // ── Tier 3: snapshot (returns null when nothing changed) ──
   const gitSnapshot = gitSnapshotBackup(ctx, config);
   if (gitSnapshot) {
     const dir = materializeActionDir(config);
     result.actionDir = dir;
+    if (_lastSnapshotMeta) {
+      const metaFile = path.join(dir, `snapshot-meta-${gitSnapshot.id}.json`);
+      if (writeTreeMeta(metaFile, _lastSnapshotMeta)) gitSnapshot.metaPath = metaFile;
+      _lastSnapshotMeta = null;
+    }
     result.artifacts.push(gitSnapshot);
     writeMetadata(dir, gitSnapshot);
     generalizeAfterNativeRule(ctx, dir, gitSnapshot, config);
@@ -2888,6 +3141,7 @@ function runBackupTiers(
       result.artifacts.push(targeted);
       writeMetadata(dir, targeted);
       targetedSucceeded = true;
+      result.uncoveredHandled = true;
       // Optional: generalize the built-in rule to sibling operations; does not alter this backup.
       generalizeAfterNativeRule(ctx, dir, targeted, config);
     }
@@ -2904,6 +3158,7 @@ function runBackupTiers(
       writeMetadata(dir, extArt);
       generalizeAfterNativeRule(ctx, dir, extArt, config);
       externalFileSnapshot = true;
+      result.uncoveredHandled = true;
     }
   }
 
@@ -2923,6 +3178,8 @@ function runBackupTiers(
       checkerOutcome = runReadOnlyChecker(ctx, config);
       // Target resolution guides capture; it must not veto the checker verdict.
       if (checkerOutcome && checkerOutcome.spawn) tier4Gated = false;
+      // The checker judged the call read-only: nothing outside needed capturing.
+      if (checkerOutcome && !checkerOutcome.spawn) result.uncoveredHandled = true;
     } catch (e) {
       // Fail open: spawn the subagent.
       tier4Gated = false;
@@ -2965,6 +3222,7 @@ function runBackupTiers(
                 `(pattern "${hit.pattern}" learned from "${hit.learnedFrom.slice(0, 60)}")\n`,
               );
             }
+            result.uncoveredHandled = true;
             return result;
           }
         }
@@ -2983,6 +3241,7 @@ function runBackupTiers(
       if (rev) {
         result.actionDir = rev.artifactPath;
         result.artifacts.push(rev);
+        result.uncoveredHandled = true;
         return result;
       }
     } catch (e) {
@@ -3002,6 +3261,7 @@ function runBackupTiers(
         if (learned) {
           result.artifacts.push(learned);
           writeMetadata(dir, learned);
+          result.uncoveredHandled = true;
           return result;
         }
       } catch (e) {
@@ -3069,6 +3329,7 @@ function runBackupTiers(
         if (outcome === "read_only") {
           // The subagent judged the action read-only: a clean skip, not a failure.
           readOnlyVerdict = true;
+          result.uncoveredHandled = true;
           // Remove the action dir only if it holds no registered or captured files.
           const hasRegistered = result.artifacts.length > 0;
           let hasCaptured = false;
@@ -3106,6 +3367,16 @@ function runBackupTiers(
           }
         } else if (outcome) {
           subagentArtifact = outcome;
+          result.uncoveredHandled = true;
+          // Record the modes/owners of the files its external-shadow commit holds: git keeps
+          // only 0644/0755, so a restore reapplies them (0640 came back 0644 otherwise).
+          try {
+            const meta = recordExternalShadowMeta(outcome.subagentCommands);
+            if (meta) {
+              const metaFile = path.join(dir, `external-shadow-meta-${outcome.id}.json`);
+              if (writeTreeMeta(metaFile, meta)) outcome.metaPath = metaFile;
+            }
+          } catch { /* the restore falls back to the modes the files have then */ }
           result.artifacts.push(outcome);
           writeMetadata(dir, outcome);
         }
