@@ -878,7 +878,7 @@ export async function watch(projectRoot: string): Promise<void> {
 
   process.stdin.on("keypress", (str: string | undefined, key: readline.Key | undefined) => {
     const name = key?.name ?? str;
-    if ((key?.ctrl && name === "c") || name === "q") { quit(); return; }
+    if ((key?.ctrl && name === "c") || name === "q" || name === "x") { quit(); return; }
     if (state.busy) return;
     if (state.confirm) {
       const a = state.actions[state.selected];

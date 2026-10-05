@@ -183,7 +183,7 @@ await test("hook capture, list/show --json, restore", () => {
   assert.equal(show.artifacts[0].strategy, "policy_rewrite");
   const snap = cli(p, "watch");
   assert.equal(snap.code, 0, snap.err);
-  assert.match(snap.out, /#1 Bash\(rm notes\.txt\) → Tier 1 command rewriting/);
+  assert.match(snap.out, /#1 Tier 1 command rewriting · trash\n    Bash\(rm notes\.txt\)/);
   assert.match(snap.out, /RESTORE\s+press r to undo #1/);
   assert.equal(cli(path.join(p), "restore", "last").code, 0);
   assert.equal(fs.readFileSync(path.join(p, "notes.txt"), "utf-8"), "keep me\n");

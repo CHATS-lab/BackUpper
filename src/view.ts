@@ -377,28 +377,23 @@ function painter(color: boolean): Painter {
   return { c: (code, s) => (color && s ? `\x1b[${code}m${s}\x1b[0m` : s) };
 }
 
-/** One action row: `#N <tool call> → Tier K <name> <artifact>`, fitted to `width`. */
-export function actionRow(a: ActionSummary, width: number, selected: boolean, color = true): string {
+/**
+ * One action as two lines, as in the Claude Code side panel: `› #N Tier K <name> · <artifact>`,
+ * then the tool call, indented and dim. Both are fitted to `width`.
+ */
+export function actionRows(a: ActionSummary, width: number, selected: boolean, color = true): string[] {
   const p = painter(color);
-  const mark = selected ? "›" : " ";
-  const num = `#${a.seq}`;
+  const prefix = `${selected ? "›" : " "} #${a.seq} `;
   const head = headlineTier(a);
   const tierText = head ? `Tier ${head.tier} ${TIER_NAME[head.tier]}` : "no capture";
-  const artifact = head ? ` ${artifactLabel(a, head.strategy)}` : "";
-  const right = ` → ${tierText}${artifact}`;
+  const rest = clip(tierText + (head ? ` · ${artifactLabel(a, head.strategy)}` : ""), Math.max(width - prefix.length, 1));
+  const shown = rest.startsWith(tierText) ? tierText : rest;
+  const painted = head ? p.c(TIER_COLOR[head.tier], shown) + rest.slice(shown.length) : p.c(2, rest);
   const call = a.originalAction || a.toolName || "(unknown call)";
-  const room = width - mark.length - 1 - num.length - 1 - right.length;
-  let callText = clip(call, Math.max(room, 8));
-  let rightText = right;
-  // Narrow terminals: shorten the right side before the call disappears.
-  if (room < 8) rightText = clip(right, Math.max(width - mark.length - num.length - callText.length - 2, 0));
-  const plainLen = mark.length + 1 + num.length + 1 + callText.length + rightText.length;
-  if (plainLen > width) callText = clip(callText, callText.length - (plainLen - width));
-  const tierPainted = head
-    ? rightText.replace(tierText, p.c(TIER_COLOR[head.tier], tierText))
-    : p.c(2, rightText);
-  const body = `${mark} ${p.c(1, num)} ${callText}${tierPainted}`;
-  return selected ? p.c(7, body.replace(/\x1b\[0m/g, "\x1b[0m\x1b[7m")) : body;
+  return [
+    p.c(selected ? "1;7" : 1, prefix) + painted,
+    p.c(2, "    " + clip(call, Math.max(width - 4, 1))),
+  ];
 }
 
 /** The MATCHED / RUNS / RESTORE block for one action. */
@@ -436,24 +431,64 @@ export function detailLines(a: ActionSummary | ActionDetail, later: number, widt
   return out;
 }
 
-function headerLine(s: WatchState, width: number, p: Painter): string {
+/** Project name, then mode, scope and store size, then a blank line. */
+function headerLines(s: WatchState, width: number, p: Painter): string[] {
   const scope = s.personalization ? `personalized (${s.personalization})` : "Full";
-  const left = ` BackUpper · ${path.basename(s.project) || s.project}`;
-  const right = `mode ${s.mode} · ${scope} · ${formatBytes(s.storeBytes)} `;
-  const gap = width - left.length - right.length;
-  const text = gap >= 1 ? left + " ".repeat(gap) + right : clip(left + "  " + right, width);
-  return p.c("1;7", text.padEnd(width));
+  return [
+    p.c(1, clip(`BackUpper · ${path.basename(s.project) || s.project}`, width)),
+    p.c(2, clip(`mode ${s.mode} · ${scope} · ${formatBytes(s.storeBytes)}`, width)),
+    "",
+  ];
 }
 
+/** The key row: each key in bold before its label, like the side panel's buttons. */
 function footerLine(s: WatchState, width: number, p: Painter): string {
-  const hint = s.confirm
-    ? `${s.confirm}  y = yes · n = no`
-    : s.busy
-      ? "working…  q quit"
-      : s.diff
-        ? "↑/↓ scroll · d back · q quit"
-        : "↑/↓ j/k select · r restore · d diff · ⏎ details · q quit";
-  return p.c(s.confirm ? "1;33" : 2, clip(hint, width));
+  const keys = (pairs: Array<[string, string]>) => {
+    let out = "";
+    let used = 0;
+    for (const [k, label] of pairs) {
+      const add = (used ? 2 : 0) + k.length + 1 + label.length;
+      if (used + add > width) break;
+      out += `${used ? "  " : ""}${p.c(1, k)} ${p.c(2, label)}`;
+      used += add;
+    }
+    return out;
+  };
+  if (s.confirm) {
+    const q = clip(s.confirm, Math.max(width - 12, 1));
+    return `${p.c("1;33", q)}  ${keys([["y", "yes"], ["n", "no"]])}`;
+  }
+  if (s.busy) return p.c(2, clip("working…", width));
+  if (s.diff) return keys([["k", "up"], ["j", "down"], ["d", "back"], ["x", "close"]]);
+  return keys([["k", "up"], ["j", "down"], ["r", "restore"], ["d", "diff"], ["x", "close"]]);
+}
+
+/** Cut a line that may carry colour codes to `width` visible characters. */
+function fitLine(line: string, width: number): string {
+  let visible = 0;
+  let out = "";
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\x1b") {
+      const m = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
+      if (m) { out += m[0]; i += m[0].length - 1; continue; }
+    }
+    if (visible === width) return out + (/\x1b\[/.test(out) ? "\x1b[0m" : "");
+    out += line[i];
+    visible++;
+  }
+  return out;
+}
+
+/** Word-wrap plain text to `width`. */
+function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  let cur = "";
+  for (const w of text.split(/\s+/).filter(Boolean)) {
+    if (cur && cur.length + 1 + w.length > width) { out.push(cur); cur = ""; }
+    cur = cur ? `${cur} ${w}` : w;
+  }
+  if (cur) out.push(cur);
+  return out.map((l) => clip(l, width));
 }
 
 function diffLine(l: string, width: number, p: Painter): string {
@@ -466,13 +501,15 @@ function diffLine(l: string, width: number, p: Painter): string {
 }
 
 /**
- * Render the whole screen. With `height` the output is exactly `height` lines (the list is
- * windowed around the selection); without it every action is printed (non-TTY snapshot).
+ * Render the whole screen in the layout of the Claude Code side panel: header, the actions
+ * (two lines each), the detail of the selected one under a rule, messages, then the key row.
+ * With `height` the output is exactly `height` lines (the list is windowed around the
+ * selection and the key row sits on the last line); without it every action is printed
+ * (non-TTY snapshot).
  */
 export function renderWatch(s: WatchState, width: number, height?: number, color = true): string[] {
   const p = painter(color);
-  const rule = p.c(2, "─".repeat(Math.max(width, 1)));
-  const top = [headerLine(s, width, p)];
+  const top = headerLines(s, width, p);
   const bottom: string[] = [];
   if (s.message?.length) for (const m of s.message) bottom.push(clip(m, width));
   bottom.push(footerLine(s, width, p));
@@ -482,36 +519,36 @@ export function renderWatch(s: WatchState, width: number, height?: number, color
     const room = height === undefined ? s.diff.length : Math.max(height - top.length - bottom.length, 0);
     const start = Math.min(s.diffScroll, Math.max(s.diff.length - room, 0));
     body = s.diff.slice(start, start + room).map((l) => diffLine(l, width, p));
+  } else if (!s.actions.length) {
+    body = wrap("No actions recorded yet. Captures appear here as the agent works.", width).map((l) => p.c(2, l));
   } else {
-    const detail = s.expanded && s.actions.length
-      ? [rule, ...detailLines(s.detail?.name === s.actions[s.selected]?.name ? s.detail! : s.actions[s.selected], s.actions.length - 1 - s.selected, width, color)]
+    const detail = s.expanded
+      ? [p.c(2, "─".repeat(Math.max(width, 1))),
+         ...detailLines(s.detail?.name === s.actions[s.selected]?.name ? s.detail! : s.actions[s.selected], s.actions.length - 1 - s.selected, width, color)
+           .map((l) => fitLine(l, width))]
       : [];
-    const room = height === undefined ? Infinity : Math.max(height - top.length - bottom.length - detail.length, 1);
-    let rows: string[];
-    if (!s.actions.length) {
-      rows = [p.c(2, clip(" No actions recorded yet. Captures appear here as the agent works.", width))];
-    } else {
-      // Window the list so the selection stays visible; the newest action sits at the bottom.
-      const n = s.actions.length;
-      let first = 0;
-      let last = n;
-      if (room !== Infinity && n > room) {
-        // One row each for the "older" / "newer" markers, when shown.
-        let fit = Math.max(room - 1, 1);
-        first = Math.max(0, Math.min(n - fit, s.selected));
-        if (first > 0 && first + fit < n) fit = Math.max(room - 2, 1);
-        last = Math.min(n, first + fit);
-      }
-      rows = s.actions.slice(first, last).map((a, i) => actionRow(a, width, first + i === s.selected, color));
-      if (first > 0) rows.unshift(p.c(2, clip(` ↑ ${first} older`, width)));
-      if (last < n) rows.push(p.c(2, clip(` ↓ ${n - last} newer`, width)));
+    const room = height === undefined ? Infinity : Math.max(height - top.length - bottom.length - detail.length, 2);
+    // Window the list so the selection stays visible; each action takes two lines.
+    const n = s.actions.length;
+    let first = 0;
+    let last = n;
+    if (room !== Infinity && n * 2 > room) {
+      // One line each for the "older" / "newer" markers, when shown.
+      let fit = Math.max(Math.floor((room - 1) / 2), 1);
+      first = Math.max(0, Math.min(n - fit, s.selected));
+      if (first > 0 && first + fit < n) fit = Math.max(Math.floor((room - 2) / 2), 1);
+      first = Math.min(first, s.selected);
+      last = Math.min(n, first + fit);
     }
+    const rows = s.actions.slice(first, last).flatMap((a, i) => actionRows(a, width, first + i === s.selected, color));
+    if (first > 0) rows.unshift(p.c(2, clip(`  ↑ ${first} older`, width)));
+    if (last < n) rows.push(p.c(2, clip(`  ↓ ${n - last} newer`, width)));
     body = [...rows, ...detail];
-    if (height !== undefined) {
-      const pad = height - top.length - bottom.length - body.length;
-      // Push the list down so the newest row sits just above the detail block, like a log.
-      if (pad > 0) body = [...new Array(pad).fill(""), ...body];
-    }
+  }
+  if (height !== undefined) {
+    const pad = height - top.length - bottom.length - body.length;
+    // Content stays at the top, as in the side panel; the key row sits on the last line.
+    if (pad > 0) body = [...body, ...new Array(pad).fill("")];
   }
   const lines = [...top, ...body, ...bottom];
   return height === undefined ? lines : lines.slice(0, height);

@@ -17,7 +17,7 @@ import { applyPolicyRules, type PolicyRuleResult } from "../../src/backup/policy
 import { tier1CanRewrite, CAN_REWRITE, ALL_ADAPTERS, hermesAdapter } from "../../src/agents.js";
 import { closeCommand, detectTerminal, parsePanelPrompt, splitCommand } from "../../src/cli.js";
 import type { ActionDetail, ActionSummary } from "../../src/view.js";
-import { actionRow, clip, emptyState, headlineTier, renderWatch, type WatchState } from "../../src/view.js";
+import { actionRows, clip, emptyState, headlineTier, renderWatch, type WatchState } from "../../src/view.js";
 
 // Each section below was a test file of its own. Its root-level hooks apply only to its
 // own top-level suites (onlyIn), and a root-level before() runs once, before the first of
@@ -1277,21 +1277,23 @@ const plain = (s: WatchState, w = 100, h?: number) => renderWatch(s, w, h, false
 
 describe("watch renderer", () => {
   it("header shows project, mode, scope and store size", () => {
-    const head = plain(state([]))[0];
-    assert.match(head, /BackUpper · demo/);
-    assert.match(head, /mode checker · Full · 2\.0 KB/);
-    assert.match(plain(state([], { personalization: "high-impact" }))[0], /personalized \(high-impact\)/);
+    const lines = plain(state([]));
+    assert.equal(lines[0], "BackUpper · demo");
+    assert.equal(lines[1], "mode checker · Full · 2.0 KB");
+    assert.match(plain(state([], { personalization: "high-impact" }))[1], /personalized \(high-impact\)/);
   });
 
   it("empty store says so", () => {
     assert.ok(plain(state([])).some((l) => /No actions recorded yet/.test(l)));
   });
 
-  it("rows read #N <call> → Tier K <name> <artifact>, newest at the bottom", () => {
+  it("each action is `#N Tier K <name> · <artifact>` over its indented call, newest at the bottom", () => {
     const lines = plain(state([action(1), action(2, { strategies: ["policy_rewrite"], tiers: [1], files: [], originalAction: "rm notes.txt", storage: [{ strategy: "policy_rewrite", path: "/s/trash/notes.txt" }] })], { expanded: false }));
-    const rows = lines.filter((l) => /#\d/.test(l));
-    assert.match(rows[0], /#1 echo step 1 → Tier 3 snapshot 2 files$/);
-    assert.match(rows[1], /^› #2 rm notes\.txt → Tier 1 command rewriting notes\.txt$/);
+    const i = lines.findIndex((l) => /#1 /.test(l));
+    assert.equal(lines[i], "  #1 Tier 3 snapshot · 2 files");
+    assert.equal(lines[i + 1], "    echo step 1");
+    assert.equal(lines[i + 2], "› #2 Tier 1 command rewriting · notes.txt");
+    assert.equal(lines[i + 3], "    rm notes.txt");
   });
 
   it("the headline tier is the most specific capture", () => {
@@ -1300,11 +1302,12 @@ describe("watch renderer", () => {
   });
 
   it("long calls are truncated to the width, colour codes excluded", () => {
-    const row = actionRow(action(7, { originalAction: "x".repeat(300) }), 60, false, false);
-    assert.equal(row.length, 60);
-    assert.match(row, /… → Tier 3 snapshot 2 files$/);
-    const colored = actionRow(action(7), 60, false, true);
-    assert.match(colored, /\x1b\[33mTier 3 snapshot\x1b\[0m/);
+    const [, call] = actionRows(action(7, { originalAction: "x".repeat(300) }), 60, false, false);
+    assert.equal(call.length, 60);
+    assert.match(call, /x…$/);
+    const [colored] = actionRows(action(7), 60, false, true);
+    assert.match(colored, /\x1b\[33mTier 3 snapshot\x1b\[0m · 2 files/);
+    for (const l of plain(state([action(1)], { detail: { ...action(1), artifacts: [] } }), 30, 30)) assert.ok(l.length <= 30, l);
   });
 
   it("detail block has MATCHED, RUNS and how to restore", () => {
@@ -1333,27 +1336,27 @@ describe("watch renderer", () => {
       assert.ok(lines.some((l) => l.startsWith(`› #${selected + 1} `)), `selection ${selected} visible`);
     }
     const tail = plain(state(many, { expanded: false }), 80, 12);
-    assert.match(tail[1], /↑ \d+ older/);
+    assert.match(tail[3], /↑ \d+ older/);
   });
 
   it("confirm prompt and messages sit above the footer", () => {
     const lines = plain(state([action(1)], { confirm: "Undo #1?", message: ["[OK] restored"] }), 80, 20);
     assert.match(lines[18], /\[OK\] restored/);
-    assert.match(lines[19], /Undo #1\? y = yes · n = no/);
+    assert.equal(lines[19], "Undo #1?  y yes  n no");
   });
 
   it("diff view replaces the list and scrolls", () => {
     const diff = Array.from({ length: 40 }, (_, i) => `+line ${i}`);
     const lines = plain(state([action(1)], { diff, diffScroll: 5 }), 80, 10);
     assert.equal(lines.length, 10);
-    assert.equal(lines[1], "+line 5");
+    assert.equal(lines[3], "+line 5");
     assert.match(lines[9], /d back/);
   });
 
   it("non-TTY snapshot prints every action", () => {
     const many = Array.from({ length: 30 }, (_, i) => action(i + 1));
     const lines = plain(state(many, { expanded: false }), 80);
-    assert.equal(lines.filter((l) => /#\d+ echo/.test(l)).length, 30);
+    assert.equal(lines.filter((l) => /^ {4}echo step/.test(l)).length, 30);
   });
 
   it("clip collapses whitespace", () => {
