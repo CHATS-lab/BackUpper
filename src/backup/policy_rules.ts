@@ -1132,6 +1132,26 @@ function hasRecursiveFlag(tokens: string[]): boolean {
 }
 
 /**
+ * `<mode> <uid> <gid> <path>` for every non-symlink at or under `absPaths`, walked without
+ * following links; null when a path cannot be read or the tree exceeds MAX_TREE_ENTRIES.
+ */
+function subtreeAttrLines(absPaths: string[]): string[] | null {
+  const out: string[] = [];
+  const walk = (p: string): boolean => {
+    let st: fs.Stats;
+    try { st = fs.lstatSync(p); } catch { return false; }
+    if (st.isSymbolicLink()) return true;
+    out.push(`${(st.mode & 0o7777).toString(8).padStart(3, "0")} ${st.uid} ${st.gid} ${p}`);
+    if (out.length > MAX_TREE_ENTRIES) return false;
+    if (!st.isDirectory()) return true;
+    let names: string[];
+    try { names = fs.readdirSync(p); } catch { return false; }
+    return names.every((n) => walk(join(p, n)));
+  };
+  return absPaths.every(walk) ? out : null;
+}
+
+/**
  * Record the modes or owners of a whole subtree into a generated script in the action trash,
  * so `chmod -R`/`chown -R` can be undone with one `sh <script>`. Symlinks are excluded;
  * unparseable or oversized trees bail.
@@ -1141,12 +1161,8 @@ function recordSubtreeAttrs(
   trashDir: string,
   ruleId: "chmod" | "chown",
 ): { recoveryCommands: string[]; preCommands: string[]; entries: number } | null {
-  const listing = runCaptured(
-    `find ${absPaths.map(shq).join(" ")} ! -type l -printf '%m %U %G %p\\n'`,
-  );
-  if (listing === null || listing === "") return null;
-  const lines = listing.split("\n").filter((l) => l !== "");
-  if (lines.length === 0 || lines.length > MAX_TREE_ENTRIES) return null;
+  const lines = subtreeAttrLines(absPaths);
+  if (lines === null || lines.length === 0) return null;
 
   const script: string[] = [];
   for (const line of lines) {
@@ -1456,6 +1472,8 @@ const sedInPlace: PolicyRule = {
         t.startsWith("--in-place=")
       ) {
         inPlace = true;
+        // BSD/macOS sed takes the suffix as the next argument; `-i ''` means none.
+        if (t === "-i" && tokens[i + 1] === "") i++;
         if (t.startsWith("-i.")) suffix = t.slice(2);
         else if (t.startsWith("--in-place=")) suffix = t.slice("--in-place=".length);
         continue;

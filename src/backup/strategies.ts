@@ -3157,9 +3157,15 @@ function runBackupTiers(
 
   // ── Compound commands: capture each segment, copy-only; the command runs unchanged ──
   let compoundUncovered: IncompleteCapture | null = null;
+  // A command run from another directory than the project (the agent's shell stopped in a
+  // subdirectory) resolves its paths there: it goes through the per-segment path, which runs
+  // each rule in the segment's own directory.
+  const shellCwd = ctx.cwd ? path.resolve(ctx.cwd) : process.cwd();
   const compoundPlan = ctx.tool_name === "Bash"
-    ? planCommand(String(ctx.tool_input.command ?? ""), process.cwd())
+    ? planCommand(String(ctx.tool_input.command ?? ""), shellCwd)
     : null;
+  const realpath = (d: string) => { try { return fs.realpathSync(d); } catch { return d; } };
+  if (compoundPlan && realpath(shellCwd) !== realpath(process.cwd())) compoundPlan.compound = true;
   if (compoundPlan && compoundPlan.compound) {
     const cap = captureCompoundSegments(ctx, compoundPlan.segments, trashDir, sandboxStoreRoot, applyPolicyRules);
     if (cap.artifacts.length) {

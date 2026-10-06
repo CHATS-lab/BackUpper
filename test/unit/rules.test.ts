@@ -13,6 +13,9 @@ import * as os from "node:os";
 import { applyPolicyRules, foreignExecTarget, execTargetIsSelf } from "../../src/backup/policy_rules.js";
 import { isDangerousRecoveryCommand } from "../../src/restore/restore.js";
 
+/** In-place sed for this platform: BSD/macOS sed takes the suffix as a separate argument. */
+const SED_I = process.platform === "darwin" ? "sed -i ''" : "sed -i";
+
 // Each section below was a test file of its own. Its root-level hooks apply only to its
 // own top-level suites (onlyIn), and a root-level before() runs once, before the first of
 // them (onceIn), so a hook never runs for another section's tests.
@@ -201,7 +204,7 @@ function recover(r: { recoveryCommands: string[] }): void {
 describe("policy rule: sed-in-place", () => {
   it("snapshots and restores an in-place edit", () => {
     fs.writeFileSync("a.txt", "hello world\n");
-    const r = applyPolicyRules(bash("sed -i 's/hello/goodbye/' a.txt"), trash);
+    const r = applyPolicyRules(bash(`${SED_I} 's/hello/goodbye/' a.txt`), trash);
     assert.ok(r && r.ruleId === "sed-in-place");
     assert.equal(fs.readFileSync("a.txt", "utf8"), "goodbye world\n");
     recover(r!);
@@ -211,6 +214,12 @@ describe("policy rule: sed-in-place", () => {
   it("ignores sed without an in-place flag", () => {
     fs.writeFileSync("a.txt", "x\n");
     assert.equal(applyPolicyRules(bash("sed 's/a/b/' a.txt"), trash), null);
+  });
+
+  it("recognises the BSD form `sed -i ''`", () => {
+    fs.writeFileSync("a.txt", "hello world\n");
+    const r = applyPolicyRules(bash("sed -i '' 's/hello/goodbye/' a.txt"), trash, undefined, { rewrite: false });
+    assert.ok(r && r.ruleId === "sed-in-place", `expected sed-in-place, got ${r?.ruleId}`);
   });
 
   it("ignores sed -e (ambiguous file identification)", () => {
@@ -714,6 +723,22 @@ describe("policy rule: chmod -R", () => {
     assert.equal(modeOf(path.join("tree", "a.sh")), "750");
     assert.equal(modeOf(path.join("tree", "sub")), "700");
     assert.equal(modeOf(path.join("tree", "sub", "b.conf")), "640");
+  });
+
+  it("records the subtree without GNU find (macOS)", () => {
+    setupTree();
+    const shim = fs.mkdtempSync(path.join(os.tmpdir(), "bu-bsd-"));
+    fs.writeFileSync(path.join(shim, "find"), "#!/bin/sh\necho 'find: -printf: unknown primary or operator' >&2\nexit 1\n", { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = `${shim}:${saved}`;
+    try {
+      const r = applyPolicyRules(bash("chmod -R 777 tree"), trash);
+      assert.ok(r && r.ruleId === "chmod", `expected chmod, got ${r?.ruleId}`);
+      assert.match(r!.description, /chmod -R \(4 entries/);
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(shim, { recursive: true, force: true });
+    }
   });
 
   it("still handles the non-recursive form per path", () => {

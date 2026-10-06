@@ -12,6 +12,9 @@ import { restoreActionDirect, restoreActionLoop, restoreArtifact, fileCopyTarget
 import { configWarnings, loadConfig } from "../../src/config/load.js";
 import type { BackupArtifact } from "../../src/types.js";
 
+/** In-place sed for this platform: BSD/macOS sed takes the suffix as a separate argument. */
+const SED_I = process.platform === "darwin" ? "sed -i ''" : "sed -i";
+
 // Each section below was a test file of its own. Its root-level hooks apply only to its
 // own top-level suites (onlyIn), and a root-level before() runs once, before the first of
 // them (onceIn), so a hook never runs for another section's tests.
@@ -220,7 +223,7 @@ describe("capture file names are unique per target", () => {
   it("`x y.txt` and `x_y.txt` in one sed -i keep separate copies", () => {
     fs.writeFileSync(W("x y.txt"), "one\n");
     fs.writeFileSync(W("x_y.txt"), "two\n");
-    step("Bash", { command: "sed -i 's/o/0/' 'x y.txt' x_y.txt" });
+    step("Bash", { command: `${SED_I} 's/o/0/' 'x y.txt' x_y.txt` });
     assert.equal(read(W("x y.txt")), "0ne\n");
     const r = cli(["restore", "1"]);
     assert.equal(r.status, 0, r.out);
@@ -228,12 +231,25 @@ describe("capture file names are unique per target", () => {
     assert.equal(read(W("x_y.txt")), "two\n");
   });
 
+  it("restores over an existing file with a cp that has no GNU long options (macOS)", () => {
+    const shim = path.join(out, "bsd-bin");
+    fs.mkdirSync(shim, { recursive: true });
+    const realCp = execSync("command -v cp", { encoding: "utf-8", shell: "/bin/sh" }).trim();
+    fs.writeFileSync(path.join(shim, "cp"), `#!/bin/sh\nfor a in "$@"; do case "$a" in --?*) echo "cp: illegal option -- $a" >&2; exit 64;; esac; done\nexec ${realCp} "$@"\n`, { mode: 0o755 });
+    fs.writeFileSync(W("conf.txt"), "one\n");
+    step("Bash", { command: `${SED_I} 's/one/two/' conf.txt` });
+    assert.equal(read(W("conf.txt")), "two\n");
+    const r = spawnSync(process.execPath, [CLI, "restore", "1"], { cwd: ws, env: env({ PATH: `${shim}:${process.env.PATH}` }), encoding: "utf-8" });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(read(W("conf.txt")), "one\n");
+  });
+
   it("two long paths that share a 200-character prefix keep separate copies", () => {
     const d = "d".repeat(70) + "/" + "e".repeat(70) + "/" + "f".repeat(70);
     fs.mkdirSync(W(d), { recursive: true });
     fs.writeFileSync(W(`${d}/one.txt`), "one\n");
     fs.writeFileSync(W(`${d}/two.txt`), "two\n");
-    step("Bash", { command: `sed -i 's/o/0/' ${d}/one.txt ${d}/two.txt` });
+    step("Bash", { command: `${SED_I} 's/o/0/' ${d}/one.txt ${d}/two.txt` });
     const r = cli(["restore", "1"]);
     assert.equal(r.status, 0, r.out);
     assert.equal(read(W(`${d}/one.txt`)), "one\n");
@@ -291,7 +307,7 @@ describe("snapshot restores keep what git does not", () => {
       ],
       liveRestore: false, originalAction: "Bash(sed -i s/30/7/ settings.ini)",
     }]));
-    execSync(`sed -i 's/30/7/' ${file}`);
+    execSync(`${SED_I} 's/30/7/' ${file}`);
     assert.equal(mode(file), "640");
     const r = cli(["restore", "1"]);
     assert.equal(r.status, 0, r.out);
@@ -426,7 +442,7 @@ describe("compound commands", () => {
   it("captures a sed -i on an outside file inside `… && echo done`", () => {
     const f = path.join(out, "settings.ini");
     fs.writeFileSync(f, "retention_days = 30\n");
-    step("Bash", { command: `sed -i 's/30/7/' ${f} && echo done` });
+    step("Bash", { command: `${SED_I} 's/30/7/' ${f} && echo done` });
     assert.equal(read(f), "retention_days = 7\n");
     const r = cli(["restore", "1"]);
     assert.equal(r.status, 0, r.out);

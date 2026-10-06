@@ -838,7 +838,9 @@ function runRecoverySteps(steps: RecoveryStep[], cwd: string): { ok: boolean; no
       if (toDir) {
         return { ok: false, notes, error: `${to} is now a directory, so the captured file was NOT copied into it; it is still at ${from}` };
       }
-      execFileSync("cp", ["-a", "--remove-destination", from, to], { stdio: "pipe" });
+      // Remove what is there first (GNU `--remove-destination`, which BSD cp lacks).
+      if (ts) fs.rmSync(to, { force: true });
+      execFileSync("cp", ["-a", from, to], { stdio: "pipe" });
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

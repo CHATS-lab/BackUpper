@@ -40,6 +40,31 @@ export function adoptHostAgent(argv: string[] = process.argv): void {
 }
 
 // =============================================================================
+// ── project root ──
+// =============================================================================
+
+/**
+ * Move into the installed project this call belongs to and return the directory the agent's
+ * shell is in. A host runs its hooks where the agent's shell last stopped, so after
+ * `cd data && …` the next hook starts in data/. The project is CLAUDE_PROJECT_DIR when that
+ * holds an install, else the nearest directory at or above the shell's with
+ * .backupper/config.json; with none found the process stays where it started.
+ */
+export function enterProject(cwd?: string): string {
+  const shell = cwd && path.isAbsolute(cwd) && fs.existsSync(cwd) ? path.resolve(cwd) : process.cwd();
+  const installed = (d: string) => fs.existsSync(path.join(d, ".backupper", "config.json"));
+  const env = process.env.CLAUDE_PROJECT_DIR;
+  let root: string | null = null;
+  if (env && path.isAbsolute(env) && (storeDirOverride() || installed(env))) root = path.resolve(env);
+  for (let d = shell; !root && !storeDirOverride(); d = path.dirname(d)) {
+    if (installed(d)) root = d;
+    if (path.dirname(d) === d) break;
+  }
+  if (root && root !== process.cwd()) process.chdir(root);
+  return shell;
+}
+
+// =============================================================================
 // ── timing path ──
 // =============================================================================
 
@@ -221,6 +246,7 @@ async function preToolMain(): Promise<void> {
     process.stderr.write(`[BackUpper] could not parse hook input, allowing: ${e}\n`);
     process.exit(0);
   }
+  ctx.cwd = enterProject(ctx.cwd);
 
   let config;
   try {
@@ -411,6 +437,7 @@ async function postToolMain(): Promise<void> {
     process.exit(0);
   }
 
+  ctx.cwd = enterProject(ctx.cwd);
   const config = loadConfig();
 
   // Close the provenance record the pre-tool hook opened, with the outcome.
@@ -682,6 +709,8 @@ interface PromptContext {
   user_prompt?: string;
   message?: string;
   session_id?: string;
+  cwd?: string;
+  working_dir?: string;
 }
 
 const MAX_LEN = 200;
@@ -705,6 +734,7 @@ async function userPromptMain(): Promise<void> {
   } catch {
     process.exit(0);
   }
+  enterProject(ctx.cwd ?? ctx.working_dir);
 
   // ── Side panel toggle: handled here, never sent to the model ───────
   const ownPanel = process.env.BACKUPPER_HOST_AGENT === "claude-code";

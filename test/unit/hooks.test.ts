@@ -19,6 +19,9 @@ import { closeCommand, detectTerminal, parsePanelPrompt, splitCommand } from "..
 import type { ActionDetail, ActionSummary } from "../../src/view.js";
 import { actionRows, clip, emptyState, headlineTier, renderWatch, type WatchState } from "../../src/view.js";
 
+/** In-place sed for this platform: BSD/macOS sed takes the suffix as a separate argument. */
+const SED_I = process.platform === "darwin" ? "sed -i ''" : "sed -i";
+
 // Each section below was a test file of its own. Its root-level hooks apply only to its
 // own top-level suites (onlyIn), and a root-level before() runs once, before the first of
 // them (onceIn), so a hook never runs for another section's tests.
@@ -506,7 +509,7 @@ function setup(dir: string): void {
 
 function hook(sub: string[], cwd: string, input: Record<string, unknown>, mode?: string, event = "PreToolUse", agent = "claude-code") {
   const env: NodeJS.ProcessEnv = { ...process.env, BACKUPPER_READONLY_CHECKER: "0", PATH: `${binDir}:${process.env.PATH}` };
-  for (const k of ["BACKUPPER_NO_HOOK", "BACKUPPER_STORE_DIR", "BACKUPPER_NO_REWRITE", "TERMINAL_ENV", "BACKUPPER_EXEC_TARGET"]) delete env[k];
+  for (const k of ["BACKUPPER_NO_HOOK", "BACKUPPER_STORE_DIR", "BACKUPPER_NO_REWRITE", "TERMINAL_ENV", "BACKUPPER_EXEC_TARGET", "CLAUDE_PROJECT_DIR"]) delete env[k];
   return spawnSync(process.execPath, [...sub, "--agent", agent], {
     cwd, env, encoding: "utf-8",
     input: JSON.stringify({
@@ -630,10 +633,30 @@ describe("approval modes: no rewrite, tiers 2 and 3, unconfirmed until the call 
     assert.deepEqual(listed(), []);
     const pending = fs.readdirSync(".backupper/backups").filter((n) => n.startsWith("pending_"));
     assert.equal(pending.length, 1);
-    run("sed -i s/a/b/ conf.txt");
+    run(`${SED_I} s/a/b/ conf.txt`);
     const rows = listed();
     assert.deepEqual(rows.map((r) => r.seq), [1]);
     assert.ok(fs.existsSync(path.join(".backupper/backups", pending[0])), "the denied call's backup is kept");
+  });
+
+  it("a call that leaves the shell in a subdirectory is confirmed in the project, and later calls resolve from there", () => {
+    setup(workspace);
+    fs.mkdirSync("data");
+    fs.writeFileSync("data/users.csv", "id,name\n");
+    const first = "cd data && rm users.csv && echo replaced > users.csv";
+    assert.equal(hook(PRE, workspace, bashCall(first), "default").status, 0);
+    execSync(first, { cwd: workspace, shell: "/bin/bash", stdio: "pipe" });
+    const sub = path.join(workspace, "data");
+    hook(POST, sub, bashCall(first), "default", "PostToolUse");   // the host's shell now sits in data/
+    assert.equal(hook(PRE, sub, bashCall("rm users.csv"), "default").status, 0);
+    execSync("rm users.csv", { cwd: sub, stdio: "pipe" });
+    hook(POST, sub, bashCall("rm users.csv"), "default", "PostToolUse");
+    assert.deepEqual(listed().map((r) => r.seq), [1, 2]);
+    assert.ok(!fs.existsSync(path.join(sub, ".backupper")), "no store is created in the subdirectory");
+    assert.equal(cli("restore", "2").status, 0);
+    assert.equal(fs.readFileSync("data/users.csv", "utf8"), "replaced\n");
+    assert.equal(cli("restore", "1").status, 0);
+    assert.equal(fs.readFileSync("data/users.csv", "utf8"), "id,name\n");
   });
 
   it("a call that ran without a post-tool hook is confirmed at the next hook", () => {
@@ -768,10 +791,10 @@ describe("backup-only mode: file rules", () => {
 
   it("sed -i: the file changes exactly once, and restore brings back the pre-image", () => {
     fs.writeFileSync("notes.txt", "a\nb\n");
-    const r = capture("sed -i 's/$/!/' notes.txt");
+    const r = capture(`${SED_I} 's/$/!/' notes.txt`);
     assert.equal(r.ruleId, "sed-in-place");
     assert.equal(read("notes.txt"), "a\nb\n", "the hook must not run the sed");
-    hostRuns("sed -i 's/$/!/' notes.txt");
+    hostRuns(`${SED_I} 's/$/!/' notes.txt`);
     assert.equal(read("notes.txt"), "a!\nb!\n");
     recover(r);
     assert.equal(read("notes.txt"), "a\nb\n");
@@ -976,7 +999,7 @@ describe("a trailing `# [BACKUP NEEDED]` marker does not defeat tier 1", () => {
 
   it("sed -i ... # [BACKUP NEEDED] (rewrite mode) and a quoted # is not a comment", () => {
     fs.writeFileSync("f.txt", "a#b\n");
-    const r = applyPolicyRules(bash("sed -i 's/#/-/' f.txt # [BACKUP NEEDED]"), trash, store);
+    const r = applyPolicyRules(bash(`${SED_I} 's/#/-/' f.txt # [BACKUP NEEDED]`), trash, store);
     assert.ok(r && r.ruleId === "sed-in-place");
     assert.equal(read("f.txt"), "a-b\n");
     recover(r!);
