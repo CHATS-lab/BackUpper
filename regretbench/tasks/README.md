@@ -6,7 +6,9 @@ The tasks are not stored in this repository. They are distributed on HuggingFace
 ## Download
 
 ```bash
-git clone https://huggingface.co/datasets/CHATS-Lab/RegretBench
+# request access at https://huggingface.co/datasets/CHATS-Lab/RegretBench first, then:
+hf auth login
+hf download CHATS-Lab/RegretBench --repo-type dataset --local-dir RegretBench
 # large seed files are stored xz-compressed; restore them before building any task
 (cd RegretBench && find workspaces -name '*.xz' -exec xz -d {} +)
 cp -r RegretBench/workspaces/* regretbench/tasks/

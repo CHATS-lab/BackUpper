@@ -18,10 +18,11 @@ Every MCP server runs inside the task container (or, for Kubernetes, inside the 
 
 ### Dataset
 
-Download from [HuggingFace](https://huggingface.co/datasets/CHATS-Lab/RegretBench):
+Download from [HuggingFace](https://huggingface.co/datasets/CHATS-Lab/RegretBench). The dataset is gated: request access on its page, then log in (`pip install huggingface-hub` provides `hf`):
 
 ```bash
-git clone https://huggingface.co/datasets/CHATS-Lab/RegretBench
+hf auth login
+hf download CHATS-Lab/RegretBench --repo-type dataset --local-dir RegretBench
 # large seed files are stored xz-compressed; restore them before building any task
 (cd RegretBench && find workspaces -name '*.xz' -exec xz -d {} +)
 cp -r RegretBench/workspaces/* regretbench/tasks/
