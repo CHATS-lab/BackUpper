@@ -775,7 +775,8 @@ describe("policy rule: chown -R", () => {
     const scriptPath = r!.recoveryCommands[0].replace(/^sh /, "").replace(/^'|'$/g, "");
     const script = fs.readFileSync(scriptPath, "utf8");
     for (const rel of ["otree", "otree/a.txt", "otree/sub", "otree/sub/b.txt"]) {
-      const abs = path.resolve(workspace, rel);
+      // Compare by real path: on macOS the temp dir under /var is a symlink to /private/var.
+      const abs = path.resolve(fs.realpathSync(workspace), rel);
       assert.ok(
         script.includes(`chown ${uid}:${gid} ${abs}`) ||
           script.includes(`chown ${uid}:${gid} '${abs}'`),

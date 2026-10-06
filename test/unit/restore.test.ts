@@ -664,7 +664,8 @@ describe("tier-3 snapshot leaves BackUpper's install files alone", () => {
     install();
     const env = { ...process.env, GIT_DIR: shadow(), GIT_WORK_TREE: ws };
     execSync("git init -q && git config user.email b@l && git config user.name b", { cwd: ws, env });
-    execSync("git add -A -- .claude .codex app.py && git commit -qm old", { cwd: ws, env });
+    // No global excludes: a user-level ignore of .claude/settings.local.json would skip the setup.
+    execSync("git -c core.excludesFile=/dev/null add -A -- .claude .codex app.py && git commit -qm old", { cwd: ws, env });
     assert.ok(tracked().includes(".claude/settings.local.json"));
     fs.writeFileSync(path.join(ws, "app.py"), "x = 4\n");
     hook("Write", { file_path: path.join(ws, "app.py"), content: "x = 5\n" });
