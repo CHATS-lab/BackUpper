@@ -1239,6 +1239,26 @@ describe("Hermes /backupper-panel", { skip: !hasPython() && "python3 not availab
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("keeps the user's comments in config.yaml through install and uninstall", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bu-hermes-"));
+    const home = process.env.HERMES_HOME;
+    process.env.HERMES_HOME = path.join(dir, "hermes-home");
+    const cfg = path.join(dir, "hermes-home", "config.yaml");
+    const before = "# my model\nmodel: x  # pinned\nplugins:\n  # mine\n  enabled:\n  - other\n";
+    try {
+      fs.mkdirSync(path.dirname(cfg), { recursive: true });
+      fs.writeFileSync(cfg, before);
+      hermesAdapter.install(dir, "/opt/bu/dist");
+      assert.equal(fs.readFileSync(cfg, "utf-8"), before + "  - backupper\n");
+      hermesAdapter.uninstall(dir);
+      assert.equal(fs.readFileSync(cfg, "utf-8"), before);
+    } finally {
+      if (home === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = home;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // =============================================================================

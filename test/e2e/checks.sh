@@ -107,7 +107,7 @@ printf 'port=81\n' > /srv/outside/cfg.ini
 check "restore 1 (loop) brings the outside file back" \
   sh -c 'backupper restore 1 >/dev/null && grep -qx port=80 /srv/outside/cfg.ini'
 
-# ── 4c. Codex: tier 1 is backup-only (Codex ignores a rewritten command) ──
+# ── 4c. Codex: tier 1 is backup-only (BACKUPPER_NO_REWRITE=1) ──
 new_project codex-backup-only
 git config user.email e@x && git config user.name e
 printf 'a\nb\n' > notes.txt && printf 'keep\n' > gone.txt && echo v0 > w.txt
@@ -116,13 +116,17 @@ echo stashA > w.txt && git stash -q && echo stashB > w.txt && git stash -q
 backupper install codex >/dev/null
 backupper config set subagentEnabled false >/dev/null
 pre="$(hook_cmd codex PreToolUse)"
+post="$(hook_cmd codex PostToolUse)"
+export BACKUPPER_NO_REWRITE=1
 for cmd in "sed -i 's/\$/!/' notes.txt" "git stash drop" "rm gone.txt"; do
   input="$(node -e 'console.log(JSON.stringify({command: process.argv[1]}))' "$cmd")"
   res="$(send "$pre" Bash "$input")"; code=$?
   if [ "$code" = 0 ] && ! echo "$res" | grep -q updatedInput; then ok "codex hook: no rewrite for: $cmd"; else bad "codex hook: no rewrite for: $cmd" "exit $code, output: $res"; fi
   sh -c "$cmd" >/dev/null 2>/tmp/cmd.err; rc=$?
   check "codex: '$cmd' runs once without error" test "$rc" = 0 -a ! -s /tmp/cmd.err
+  printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":%s,"tool_response":{},"cwd":"%s"}' "$input" "$PWD" | sh -c "$post" >/dev/null
 done
+unset BACKUPPER_NO_REWRITE
 check "codex: notes.txt changed exactly once" sh -c 'printf "a!\nb!\n" | cmp -s - notes.txt'
 check "codex: exactly one stash dropped" test "$(git stash list | wc -l)" = 1
 check "codex: restore 1 succeeds" sh -c 'backupper restore 1 >/dev/null'

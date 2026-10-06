@@ -512,13 +512,72 @@ function setHermesPluginEnabled(on: boolean): boolean {
     fs.writeFileSync(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}plugins:\n  enabled:\n  - backupper\n`, "utf-8");
     return true;
   }
-  plugins.enabled = on ? [...enabled.filter((n) => n !== "backupper"), "backupper"] : enabled.filter((n) => n !== "backupper");
-  plugins.disabled = list("disabled").filter((n) => n !== "backupper");
+  const want = {
+    enabled: on ? [...enabled.filter((n) => n !== "backupper"), "backupper"] : enabled.filter((n) => n !== "backupper"),
+    disabled: list("disabled").filter((n) => n !== "backupper"),
+  };
+  // Edit the lines in place so the user's comments and layout survive; keep the edit only when
+  // it parses to exactly the intended config, else rewrite the file from the parsed config.
+  const edited = editHermesPluginLines(text, on);
+  if (edited !== null && sameHermesConfig(yaml.load(edited), cfg, want)) {
+    fs.writeFileSync(file, edited, "utf-8");
+    return true;
+  }
+  plugins.enabled = want.enabled;
+  plugins.disabled = want.disabled;
   for (const k of ["enabled", "disabled"]) if (!on && (plugins[k] as unknown[]).length === 0) delete plugins[k];
   if (Object.keys(plugins).length) cfg.plugins = plugins;
   else delete cfg.plugins;
   fs.writeFileSync(file, Object.keys(cfg).length ? yaml.dump(cfg, { lineWidth: -1 }) : "", "utf-8");
   return true;
+}
+
+/**
+ * `text` with "backupper" dropped from the block lists under `plugins:` (enabled and disabled)
+ * and, when `on`, appended to `plugins.enabled`; null when the layout is not one this handles.
+ */
+function editHermesPluginLines(text: string, on: boolean): string | null {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => /^plugins:\s*(#.*)?$/.test(l));
+  if (start < 0) return null;
+  let end = start + 1;
+  while (end < lines.length && (/^\s/.test(lines[end]) || /^\s*(#.*)?$/.test(lines[end]))) end++;
+  const isOurs = (l: string) => /^\s*-\s*["']?backupper["']?\s*(#.*)?$/.test(l);
+  let section = "";
+  let enabledAt = -1;
+  let lastEnabledItem = -1;
+  let itemIndent = "";
+  const out: string[] = [];
+  for (let i = start + 1; i < end; i++) {
+    const key = /^(\s+)([A-Za-z_]+):\s*(.*)$/.exec(lines[i]);
+    if (key) {
+      section = key[2];
+      if (key[3] && !key[3].startsWith("#")) return null;
+      if (section === "enabled") { enabledAt = out.length; itemIndent = key[1]; }
+    } else if (/^\s*-/.test(lines[i]) && (section === "enabled" || section === "disabled")) {
+      if (isOurs(lines[i])) continue;
+      if (section === "enabled") { lastEnabledItem = out.length; itemIndent = /^(\s*)/.exec(lines[i])![1]; }
+    }
+    out.push(lines[i]);
+  }
+  if (on) {
+    if (enabledAt < 0) return null;
+    out.splice((lastEnabledItem >= 0 ? lastEnabledItem : enabledAt) + 1, 0, `${itemIndent}- backupper`);
+  }
+  return [...lines.slice(0, start + 1), ...out, ...lines.slice(end)].join("\n");
+}
+
+/** Whether `edited` equals `orig` with plugins.enabled / plugins.disabled set to `want`. */
+function sameHermesConfig(edited: unknown, orig: Record<string, unknown>, want: { enabled: unknown[]; disabled: unknown[] }): boolean {
+  const norm = (c: unknown) => {
+    const o = { ...((c ?? {}) as Record<string, unknown>) };
+    const p = { ...((o.plugins ?? {}) as Record<string, unknown>) };
+    for (const k of ["enabled", "disabled"]) if (!Array.isArray(p[k]) || (p[k] as unknown[]).length === 0) delete p[k];
+    o.plugins = p;
+    return JSON.stringify(o);
+  };
+  const plugins = { ...((orig.plugins ?? {}) as Record<string, unknown>), ...want };
+  return norm(edited) === norm({ ...orig, plugins });
 }
 
 function manifest(): string {
