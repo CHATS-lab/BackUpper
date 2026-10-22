@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agents-backupper"
+version = "0.1.0"  # keep in sync with ../package.json; build.sh checks it
+description = "A plug-in backup layer for coding agents: preserves state before every tool call modifies it"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.8"
+authors = [{ name = "CHATS Lab" }]
+keywords = ["agents", "coding-agents", "backup", "claude-code", "codex"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: JavaScript",
+  "Operating System :: OS Independent",
+  "Topic :: System :: Archiving :: Backup",
+]
+
+[project.urls]
+Homepage = "https://back-up-before-you-regret.github.io"
+Repository = "https://github.com/CHATS-lab/BackUpper"
+Paper = "https://arxiv.org/abs/2610.28934"
+
+[project.scripts]
+backupper = "agents_backupper:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agents_backupper = ["_node/**/*", "_node/**/.*", "_node/**/.*/*"]

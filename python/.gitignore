@@ -1,0 +1,4 @@
+src/agents_backupper/_node/
+build/
+dist/
+*.egg-info/

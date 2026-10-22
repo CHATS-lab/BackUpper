@@ -5,7 +5,7 @@
 
 <p><b>A plug-in backup layer that checks every tool call your coding agent makes, and backs up what it is about to change</b></p>
 
-[![npm](https://img.shields.io/npm/v/agents-backupper?style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/agents-backupper) [![Paper](https://img.shields.io/badge/arXiv-2610.28934-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2610.28934) [![Homepage](https://img.shields.io/badge/Homepage-4d8cd8?style=for-the-badge&logo=google-chrome&logoColor=white)](https://back-up-before-you-regret.github.io) [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE) [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=for-the-badge&logo=node.js&logoColor=white)](#quickstart)
+[![npm](https://img.shields.io/npm/v/agents-backupper?style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/agents-backupper) [![PyPI](https://img.shields.io/pypi/v/agents-backupper?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/agents-backupper/) [![npm downloads](https://img.shields.io/npm/dt/agents-backupper?style=for-the-badge&logo=npm&logoColor=white&color=green&label=npm%20downloads)](https://www.npmjs.com/package/agents-backupper) [![PyPI downloads](https://img.shields.io/pepy/dt/agents-backupper?style=for-the-badge&logo=pypi&logoColor=white&color=green&label=pypi%20downloads)](https://pepy.tech/projects/agents-backupper) [![Paper](https://img.shields.io/badge/arXiv-2610.28934-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2610.28934) [![Homepage](https://img.shields.io/badge/Homepage-4d8cd8?style=for-the-badge&logo=google-chrome&logoColor=white)](https://back-up-before-you-regret.github.io) [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE) [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?style=for-the-badge&logo=node.js&logoColor=white)](#quickstart)
 
 <strong>Supports:</strong>&nbsp;
 <a href="docs/agents.md#claude-code"><img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=anthropic&logoColor=white" alt="Claude Code"></a>
@@ -38,6 +38,8 @@
 
 ```bash
 npm install -g agents-backupper
+# or
+pip install agents-backupper   # requires Node.js >= 18
 ```
 
 ### Install into Your Agent
